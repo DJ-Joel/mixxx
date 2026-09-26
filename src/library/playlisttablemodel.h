@@ -24,6 +24,11 @@ class PlaylistTableModel final : public TrackSetTableModel {
     void shuffleTracks(const QModelIndexList& shuffle = QModelIndexList(),
             const QModelIndex& exclude = QModelIndex());
     void orderTracksByCurrPos();
+    /// (track id, position) of every row, sorted by position.
+    QList<std::pair<TrackId, int>> getTrackIdsAndPositions() const;
+    /// Renumbers the playlist to follow `newOrder`: (track id, current
+    /// position) pairs in the wanted order. Must list every row once.
+    void setTrackOrder(QList<std::pair<TrackId, int>> newOrder);
 
     bool isColumnInternal(int column) final;
     bool isColumnHiddenByDefault(int column) final;

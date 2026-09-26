@@ -1,10 +1,20 @@
 #include "library/autodj/autodjprocessor.h"
 
+#include <QFutureWatcher>
+#include <QHash>
+#include <QtConcurrentRun>
+#include <algorithm>
+#include <optional>
+
 #include "engine/channels/enginedeck.h"
+#include "library/autodj/smart/smartsequencer.h"
+#include "library/autodj/smart/trackfeatures.h"
+#include "library/columncache.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
 #include "moc_autodjprocessor.cpp"
 #include "track/track.h"
+#include "util/assert.h"
 #include "util/logger.h"
 #include "util/math.h"
 
@@ -236,6 +246,113 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::shufflePlaylist(
     }
     m_pAutoDJTableModel->shuffleTracks(selectedIndices, exclude);
     return ADJ_OK;
+}
+
+AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
+    if (m_smartSortRunning) {
+        return ADJ_OK;
+    }
+
+    // Snapshot the queue on this (GUI) thread. The worker thread only sees
+    // plain TrackFeatures copies, never Track objects or the database.
+    struct Row {
+        TrackId id;
+        int position;
+        TrackFeatures features;
+    };
+    QList<Row> rows;
+    const int positionColumn = m_pAutoDJTableModel->fieldIndex(
+            ColumnCache::COLUMN_PLAYLISTTRACKSTABLE_POSITION);
+    const int rowCount = m_pAutoDJTableModel->rowCount();
+    rows.reserve(rowCount);
+    for (int i = 0; i < rowCount; ++i) {
+        const QModelIndex index = m_pAutoDJTableModel->index(i, 0);
+        const TrackPointer pTrack = m_pAutoDJTableModel->getTrack(index);
+        if (!pTrack) {
+            emit smartSortFailed(tr("Could not read track %1 of the Auto DJ queue.").arg(i + 1));
+            return ADJ_OK;
+        }
+        rows.append(Row{pTrack->getId(),
+                index.siblingAtColumn(positionColumn).data().toInt(),
+                TrackFeatures::fromTrack(pTrack)});
+    }
+    std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
+        return a.position < b.position;
+    });
+
+    if (rows.size() < 2) {
+        emit smartSortFinished(static_cast<int>(rows.size()), 0, QStringList());
+        return ADJ_OK;
+    }
+
+    QVector<TrackFeatures> features;
+    QList<std::pair<TrackId, int>> snapshot;
+    features.reserve(rows.size());
+    snapshot.reserve(rows.size());
+    for (const Row& row : std::as_const(rows)) {
+        features.append(row.features);
+        snapshot.append(std::make_pair(row.id, row.position));
+    }
+
+    // While Auto DJ runs, the top track is already loaded on the next deck,
+    // so it must stay first.
+    std::optional<TrackId> startId;
+    if (m_eState != ADJ_DISABLED) {
+        startId = rows.first().id;
+    }
+
+    // TODO(autodj-2): read weights from the Auto DJ preferences.
+    const MixScorer scorer;
+
+    m_smartSortRunning = true;
+    auto* pWatcher = new QFutureWatcher<SequenceResult>(this);
+    connect(pWatcher,
+            &QFutureWatcher<SequenceResult>::finished,
+            this,
+            [this, pWatcher, snapshot]() {
+                m_smartSortRunning = false;
+                applySmartSortResult(pWatcher->result(), snapshot);
+                pWatcher->deleteLater();
+            });
+    pWatcher->setFuture(QtConcurrent::run([features, startId, scorer]() {
+        return SmartSequencer(scorer).solve(features, startId);
+    }));
+    return ADJ_OK;
+}
+
+void AutoDJProcessor::applySmartSortResult(const SequenceResult& result,
+        const QList<std::pair<TrackId, int>>& snapshot) {
+    // The DJ (or Auto DJ itself) may have changed the queue while we sorted.
+    if (m_pAutoDJTableModel->getTrackIdsAndPositions() != snapshot) {
+        emit smartSortFailed(tr("The Auto DJ queue changed while sorting. Please try again."));
+        return;
+    }
+    if (result.order.size() != snapshot.size()) {
+        emit smartSortFailed(tr("Smart sort could not sort the Auto DJ queue."));
+        return;
+    }
+
+    // A track can be in the queue more than once, so map each id to the
+    // list of positions it holds and hand them out in turn.
+    QHash<TrackId, QList<int>> positionsById;
+    for (const auto& [id, position] : snapshot) {
+        positionsById[id].append(position);
+    }
+    QList<std::pair<TrackId, int>> newOrder;
+    newOrder.reserve(result.order.size());
+    for (const TrackId& id : result.order) {
+        QList<int>& positions = positionsById[id];
+        VERIFY_OR_DEBUG_ASSERT(!positions.isEmpty()) {
+            emit smartSortFailed(tr("Smart sort could not sort the Auto DJ queue."));
+            return;
+        }
+        newOrder.append(std::make_pair(id, positions.takeFirst()));
+    }
+
+    m_pAutoDJTableModel->setTrackOrder(newOrder);
+    emit smartSortFinished(static_cast<int>(result.order.size()),
+            result.clashCount,
+            result.warnings);
 }
 
 void AutoDJProcessor::fadeNow() {

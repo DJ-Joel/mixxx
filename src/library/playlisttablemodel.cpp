@@ -1,5 +1,7 @@
 #include "library/playlisttablemodel.h"
 
+#include <algorithm>
+
 #include "library/dao/playlistdao.h"
 #include "library/dao/trackschema.h"
 #include "library/queryutil.h"
@@ -358,6 +360,28 @@ void PlaylistTableModel::orderTracksByCurrPos() {
     m_pTrackCollectionManager->internalCollection()
             ->getPlaylistDAO()
             .orderTracksByCurrPos(m_iPlaylistId, idPosList);
+}
+
+QList<std::pair<TrackId, int>> PlaylistTableModel::getTrackIdsAndPositions() const {
+    QList<std::pair<TrackId, int>> idPosList;
+    const int numOfTracks = rowCount();
+    idPosList.reserve(numOfTracks);
+    const int positionColumn = fieldIndex(ColumnCache::COLUMN_PLAYLISTTRACKSTABLE_POSITION);
+    const int idColumn = fieldIndex(ColumnCache::COLUMN_LIBRARYTABLE_ID);
+    for (int i = 0; i < numOfTracks; i++) {
+        idPosList.append(std::make_pair(TrackId(index(i, idColumn).data()),
+                index(i, positionColumn).data().toInt()));
+    }
+    std::sort(idPosList.begin(), idPosList.end(), [](const auto& a, const auto& b) {
+        return a.second < b.second;
+    });
+    return idPosList;
+}
+
+void PlaylistTableModel::setTrackOrder(QList<std::pair<TrackId, int>> newOrder) {
+    m_pTrackCollectionManager->internalCollection()
+            ->getPlaylistDAO()
+            .orderTracksByCurrPos(m_iPlaylistId, newOrder);
 }
 
 const QList<int> PlaylistTableModel::getSelectedPositions(const QModelIndexList& indices) const {

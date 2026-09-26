@@ -93,6 +93,25 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     setupActionButton(pushButtonShuffle, &DlgAutoDJ::shufflePlaylistButton, tr("Shuffle"));
     setupActionButton(pushButtonAddRandomTrack, &DlgAutoDJ::addRandomTrackButton, tr("Random"));
 
+    // Auto DJ 2.0 Smart Sort. Always shows text: skins have no icon for it.
+    pushButtonSmartSort->setText(tr("Smart Sort"));
+    pushButtonSmartSort->setToolTip(tr(
+            "Sort the Auto DJ queue for smooth mixing (key and BPM).\n"
+            "\n"
+            "While Auto DJ is running, the next track stays first."));
+    connect(pushButtonSmartSort,
+            &QPushButton::clicked,
+            this,
+            &DlgAutoDJ::smartSortButton);
+    connect(m_pAutoDJProcessor,
+            &AutoDJProcessor::smartSortFinished,
+            this,
+            &DlgAutoDJ::slotSmartSortFinished);
+    connect(m_pAutoDJProcessor,
+            &AutoDJProcessor::smartSortFailed,
+            this,
+            &DlgAutoDJ::slotSmartSortFailed);
+
     m_enableBtnTooltip = tr(
             "Enable Auto DJ\n"
             "\n"
@@ -258,6 +277,44 @@ void DlgAutoDJ::shufflePlaylistButton(bool) {
 
     // Activate regardless of button being checked
     m_pAutoDJProcessor->shufflePlaylist(indexList);
+}
+
+void DlgAutoDJ::smartSortButton(bool) {
+    pushButtonSmartSort->setEnabled(false); // re-enabled when the sort ends
+    m_pAutoDJProcessor->smartSortPlaylist();
+}
+
+void DlgAutoDJ::slotSmartSortFinished(int trackCount,
+        int clashCount,
+        const QStringList& warnings) {
+    pushButtonSmartSort->setEnabled(true);
+    if (trackCount < 2) {
+        return;
+    }
+    if (clashCount == 0) {
+        QMessageBox::information(this,
+                tr("Smart Sort"),
+                tr("Sorted %1 tracks with no key or tempo clashes.").arg(trackCount));
+        return;
+    }
+    constexpr int kMaxShown = 10;
+    QStringList shown = warnings.mid(0, kMaxShown);
+    if (warnings.size() > kMaxShown) {
+        shown << tr("...and %1 more").arg(warnings.size() - kMaxShown);
+    }
+    QMessageBox::warning(this,
+            tr("Smart Sort"),
+            tr("Sorted %1 tracks.\n"
+               "%2 transitions could not be made smooth. "
+               "A bridge track between them would help:\n\n%3")
+                    .arg(trackCount)
+                    .arg(clashCount)
+                    .arg(shown.join(QChar('\n'))));
+}
+
+void DlgAutoDJ::slotSmartSortFailed(const QString& message) {
+    pushButtonSmartSort->setEnabled(true);
+    QMessageBox::warning(this, tr("Smart Sort"), message);
 }
 
 void DlgAutoDJ::skipNextButton(bool) {

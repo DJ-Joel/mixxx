@@ -2,6 +2,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <memory>
 #include <vector>
 
@@ -19,6 +20,7 @@
 class TrackCollectionManager;
 class PlayerManagerInterface;
 class BaseTrackPlayer;
+struct SequenceResult;
 typedef QList<QModelIndex> QModelIndexList;
 
 class DeckAttributes : public QObject {
@@ -203,6 +205,13 @@ class AutoDJProcessor : public QObject {
     void setTransitionMode(TransitionMode newMode);
 
     AutoDJError shufflePlaylist(const QModelIndexList& selectedIndices);
+    /// Auto DJ 2.0: reorder the queue for smooth key/BPM/energy flow.
+    /// Runs in the background; the result arrives as smartSortFinished()
+    /// or smartSortFailed(). While Auto DJ runs, the first track stays first.
+    AutoDJError smartSortPlaylist();
+    bool isSmartSortRunning() const {
+        return m_smartSortRunning;
+    }
     AutoDJError skipNext();
     void fadeNow();
     AutoDJError toggleAutoDJ(bool enable);
@@ -220,6 +229,9 @@ class AutoDJProcessor : public QObject {
     void autoDJError(AutoDJProcessor::AutoDJError error);
     void transitionTimeChanged(int time);
     void randomTrackRequested(int tracksToAdd);
+    /// clashCount = transitions that could not be made smooth.
+    void smartSortFinished(int trackCount, int clashCount, const QStringList& warnings);
+    void smartSortFailed(const QString& message);
 
   private slots:
     void crossfaderChanged(double value);
@@ -299,6 +311,8 @@ class AutoDJProcessor : public QObject {
     // present.
     bool removeTrackFromTopOfQueue(TrackPointer pTrack);
     void maybeFillRandomTracks();
+    void applySmartSortResult(const SequenceResult& result,
+            const QList<std::pair<TrackId, int>>& snapshot);
     UserSettingsPointer m_pConfig;
     parented_ptr<PlaylistTableModel> m_pAutoDJTableModel;
 
@@ -319,6 +333,8 @@ class AutoDJProcessor : public QObject {
     ControlPushButton m_addRandomTrack;
     ControlPushButton m_fadeNow;
     ControlPushButton m_enabledAutoDJ;
+
+    bool m_smartSortRunning = false;
 
     DISALLOW_COPY_AND_ASSIGN(AutoDJProcessor);
 };

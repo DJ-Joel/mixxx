@@ -316,7 +316,11 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
         if (s.keyCost >= MixScorer::kClashKeyCost ||
                 s.tempoCost >= MixScorer::kClashTempoCost) {
             ++result.clashCount;
-            result.warnings << QStringLiteral("Transition %1: %2").arg(k).arg(s.reason);
+            // k is 0-based, so the pair is tracks k and k + 1 counted from 1.
+            result.warnings << QStringLiteral("Tracks %1 and %2: %3")
+                                       .arg(k)
+                                       .arg(k + 1)
+                                       .arg(s.reason);
         }
     }
     return result;
