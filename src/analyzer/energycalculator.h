@@ -23,7 +23,9 @@ class EnergyCalculator {
     /// v3: body end uses the stricter kBodyEndDropDb.
     /// v4: same numbers; re-run so the analyzer sets the Intro End and
     ///     Outro Start markers on tracks analysed before that existed.
-    static constexpr int kVersion = 4;
+    /// v5: body start uses the bass band too (finds loud intros without
+    ///     drums).
+    static constexpr int kVersion = 5;
 
     struct Result {
         double energy = 0.0;       ///< 1..10
@@ -88,7 +90,8 @@ class EnergyCalculator {
     double m_blockSumHigh = 0.0;
 
     // Per-block results.
-    std::vector<float> m_blockDb; // full-band level of each 20 ms block
+    std::vector<float> m_blockDb;    // full-band level of each 20 ms block
+    std::vector<float> m_blockLowDb; // bass-band level of each 20 ms block
 
     // Totals over non-silent blocks.
     double m_totalFull = 0.0;

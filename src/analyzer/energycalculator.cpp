@@ -10,6 +10,19 @@ constexpr double kBlockSeconds = 0.02; // 20 ms analysis blocks
 constexpr int kBlocksPerWindow = 50;   // 1 s loudness windows
 constexpr double kWindowSeconds = kBlockSeconds * kBlocksPerWindow;
 constexpr int kBodySpanWindows = 4;    // "sustained" = 4 s
+// Body start: where the bass AND the overall level first reach the track's
+// typical level (its 40th percentile, 1 s windows) and stay there for 4 s.
+// "Loud" alone misses intros that are loud but have no drums; tuned on 5
+// tracks with the DJ's own beat times (all within about 1 s).
+constexpr double kBodyTypicalPercentile = 0.4;
+constexpr double kBodyStartMarginDb = 2.0;
+constexpr double kBodyStartFirstWindowMarginDb = 4.0;
+// Then pinpoint it: the first 20 ms bass block (a kick) at least this far
+// above the typical 1 s bass level, from 2 s before to 1.5 s after the
+// 1 s window found. Within 0.02 s of the DJ's times on the same 5 tracks.
+constexpr double kKickAboveTypicalDb = 6.0;
+constexpr int kKickSearchBackBlocks = 2 * kBlocksPerWindow;
+constexpr int kKickSearchAheadBlocks = kBlocksPerWindow + kBlocksPerWindow / 2;
 constexpr double kLowCutoffHz = 150.0;
 constexpr double kHighCutoffHz = 2500.0;
 constexpr double kSilenceDb = -60.0;
@@ -83,6 +96,7 @@ void EnergyCalculator::endBlock() {
     const double meanFull = m_blockSumFull / m_framesInBlock;
     const double db = powerToDb(meanFull);
     m_blockDb.push_back(static_cast<float>(db));
+    m_blockLowDb.push_back(static_cast<float>(powerToDb(m_blockSumLow / m_framesInBlock)));
     if (db > kSilenceDb) {
         m_totalFull += m_blockSumFull;
         m_totalLow += m_blockSumLow;
@@ -116,17 +130,24 @@ bool EnergyCalculator::finish(Result* pResult) const {
     }
 
     // Loudness: 90th percentile of 1 s window levels (ignoring silence).
-    std::vector<double> timeline; // every 1 s window in time order
-    std::vector<double> windowDb; // only the non-silent ones
+    std::vector<double> timeline;    // every 1 s window in time order
+    std::vector<double> timelineLow; // same, bass band only
+    std::vector<double> windowDb;    // only the non-silent ones
+    std::vector<double> windowLowDb; // bass of the non-silent ones
     for (int start = 0; start + kBlocksPerWindow <= blockCount; start += kBlocksPerWindow) {
         double sumPower = 0.0;
+        double sumLowPower = 0.0;
         for (int b = start; b < start + kBlocksPerWindow; ++b) {
             sumPower += std::pow(10.0, m_blockDb[b] / 10.0);
+            sumLowPower += std::pow(10.0, m_blockLowDb[b] / 10.0);
         }
         const double db = powerToDb(sumPower / kBlocksPerWindow);
+        const double lowDb = powerToDb(sumLowPower / kBlocksPerWindow);
         timeline.push_back(db);
+        timelineLow.push_back(lowDb);
         if (db > kSilenceDb) {
             windowDb.push_back(db);
+            windowLowDb.push_back(lowDb);
         }
     }
     if (windowDb.empty()) {
@@ -170,13 +191,46 @@ bool EnergyCalculator::finish(Result* pResult) const {
         }
         return sum / count;
     };
+    const auto percentileOf = [](std::vector<double> values, double fraction) {
+        std::sort(values.begin(), values.end());
+        return values[static_cast<std::size_t>(fraction * (values.size() - 1))];
+    };
+    const auto spanMedian = [](const std::vector<double>& values, int first, int count) {
+        std::vector<double> part(values.begin() + first, values.begin() + first + count);
+        std::sort(part.begin(), part.end());
+        const int mid = count / 2;
+        return count % 2 ? part[mid] : 0.5 * (part[mid - 1] + part[mid]);
+    };
+    const double typicalDb = percentileOf(windowDb, kBodyTypicalPercentile);
+    const double typicalLowDb = percentileOf(windowLowDb, kBodyTypicalPercentile);
     double bodyStart = 0.0;
     double bodyEnd = windows * kWindowSeconds;
     if (windows >= span) {
+        bool found = false;
         for (int w = 0; w + span <= windows; ++w) {
-            if (spanMeanDb(w, span) >= bodyStartThresholdDb) {
+            if (timelineLow[w] >= typicalLowDb - kBodyStartFirstWindowMarginDb &&
+                    spanMedian(timelineLow, w, span) >= typicalLowDb - kBodyStartMarginDb &&
+                    spanMedian(timeline, w, span) >= typicalDb - kBodyStartMarginDb) {
                 bodyStart = w * kWindowSeconds;
+                found = true;
+                const int from = std::max(0, w * kBlocksPerWindow - kKickSearchBackBlocks);
+                const int to = std::min(blockCount, w * kBlocksPerWindow + kKickSearchAheadBlocks);
+                for (int b = from; b < to; ++b) {
+                    if (m_blockLowDb[b] >= typicalLowDb + kKickAboveTypicalDb) {
+                        bodyStart = b * kBlockSeconds;
+                        break;
+                    }
+                }
                 break;
+            }
+        }
+        if (!found) {
+            // No clear bass entry (e.g. no bass at all): use loudness only.
+            for (int w = 0; w + span <= windows; ++w) {
+                if (spanMeanDb(w, span) >= bodyStartThresholdDb) {
+                    bodyStart = w * kWindowSeconds;
+                    break;
+                }
             }
         }
         for (int w = windows - span; w >= 0; --w) {

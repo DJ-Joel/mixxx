@@ -122,7 +122,9 @@ void AnalyzerEnergy::setAutoMarkers(
     const auto introStartEnd = pIntro->getStartAndEndPosition();
     const double introStartSec = toSec(introStartEnd.startPosition);
     const double introEndNowSec = toSec(introStartEnd.endPosition);
-    const double entry = phrasealign::entryBeat(grid, result.bodyStartSec, false);
+    // Since analysis v5 the body start is pinpointed to the first kick, so
+    // it is only snapped to the nearest beat (like a marker set by ear).
+    const double entry = phrasealign::entryBeat(grid, result.bodyStartSec, true);
     const double introEndSec = grid.beatTime(entry);
     const bool introFree = introEndNowSec < 0.0 || isOurs(introEndNowSec, before.introEndSec);
     if (introFree) {

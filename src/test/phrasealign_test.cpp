@@ -174,3 +174,25 @@ TEST(PhraseAlignTest, AReplanJustAfterThePhraseStartStillMixesOnTheBeat) {
     // More than one bar (2 s) late, e.g. the DJ jumped ahead: give up.
     EXPECT_FALSE(phrasealign::plan(k120, k120, 178.5, 200.0, 0.0, 8).has_value());
 }
+
+TEST(PhraseAlignTest, UnmatchedMixBringsTheBeatInAsTheFadeEnds) {
+    // Outgoing 120 BPM, limit 200 s: fade 176 -> 192 s (16 s). Incoming at
+    // 111.68 BPM whose beat kicks in at 34.66 s: it starts 16 s earlier, so
+    // its beat arrives as the outgoing track is gone.
+    phrasealign::Grid ns;
+    ns.firstBeatSec = 0.272;
+    ns.beatSec = 60.0 / 111.68;
+    const auto p = phrasealign::planUnmatched(k120, ns, 0.0, 200.0, 0.28, 8, 34.0);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(176.0, p->fromFadeBeginSec);
+    EXPECT_DOUBLE_EQ(192.0, p->fromFadeEndSec);
+    EXPECT_NEAR(ns.beatTime(64) - 16.0, p->toStartSec, 1e-9);
+    // No intro: starts at the first sound.
+    const auto q = phrasealign::planUnmatched(k120, ns, 0.0, 200.0, 0.28, 8, -1.0);
+    ASSERT_TRUE(q.has_value());
+    EXPECT_DOUBLE_EQ(0.28, q->toStartSec);
+    // Short intro: never before the first sound.
+    const auto r = phrasealign::planUnmatched(k120, ns, 0.0, 200.0, 0.28, 8, 6.0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_DOUBLE_EQ(0.28, r->toStartSec);
+}

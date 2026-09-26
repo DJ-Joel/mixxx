@@ -271,6 +271,10 @@ AutoDJProcessor::AutoDJProcessor(
             this,
             &AutoDJProcessor::controlAddRandomTrack);
     connect(&m_fadeNow, &ControlObject::valueChanged, this, &AutoDJProcessor::controlFadeNow);
+    m_glideTicker.setInterval(100);
+    connect(&m_glideTicker, &QTimer::timeout, this, [this]() {
+        updateGlide(m_glide.pDeck);
+    });
     m_enabledAutoDJ.setButtonMode(mixxx::control::ButtonMode::Toggle);
     m_enabledAutoDJ.connectValueChangeRequest(this,
             &AutoDJProcessor::controlEnableChangeRequest);
@@ -517,9 +521,7 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
                 m_smart.toQuantize);
         if (completed) {
             // Ease the new track back to its own tempo, too slowly to hear.
-            m_glide.pDeck = m_smart.pTo;
-            m_glide.startRatio = m_smart.toRatio;
-            m_glide.timer.start();
+            startGlide(m_smart.pTo, m_smart.toRatio);
         }
     }
     if (completed) {
@@ -529,15 +531,46 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
     m_smart = SmartTransition();
 }
 
+void AutoDJProcessor::startGlide(DeckAttributes* pDeck, double startRatio) {
+    m_glide.pDeck = pDeck;
+    m_glide.startRatio = startRatio;
+    m_glide.lastWritten = startRatio;
+    const TrackPointer pTrack = pDeck ? pDeck->getLoadedTrack() : TrackPointer();
+    m_glide.trackId = pTrack ? pTrack->getId() : TrackId();
+    m_glide.timer.start();
+    m_glideTicker.start();
+}
+
 void AutoDJProcessor::updateGlide(DeckAttributes* pDeck) {
     if (!pDeck || pDeck != m_glide.pDeck) {
+        if (!m_glide.pDeck) {
+            m_glideTicker.stop();
+        }
+        return;
+    }
+    const TrackPointer pTrack = pDeck->getLoadedTrack();
+    if (!pTrack || pTrack->getId() != m_glide.trackId) {
+        // Another track was loaded: it keeps its own tempo.
+        m_glide.pDeck = nullptr;
+        m_glideTicker.stop();
+        return;
+    }
+    const ConfigKey rateKey(pDeck->group, QStringLiteral("rate_ratio"));
+    const double now = readControl(rateKey);
+    if (!std::isnan(now) && std::fabs(now - m_glide.lastWritten) > 0.001) {
+        // The DJ moved the tempo: their deck now, stop gliding.
+        kLogger.info() << "Tempo glide on" << pDeck->group << "stopped: tempo changed by hand";
+        m_glide.pDeck = nullptr;
+        m_glideTicker.stop();
         return;
     }
     const double ratio = beatmatch::glideRatio(
             m_glide.startRatio, m_glide.timer.elapsed() / 1000.0);
-    writeControl(ConfigKey(pDeck->group, QStringLiteral("rate_ratio")), ratio);
+    writeControl(rateKey, ratio);
+    m_glide.lastWritten = ratio;
     if (ratio == 1.0) {
         m_glide.pDeck = nullptr;
+        m_glideTicker.stop();
         resetDeckTempo(pDeck); // back at its own tempo: restore key lock
     }
 }
@@ -581,15 +614,13 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
         logOnce(QStringLiteral(" nogrid"), QStringLiteral("skipped, a track has no beat grid"));
         return;
     }
-    // Only when the mix will really be beatmatched (the 5% rule).
+    // Beatmatched only within the 5% rule. Otherwise the outgoing side is
+    // still placed on its phrases and the incoming intro is still skipped,
+    // but the new beat comes in as the fade ends (no clashing beats).
     const double fromRatio = pFromDeck->rateRatio();
-    if (!beatmatch::matchRatio(fromBpm * fromRatio, toBpm, kBeatmatchTolerancePct)) {
-        logOnce(QStringLiteral(" tempo"),
-                QStringLiteral("skipped, tempo too far apart (%1 vs %2 BPM)")
-                        .arg(fromBpm * fromRatio)
-                        .arg(toBpm));
-        return;
-    }
+    const bool matched =
+            beatmatch::matchRatio(fromBpm * fromRatio, toBpm, kBeatmatchTolerancePct)
+                    .has_value();
     // Seconds here are real time at each deck's current speed, the same
     // convention as the rest of calculateTransition.
     phrasealign::Grid from;
@@ -667,14 +698,23 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     const double toEarliestSec = toBodyStartSec >= 0.0
             ? std::max(0.0, getIntroStartSecond(pToDeck))
             : pToDeck->startPos;
-    const auto plan = phrasealign::plan(from,
-            to,
-            fromDeckPositionSec,
-            fromLimitSec, // the fade must be over by here
-            toEarliestSec,
-            bars,
-            toBodyStartSec,
-            toBodyMarked);
+    const auto plan = matched
+            ? phrasealign::plan(from,
+                      to,
+                      fromDeckPositionSec,
+                      fromLimitSec, // the fade must be over by here
+                      toEarliestSec,
+                      bars,
+                      toBodyStartSec,
+                      true) // body start is precise (analysis v5)
+            : phrasealign::planUnmatched(from,
+                      to,
+                      fromDeckPositionSec,
+                      fromLimitSec,
+                      toEarliestSec,
+                      bars,
+                      toBodyStartSec,
+                      true); // body start is precise (analysis v5)
     if (!plan) {
         logOnce(QStringLiteral(" none"),
                 QStringLiteral("no phrase fits before %1 s (now at %2 s), keeping the plain timing")
@@ -689,6 +729,11 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                     .arg(plan->toStartSec * pToDeck->rateRatio(), 0, 'f', 1),
             QStringLiteral("%1 bars, fade %2 -> %3 s (limit %4 s), incoming starts at "
                            "%5 s (beat at %6 s, %7)")
+                    .prepend(matched ? QString()
+                                     : QStringLiteral("NOT beatmatched (%1 vs %2 BPM), "
+                                                      "new beat at the END of the fade: ")
+                                               .arg(fromBpm * fromRatio, 0, 'f', 1)
+                                               .arg(toBpm, 0, 'f', 1))
                     .arg(bars)
                     .arg(plan->fromFadeBeginSec)
                     .arg(plan->fromFadeEndSec)
@@ -712,6 +757,32 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
             pToDeck->setPlayPosition(plan->toStartSec / toDuration);
         }
     }
+}
+
+double AutoDJProcessor::skipToMix() {
+    // Land this long before the mix, so the end of the track is heard first.
+    constexpr double kLeadSec = 10.0;
+    if (m_eState != ADJ_IDLE) {
+        return 0.0;
+    }
+    DeckAttributes* pFromDeck = getFromDeck();
+    if (!pFromDeck || !pFromDeck->isPlaying()) {
+        return 0.0;
+    }
+    const double duration = getEndSecond(pFromDeck);
+    if (!(duration > 0.0)) {
+        return 0.0;
+    }
+    // fadeBeginPos is a fraction of the track here (see calculateTransition).
+    const double nowSec = pFromDeck->playPosition() * duration;
+    const double targetSec = pFromDeck->fadeBeginPos * duration - kLeadSec;
+    if (targetSec <= nowSec) {
+        return 0.0;
+    }
+    kLogger.info() << "Skip to mix:" << pFromDeck->group << "jumps from" << nowSec
+                   << "s to" << targetSec << "s";
+    pFromDeck->setPlayPosition(targetSec / duration);
+    return targetSec - nowSec;
 }
 
 void AutoDJProcessor::resetDeckTempo(DeckAttributes* pDeck) {
@@ -1199,7 +1270,8 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::toggleAutoDJ(bool enable) {
         emitAutoDJStateChanged(m_eState);
     } else { // Disable Auto DJ
         endSmartTransition(false);
-        m_glide.pDeck = nullptr; // leave the tempo where it is
+        // A glide in progress carries on (m_glideTicker): the last track of
+        // the queue still eases back to its own tempo after Auto DJ stops.
         m_enabledAutoDJ.setAndConfirm(0.0);
         qDebug() << "Auto DJ disabled";
         m_eState = ADJ_DISABLED;
@@ -1308,8 +1380,6 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
         // nothing to do
         return;
     }
-
-    updateGlide(pAttributes);
 
     DeckAttributes* thisDeck = pAttributes;
     DeckAttributes* otherDeck = getOtherDeck(thisDeck);

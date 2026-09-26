@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QHash>
 #include <QObject>
 #include <QString>
@@ -226,6 +227,13 @@ class AutoDJProcessor : public QObject {
     bool isBeatmatchEnabled() const;
     void setBeatmatchEnabled(bool enabled);
 
+    /// For testing mixes quickly: jumps the playing track to a few seconds
+    /// before its planned mix, so the mix itself still happens exactly as
+    /// planned (unlike seeking into or past it). Returns the seconds skipped,
+    /// or 0 if there was nothing to skip (Auto DJ off, already mixing, or
+    /// already close to the mix).
+    double skipToMix();
+
     /// Adds the suggested bridge tracks into the gaps they bridge.
     /// Returns how many were added (0 if the queue changed meanwhile).
     int insertPendingBridges();
@@ -383,9 +391,15 @@ class AutoDJProcessor : public QObject {
     struct Glide {
         DeckAttributes* pDeck = nullptr;
         double startRatio = 1.0;
+        double lastWritten = 1.0; // to notice the DJ moving the tempo
+        TrackId trackId;          // to notice a new track on the deck
         QElapsedTimer timer;
     };
     Glide m_glide;
+    // Drives the glide on its own, so it also finishes after Auto DJ has
+    // switched itself off (the last track of the queue).
+    QTimer m_glideTicker;
+    void startGlide(DeckAttributes* pDeck, double startRatio);
     // Decks whose tempo/key lock we changed, with the key lock to restore.
     // A deck is reset to its own tempo once its track has faded out, so the
     // next track loaded there does not inherit a leftover tempo.

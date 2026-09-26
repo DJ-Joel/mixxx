@@ -141,6 +141,19 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
                 showBeatmatchState(checked);
             });
 
+    // Auto DJ 2.0: skip most of the playing track to hear the next mix now.
+    pushButtonSkipToMix->setText(tr("Skip to Mix"));
+    pushButtonSkipToMix->setToolTip(tr(
+            "Jump the playing track to 10 seconds before the next mix,\n"
+            "so you can hear the mix without waiting. The mix itself is\n"
+            "not changed (unlike seeking past its start or Fade Now)."));
+    connect(pushButtonSkipToMix,
+            &QPushButton::clicked,
+            this,
+            [this]() {
+                m_pAutoDJProcessor->skipToMix();
+            });
+
     // Auto DJ 2.0 energy rating: the DJ's own 1..10 score for the selected
     // tracks. It always wins over the measured energy.
     pushButtonEnergy->setText(tr("Energy"));

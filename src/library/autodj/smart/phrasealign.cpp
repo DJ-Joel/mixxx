@@ -101,4 +101,35 @@ std::optional<Plan> plan(const Grid& from,
     return p;
 }
 
+std::optional<Plan> planUnmatched(const Grid& from,
+        const Grid& to,
+        double fromNowSec,
+        double fromLimitSec,
+        double toEarliestSec,
+        int bars,
+        double toBodyStartSec,
+        bool toBodyMarked) {
+    // The outgoing side is the same as a beatmatched mix: a whole number of
+    // phrases, over before its energy drops. Only the incoming side differs.
+    const auto outgoing = plan(from, from, fromNowSec, fromLimitSec, 0.0, bars);
+    if (!outgoing) {
+        return std::nullopt;
+    }
+    const double lateSec = std::max(0.0, fromNowSec - outgoing->fromFadeBeginSec);
+    const double fadeSec = outgoing->fromFadeEndSec - outgoing->fromFadeBeginSec;
+    double toStart = toEarliestSec;
+    if (toBodyStartSec >= 0.0) {
+        const double entrySec = to.isValid()
+                ? to.beatTime(entryBeat(to, toBodyStartSec, toBodyMarked))
+                : toBodyStartSec;
+        // The tempos differ, so the two beats must not play together: the
+        // new beat kicks in as the fade ENDS. During the fade the outgoing
+        // beat carries on under the end of the incoming intro.
+        toStart = std::max(toEarliestSec, entrySec - fadeSec);
+    }
+    Plan p = *outgoing;
+    p.toStartSec = toStart + lateSec;
+    return p;
+}
+
 } // namespace phrasealign

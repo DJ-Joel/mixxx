@@ -159,3 +159,27 @@ TEST(EnergyCalculatorTest, WholeTrackIsBodyWhenLevelIsSteady) {
     EXPECT_NEAR(0.0, r.bodyStartSec, 1e-9);
     EXPECT_NEAR(40.0, r.bodyEndSec, 1.0);
 }
+
+TEST(EnergyCalculatorTest, FindsTheDrumsAfterALoudIntroWithoutBass) {
+    // 20.3 s of loud synth noise with no bass (as loud as the rest), then
+    // the same noise plus a bass kick every 0.5 s. Loudness alone would say
+    // the body starts at 0; the bass says 20.3 s (the first kick).
+    std::mt19937 rng(8);
+    std::uniform_real_distribution<double> noise(-1.0, 1.0);
+    double hp = 0.0;
+    const auto audio = stereo(80, [&](double t) {
+        // crude high-pass: noise minus its smoothed version
+        const double n = noise(rng);
+        hp += 0.05 * (n - hp);
+        const double synth = 0.25 * (n - hp);
+        if (t < 20.3) {
+            return synth;
+        }
+        const double sinceHit = std::fmod(t - 20.3, 0.5);
+        const double hit = sinceHit < 0.08 ? std::exp(-sinceHit * 30.0) : 0.0;
+        return synth + 0.6 * hit * std::sin(2 * kPi * 55 * t);
+    });
+    EnergyCalculator::Result r;
+    ASSERT_TRUE(analyse(audio, &r));
+    EXPECT_NEAR(20.3, r.bodyStartSec, 0.1) << r.bodyStartSec;
+}

@@ -83,4 +83,19 @@ std::optional<Plan> plan(const Grid& from,
         double toBodyStartSec = -1.0,
         bool toBodyMarked = false);
 
+/// Like plan(), for a mix that is NOT beatmatched (tempos too far apart).
+/// The outgoing fade is placed on its phrases the same way, but the
+/// incoming beat kicks in as the fade ends instead of at its middle, so the
+/// two different tempos never play their beats together. Its intro plays
+/// under the end of the outgoing track. `to` may have no grid (then the
+/// body start is used as it is).
+std::optional<Plan> planUnmatched(const Grid& from,
+        const Grid& to,
+        double fromNowSec,
+        double fromLimitSec,
+        double toEarliestSec,
+        int bars,
+        double toBodyStartSec = -1.0,
+        bool toBodyMarked = false);
+
 } // namespace phrasealign
