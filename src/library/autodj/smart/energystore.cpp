@@ -23,6 +23,21 @@ bool EnergyStore::ensureTable(const QSqlDatabase& db) {
         LOG_FAILED_QUERY(query);
         return false;
     }
+    // Columns added in analysis v2. Older tables get them added once.
+    QSet<QString> columns;
+    if (query.exec(QStringLiteral("PRAGMA table_info(autodj_energy)"))) {
+        while (query.next()) {
+            columns.insert(query.value(1).toString());
+        }
+    }
+    for (const QString& column : {QStringLiteral("body_start_sec"), QStringLiteral("body_end_sec")}) {
+        if (!columns.contains(column) &&
+                !query.exec(QStringLiteral("ALTER TABLE autodj_energy ADD COLUMN %1 REAL")
+                                    .arg(column))) {
+            LOG_FAILED_QUERY(query);
+            return false;
+        }
+    }
     if (!query.exec(QStringLiteral(
                 "CREATE TABLE IF NOT EXISTS autodj_energy_manual ("
                 "track_id INTEGER PRIMARY KEY, "
@@ -88,8 +103,10 @@ bool EnergyStore::save(const QSqlDatabase& db,
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
             "INSERT OR REPLACE INTO autodj_energy "
-            "(track_id, energy, loudness_db, bright_ratio, onsets_per_sec, bass_ratio, version) "
-            "VALUES (:id, :energy, :loudness, :bright, :onsets, :bass, :version)"));
+            "(track_id, energy, loudness_db, bright_ratio, onsets_per_sec, bass_ratio, version, "
+            "body_start_sec, body_end_sec) "
+            "VALUES (:id, :energy, :loudness, :bright, :onsets, :bass, :version, "
+            ":body_start, :body_end)"));
     query.bindValue(QStringLiteral(":id"), trackId.toVariant());
     query.bindValue(QStringLiteral(":energy"), result.energy);
     query.bindValue(QStringLiteral(":loudness"), result.loudnessDb);
@@ -97,11 +114,40 @@ bool EnergyStore::save(const QSqlDatabase& db,
     query.bindValue(QStringLiteral(":onsets"), result.onsetsPerSec);
     query.bindValue(QStringLiteral(":bass"), result.bassRatio);
     query.bindValue(QStringLiteral(":version"), version);
+    query.bindValue(QStringLiteral(":body_start"), result.bodyStartSec);
+    query.bindValue(QStringLiteral(":body_end"), result.bodyEndSec);
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return false;
     }
     return true;
+}
+
+// static
+std::optional<EnergyStore::Body> EnergyStore::loadBody(const QSqlDatabase& db, TrackId trackId) {
+    if (!ensureTable(db)) {
+        return std::nullopt;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "SELECT body_start_sec, body_end_sec FROM autodj_energy "
+            "WHERE track_id=:id AND body_start_sec IS NOT NULL "
+            "AND body_end_sec IS NOT NULL"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return std::nullopt;
+    }
+    if (!query.next()) {
+        return std::nullopt;
+    }
+    Body body;
+    body.startSec = query.value(0).toDouble();
+    body.endSec = query.value(1).toDouble();
+    if (body.endSec <= body.startSec) {
+        return std::nullopt;
+    }
+    return body;
 }
 
 // static

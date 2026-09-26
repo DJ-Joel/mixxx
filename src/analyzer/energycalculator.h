@@ -19,7 +19,9 @@
 class EnergyCalculator {
   public:
     /// Bump when the formula changes, so tracks get re-analysed.
-    static constexpr int kVersion = 1;
+    /// v2: adds bodyStartSec / bodyEndSec.
+    /// v3: body end uses the stricter kBodyEndDropDb.
+    static constexpr int kVersion = 3;
 
     struct Result {
         double energy = 0.0;       ///< 1..10
@@ -30,7 +32,21 @@ class EnergyCalculator {
         double brightRatio = 0.0;  ///< raw: high-band / full-band energy
         double onsetsPerSec = 0.0; ///< raw: onsets per second of sound
         double bassRatio = 0.0;    ///< raw: low-band / full-band energy (kept for tuning)
+        /// The "body" of the track: from where it first gets going (the beat
+        /// kicks in after a quiet intro) to where it starts to fade out.
+        /// Seconds from the start of the track. Found by loudness: the body
+        /// starts where the level first gets within kBodyStartDropDb of the
+        /// track's p90, and ends where it last stays within kBodyEndDropDb.
+        double bodyStartSec = 0.0;
+        double bodyEndSec = 0.0;
     };
+
+    /// How far below the track's usual loud level still counts as "body".
+    /// Start: generous, so a slightly quieter first verse still counts.
+    /// End: strict, so a mix is over before the track's own fade-out has
+    /// taken the energy away (the dancers must never lose the beat).
+    static constexpr double kBodyStartDropDb = 6.0;
+    static constexpr double kBodyEndDropDb = 3.0;
 
     EnergyCalculator(double sampleRate, int channelCount);
 

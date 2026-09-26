@@ -545,13 +545,32 @@ void AutoDJProcessor::updateGlide(DeckAttributes* pDeck) {
 void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
         DeckAttributes* pToDeck,
         double fromDeckPositionSec) {
-    if (!isBeatmatchEnabled() || pToDeck->startPos < 0.0 ||
-            pFromDeck->fadeEndPos <= pFromDeck->fadeBeginPos) {
-        return; // off, or a special case (jump cut / keep position)
-    }
     const TrackPointer pFromTrack = pFromDeck->getLoadedTrack();
     const TrackPointer pToTrack = pToDeck->getLoadedTrack();
-    if (!pFromTrack || !pToTrack) {
+    if (!isBeatmatchEnabled() || !pFromTrack || !pToTrack) {
+        return;
+    }
+    // calculateTransition runs on every cueing seek (while paused, for both
+    // directions in turn): log each result once per pair of tracks.
+    static QHash<QString, QString> s_lastLog;
+    const QString pair = pFromTrack->getId().toString() + QChar('>') +
+            pToTrack->getId().toString();
+    const auto logOnce = [&](const QString& key, const QString& text) {
+        if (s_lastLog.value(pair) != key) {
+            s_lastLog.insert(pair, key);
+            kLogger.info() << "Phrase align:" << pair << text;
+        }
+    };
+    // A start just below 0 s is not "keep position": the intro start marker
+    // can snap to a beat slightly before the track begins.
+    if (pToDeck->startPos == kKeepPosition || m_transitionTime < 0.0 ||
+            pFromDeck->fadeEndPos <= pFromDeck->fadeBeginPos) {
+        // a special case (jump cut / keep position / pause between tracks)
+        logOnce(QStringLiteral(" special"),
+                QStringLiteral("skipped, special timing (start %1, fade %2 -> %3)")
+                        .arg(pToDeck->startPos)
+                        .arg(pFromDeck->fadeBeginPos)
+                        .arg(pFromDeck->fadeEndPos));
         return;
     }
     const mixxx::BeatsPointer pFromBeats = pFromTrack->getBeats();
@@ -559,11 +578,16 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     const double fromBpm = pFromTrack->getBpm();
     const double toBpm = pToTrack->getBpm();
     if (!pFromBeats || !pToBeats || !(fromBpm > 0.0) || !(toBpm > 0.0)) {
+        logOnce(QStringLiteral(" nogrid"), QStringLiteral("skipped, a track has no beat grid"));
         return;
     }
     // Only when the mix will really be beatmatched (the 5% rule).
     const double fromRatio = pFromDeck->rateRatio();
     if (!beatmatch::matchRatio(fromBpm * fromRatio, toBpm, kBeatmatchTolerancePct)) {
+        logOnce(QStringLiteral(" tempo"),
+                QStringLiteral("skipped, tempo too far apart (%1 vs %2 BPM)")
+                        .arg(fromBpm * fromRatio)
+                        .arg(toBpm));
         return;
     }
     // Seconds here are real time at each deck's current speed, the same
@@ -577,21 +601,83 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
 
     // Keep the length the transition mode chose (intro/outro or the
     // seconds setting), rounded to whole 8-bar phrases.
-    const double wantedSec = pFromDeck->fadeEndPos - pFromDeck->fadeBeginPos;
+    double wantedSec = pFromDeck->fadeEndPos - pFromDeck->fadeBeginPos;
+
+    // The DJ can teach where the main beat kicks in by setting the incoming
+    // track's Intro End marker. That beats the measured guess. It also makes
+    // the Intro/Outro mode use the whole intro as the fade length, so use
+    // the seconds setting for the length instead.
+    double toMarkedBeatSec = -1.0;
+    const mixxx::audio::FramePos introEnd = pToDeck->introEndPosition();
+    if (introEnd.isValid() && introEnd <= pToDeck->trackEndPosition()) {
+        toMarkedBeatSec = framePositionToSeconds(introEnd, pToDeck);
+        if (m_transitionTime > 0.0) {
+            wantedSec = m_transitionTime;
+        }
+    }
     const int bars = phrasealign::barsForSeconds(wantedSec, from.beatSec);
+
+    // Where each track's "body" is (from the energy analysis): the fade must
+    // be over before the outgoing track starts fading out on its own, and a
+    // long quiet intro on the incoming track is partly skipped so its beat
+    // kicks in as the fade ends.
+    // Not fadeEndPos: after the first run that is our own earlier plan, and
+    // a tiny tempo change (a glide) then made no phrase fit any more.
+    double fromLimitSec = getOutroEndSecond(pFromDeck);
+    double toBodyStartSec = -1.0;
+    if (m_pTrackCollectionManager && m_pTrackCollectionManager->internalCollection()) {
+        const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
+        if (const auto fromBody = EnergyStore::loadBody(db, pFromTrack->getId())) {
+            fromLimitSec = std::min(fromLimitSec, fromBody->endSec / fromRatio);
+        }
+        if (const auto toBody = EnergyStore::loadBody(db, pToTrack->getId())) {
+            toBodyStartSec = toBody->startSec / pToDeck->rateRatio();
+        }
+    }
+    const bool toBodyMarked = toMarkedBeatSec >= 0.0;
+    if (toBodyMarked) {
+        toBodyStartSec = toMarkedBeatSec;
+    }
+    // The incoming track starts no earlier than this. When we know where
+    // its beat kicks in, use its intro start (first sound): the deck's cue
+    // position is our own earlier plan (this function runs again after every
+    // cueing seek), and re-using it pushed the start a whole phrase later
+    // each time, until the beat came in at the START of the fade instead of
+    // at its middle. Without a known beat, keep the cue position so a
+    // manual cue by the DJ is respected.
+    const double toEarliestSec = toBodyStartSec >= 0.0
+            ? std::max(0.0, getIntroStartSecond(pToDeck))
+            : pToDeck->startPos;
     const auto plan = phrasealign::plan(from,
             to,
             fromDeckPositionSec,
-            pFromDeck->fadeEndPos, // the fade must be over by here
-            pToDeck->startPos,     // the incoming track starts no earlier
-            bars);
+            fromLimitSec, // the fade must be over by here
+            toEarliestSec,
+            bars,
+            toBodyStartSec,
+            toBodyMarked);
     if (!plan) {
-        kLogger.info() << "Phrase align: no phrase fits, keeping the plain timing";
+        logOnce(QStringLiteral(" none"),
+                QStringLiteral("no phrase fits before %1 s (now at %2 s), keeping the plain timing")
+                        .arg(fromLimitSec)
+                        .arg(fromDeckPositionSec));
         return;
     }
-    kLogger.info() << "Phrase align:" << bars << "bars, fade" << plan->fromFadeBeginSec
-                   << "->" << plan->fromFadeEndSec << "s, incoming starts at"
-                   << plan->toStartSec << "s";
+    // Key on track time (not real time), so the outgoing track easing back
+    // to its own tempo does not log a new line many times a second.
+    logOnce(QStringLiteral(" %1 %2")
+                    .arg(plan->fromFadeBeginSec * fromRatio, 0, 'f', 1)
+                    .arg(plan->toStartSec * pToDeck->rateRatio(), 0, 'f', 1),
+            QStringLiteral("%1 bars, fade %2 -> %3 s (limit %4 s), incoming starts at "
+                           "%5 s (beat at %6 s, %7)")
+                    .arg(bars)
+                    .arg(plan->fromFadeBeginSec)
+                    .arg(plan->fromFadeEndSec)
+                    .arg(fromLimitSec)
+                    .arg(plan->toStartSec)
+                    .arg(toBodyStartSec)
+                    .arg(toBodyMarked ? QStringLiteral("Intro End marker")
+                                      : QStringLiteral("measured")));
     pFromDeck->fadeBeginPos = plan->fromFadeBeginSec;
     pFromDeck->fadeEndPos = plan->fromFadeEndSec;
     pToDeck->startPos = plan->toStartSec;

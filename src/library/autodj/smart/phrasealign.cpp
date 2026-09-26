@@ -24,7 +24,9 @@ std::optional<Plan> plan(const Grid& from,
         double fromNowSec,
         double fromLimitSec,
         double toEarliestSec,
-        int bars) {
+        int bars,
+        double toBodyStartSec,
+        bool toBodyMarked) {
     if (!from.isValid() || !to.isValid() || bars <= 0) {
         return std::nullopt;
     }
@@ -50,6 +52,32 @@ std::optional<Plan> plan(const Grid& from,
     double toPhraseBeat = std::ceil(
             ((toEarliestSec - to.firstBeatSec) / to.beatSec - 1.0) / kBeatsPerPhrase);
     toPhraseBeat = std::max(0.0, toPhraseBeat) * kBeatsPerPhrase;
+
+    if (toBodyStartSec >= 0.0) {
+        // Where the beat kicks in, snapped to the grid. Body start is
+        // measured in 1 s steps (about 1 s early to 2 s late), so a phrase
+        // start that close is taken as the real entry; otherwise the
+        // nearest bar line.
+        constexpr double kEarlySec = 1.0;
+        constexpr double kLateSec = 2.0;
+        const double bodyBeat = (toBodyStartSec - to.firstBeatSec) / to.beatSec;
+        const double nearestPhrase =
+                std::max(0.0, std::round(bodyBeat / kBeatsPerPhrase) * kBeatsPerPhrase);
+        const double phraseTime = to.beatTime(nearestPhrase);
+        double entryBeat;
+        if (toBodyMarked) {
+            // The DJ marked it by ear: trust it, just land on a beat.
+            entryBeat = std::max(0.0, std::round(bodyBeat));
+        } else if (phraseTime >= toBodyStartSec - kLateSec &&
+                phraseTime <= toBodyStartSec + kEarlySec) {
+            entryBeat = nearestPhrase;
+        } else {
+            entryBeat = std::max(0.0, std::round(bodyBeat / kBeatsPerBar) * kBeatsPerBar);
+        }
+        // Start half a fade before it, so the beat kicks in at the bass swap.
+        // Never earlier than the intro start found above.
+        toPhraseBeat = std::max(toPhraseBeat, entryBeat - fadeBeats / 2.0);
+    }
 
     Plan p;
     p.fromFadeBeginSec = fadeBegin;

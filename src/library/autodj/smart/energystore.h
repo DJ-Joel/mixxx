@@ -37,6 +37,14 @@ class EnergyStore {
             const EnergyCalculator::Result& result,
             int version);
 
+    /// Where the track's body starts and ends (seconds at its own speed),
+    /// from analysis v2+. nullopt if not analysed yet.
+    struct Body {
+        double startSec = 0.0;
+        double endSec = 0.0;
+    };
+    static std::optional<Body> loadBody(const QSqlDatabase& db, TrackId trackId);
+
     /// Sets the DJ's rating (1..10) for the tracks. rating 0 clears it, so
     /// the measured value is used again.
     static bool setManualRating(

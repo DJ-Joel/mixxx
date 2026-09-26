@@ -8,6 +8,8 @@ namespace {
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kBlockSeconds = 0.02; // 20 ms analysis blocks
 constexpr int kBlocksPerWindow = 50;   // 1 s loudness windows
+constexpr double kWindowSeconds = kBlockSeconds * kBlocksPerWindow;
+constexpr int kBodySpanWindows = 4;    // "sustained" = 4 s
 constexpr double kLowCutoffHz = 150.0;
 constexpr double kHighCutoffHz = 2500.0;
 constexpr double kSilenceDb = -60.0;
@@ -114,13 +116,15 @@ bool EnergyCalculator::finish(Result* pResult) const {
     }
 
     // Loudness: 90th percentile of 1 s window levels (ignoring silence).
-    std::vector<double> windowDb;
+    std::vector<double> timeline; // every 1 s window in time order
+    std::vector<double> windowDb; // only the non-silent ones
     for (int start = 0; start + kBlocksPerWindow <= blockCount; start += kBlocksPerWindow) {
         double sumPower = 0.0;
         for (int b = start; b < start + kBlocksPerWindow; ++b) {
             sumPower += std::pow(10.0, m_blockDb[b] / 10.0);
         }
         const double db = powerToDb(sumPower / kBlocksPerWindow);
+        timeline.push_back(db);
         if (db > kSilenceDb) {
             windowDb.push_back(db);
         }
@@ -152,8 +156,41 @@ bool EnergyCalculator::finish(Result* pResult) const {
     }
     const double onsetsPerSec = onsets / soundSeconds;
 
+    // Body: the first/last 4-second stretch whose average level is close
+    // enough to the loud level (see kBodyStartDropDb / kBodyEndDropDb). A short dip (a breakdown) inside the
+    // track does not matter; only the ends are looked for.
+    const double bodyStartThresholdDb = loudnessDb - kBodyStartDropDb;
+    const double bodyEndThresholdDb = loudnessDb - kBodyEndDropDb;
+    const int span = kBodySpanWindows;
+    const int windows = static_cast<int>(timeline.size());
+    const auto spanMeanDb = [&timeline](int first, int count) {
+        double sum = 0.0;
+        for (int w = first; w < first + count; ++w) {
+            sum += timeline[w];
+        }
+        return sum / count;
+    };
+    double bodyStart = 0.0;
+    double bodyEnd = windows * kWindowSeconds;
+    if (windows >= span) {
+        for (int w = 0; w + span <= windows; ++w) {
+            if (spanMeanDb(w, span) >= bodyStartThresholdDb) {
+                bodyStart = w * kWindowSeconds;
+                break;
+            }
+        }
+        for (int w = windows - span; w >= 0; --w) {
+            if (spanMeanDb(w, span) >= bodyEndThresholdDb) {
+                bodyEnd = (w + span) * kWindowSeconds;
+                break;
+            }
+        }
+    }
+
     Result r;
     r.loudnessDb = loudnessDb;
+    r.bodyStartSec = bodyStart;
+    r.bodyEndSec = std::max(bodyEnd, bodyStart);
     r.brightRatio = m_totalHigh / m_totalFull;
     r.bassRatio = m_totalLow / m_totalFull;
     r.onsetsPerSec = onsetsPerSec;

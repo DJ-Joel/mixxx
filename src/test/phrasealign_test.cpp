@@ -68,3 +68,77 @@ TEST(PhraseAlignTest, BassSwapLandsOnABarLine) {
     const double bars = middle / (4 * 0.5);
     EXPECT_DOUBLE_EQ(bars, std::round(bars));
 }
+
+TEST(PhraseAlignTest, IncomingBeatKicksInAtTheBassSwap) {
+    // Incoming beat kicks in at 64 s (4 phrases in); fade is 8 bars = 16 s.
+    // Start at 56 s so the beat arrives at the middle of the fade (8 s in),
+    // exactly when the bass swaps. The long intro before 56 s is skipped.
+    const auto p = phrasealign::plan(k120, k120, 0.0, 200.0, 0.0, 8, 64.0);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(56.0, p->toStartSec);
+    const double half = (p->fromFadeEndSec - p->fromFadeBeginSec) / 2.0;
+    EXPECT_DOUBLE_EQ(64.0, p->toStartSec + half);
+    // Body measured a little late (65.2 s): still the 64 s phrase.
+    const auto p2 = phrasealign::plan(k120, k120, 0.0, 200.0, 0.0, 8, 65.2);
+    ASSERT_TRUE(p2.has_value());
+    EXPECT_DOUBLE_EQ(56.0, p2->toStartSec);
+}
+
+TEST(PhraseAlignTest, ShortIntroStartsAtTheBeginning) {
+    // Beat kicks in at 6 s, before the swap point: start at the first beat.
+    const auto p = phrasealign::plan(k120, k120, 0.0, 200.0, 0.0, 8, 6.0);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(0.0, p->toStartSec);
+}
+
+TEST(PhraseAlignTest, BeatOnABarThatIsNotAPhraseStart) {
+    // Beat kicks in at 26 s = bar 14 (not a phrase start): the entry snaps
+    // to that bar, and the track starts 4 bars (8 s) earlier, at 18 s.
+    const auto p = phrasealign::plan(k120, k120, 0.0, 200.0, 0.0, 8, 26.4);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(18.0, p->toStartSec);
+}
+
+TEST(PhraseAlignTest, FadeEndsBeforeTheOutgoingFadeOut) {
+    // The caller passes min(outro end, body end) as the limit: a song whose
+    // own fade-out starts at 180 s must be mixed out before then.
+    const auto p = phrasealign::plan(k120, k120, 0.0, 180.0, 0.0, 8);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_LE(p->fromFadeEndSec, 180.0);
+    EXPECT_DOUBLE_EQ(160.0, p->fromFadeBeginSec);
+}
+
+TEST(PhraseAlignTest, NothingStaysBeatLandsInTheMiddle) {
+    // Real track: 111.68 BPM, first beat 0.272 s, beat kicks in at 34.66 s
+    // (measured body start 34 s). With the intro start (0.28 s) as the
+    // earliest start, the track starts 4 bars (16 beats) before the beat,
+    // so the beat lands at the middle of an 8-bar fade.
+    phrasealign::Grid ns;
+    ns.firstBeatSec = 0.272;
+    ns.beatSec = 60.0 / 111.68;
+    const auto p = phrasealign::plan(k120, ns, 0.0, 250.0, 0.28, 8, 34.0);
+    ASSERT_TRUE(p.has_value());
+    const double beatAt = ns.beatTime(64);
+    EXPECT_NEAR(34.66, beatAt, 0.01);
+    EXPECT_NEAR(beatAt - 16 * ns.beatSec, p->toStartSec, 1e-9);
+    // Planning again from the same intro start gives the same answer.
+    const auto again = phrasealign::plan(k120, ns, 0.0, 250.0, 0.28, 8, 34.0);
+    ASSERT_TRUE(again.has_value());
+    EXPECT_DOUBLE_EQ(p->toStartSec, again->toStartSec);
+}
+
+TEST(PhraseAlignTest, MarkedBeatIsTrustedToTheBeat) {
+    // Lack of Sense: 120.39 BPM, first beat 0.394 s. Measured body start
+    // 15.0 s would snap to the bar at beat 28 (14.35 s). The DJ marked the
+    // beat at 15.71 s: that is beat 30.7, so the nearest beat, 31 (15.84 s),
+    // lands at the middle of the fade and the start is 16 beats earlier.
+    phrasealign::Grid ls;
+    ls.firstBeatSec = 0.394;
+    ls.beatSec = 60.0 / 120.387;
+    const auto measured = phrasealign::plan(k120, ls, 0.0, 250.0, 0.39, 8, 15.0);
+    ASSERT_TRUE(measured.has_value());
+    EXPECT_NEAR(ls.beatTime(28 - 16), measured->toStartSec, 1e-9);
+    const auto marked = phrasealign::plan(k120, ls, 0.0, 250.0, 0.39, 8, 15.71, true);
+    ASSERT_TRUE(marked.has_value());
+    EXPECT_NEAR(ls.beatTime(31 - 16), marked->toStartSec, 1e-9);
+}

@@ -125,3 +125,37 @@ TEST(EnergyCalculatorTest, MonoAndStereoAgree) {
     ASSERT_TRUE(analyse(both, &rStereo, 2));
     EXPECT_NEAR(rMono.energy, rStereo.energy, 1e-6);
 }
+
+TEST(EnergyCalculatorTest, FindsTheBodyBetweenQuietIntroAndFadeOut) {
+    // 16 s quiet pad intro, 60 s loud and busy, then a 20 s fade-out.
+    std::mt19937 rng(6);
+    std::uniform_real_distribution<double> noise(-1.0, 1.0);
+    const auto audio = stereo(96, [&](double t) {
+        if (t < 16.0) {
+            return 0.02 * std::sin(2 * kPi * 220 * t); // pad, no drums
+        }
+        const double sinceHit = std::fmod(t, 0.5);
+        const double hit = sinceHit < 0.03 ? std::exp(-sinceHit * 80.0) : 0.0;
+        double level = 1.0;
+        if (t > 76.0) {
+            level = std::max(0.0, 1.0 - (t - 76.0) / 20.0); // linear fade-out
+        }
+        return level * (0.15 * noise(rng) + 0.7 * hit * std::sin(2 * kPi * 60 * t));
+    });
+    EnergyCalculator::Result r;
+    ASSERT_TRUE(analyse(audio, &r));
+    EXPECT_NEAR(16.0, r.bodyStartSec, 1.5) << r.bodyStartSec;
+    // Body end uses -3 dB (0.71 of the amplitude): about 6 s into the 20 s
+    // fade (~82 s), well before the track has faded to nothing.
+    EXPECT_GT(r.bodyEndSec, 79.0) << r.bodyEndSec;
+    EXPECT_LT(r.bodyEndSec, 85.0) << r.bodyEndSec;
+}
+
+TEST(EnergyCalculatorTest, WholeTrackIsBodyWhenLevelIsSteady) {
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> noise(-0.3, 0.3);
+    EnergyCalculator::Result r;
+    ASSERT_TRUE(analyse(stereo(40, [&](double) { return noise(rng); }), &r));
+    EXPECT_NEAR(0.0, r.bodyStartSec, 1e-9);
+    EXPECT_NEAR(40.0, r.bodyEndSec, 1.0);
+}

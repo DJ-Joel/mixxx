@@ -52,11 +52,22 @@ int barsForSeconds(double wantedSec, double beatSec);
 /// @param toEarliestSec the incoming track should not start before this
 ///        (its intro start / first sound)
 /// @param bars fade length in bars
+/// @param toBodyStartSec where the incoming track's beat kicks in after its
+///        intro (negative = unknown). Measured values are rough (1 s steps)
+///        and get snapped to a nearby phrase or bar.
+/// @param toBodyMarked true when the DJ marked the beat by hand (the Intro
+///        End marker): it is trusted and only snapped to the nearest beat. The incoming track is started so its
+///        beat kicks in at the MIDDLE of the fade, exactly where the bass
+///        swaps and the crossfader has the incoming track at full volume:
+///        the outgoing beat hands over straight to the incoming beat, with
+///        no gap for the dancers. A long intro is partly skipped for this.
 std::optional<Plan> plan(const Grid& from,
         const Grid& to,
         double fromNowSec,
         double fromLimitSec,
         double toEarliestSec,
-        int bars);
+        int bars,
+        double toBodyStartSec = -1.0,
+        bool toBodyMarked = false);
 
 } // namespace phrasealign
