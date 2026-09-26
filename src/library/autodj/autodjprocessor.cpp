@@ -437,6 +437,7 @@ void AutoDJProcessor::setBeatmatchEnabled(bool enabled) {
 
 void AutoDJProcessor::beginSmartTransition(
         DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
+    m_fadeNowLimit = FadeNowLimit(); // the mix has started
     endSmartTransition(false); // safety: never two at once
     // If the outgoing track is still gliding back (a short track), hold its
     // tempo steady during this mix; it is reset once it has faded out.
@@ -578,6 +579,7 @@ void AutoDJProcessor::updateGlide(DeckAttributes* pDeck) {
 void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
         DeckAttributes* pToDeck,
         double fromDeckPositionSec) {
+    m_lastAlignApplied = false;
     const TrackPointer pFromTrack = pFromDeck->getLoadedTrack();
     const TrackPointer pToTrack = pToDeck->getLoadedTrack();
     if (!isBeatmatchEnabled() || !pFromTrack || !pToTrack) {
@@ -655,6 +657,13 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     // Not fadeEndPos: after the first run that is our own earlier plan, and
     // a tiny tempo change (a glide) then made no phrase fit any more.
     double fromLimitSec = getOutroEndSecond(pFromDeck);
+    // Fade Now pressed: the fade is over one fade length after the next
+    // phrase start, so the plan starts it at that phrase.
+    const bool fadeNowPending = m_fadeNowLimit.trackSec >= 0.0 &&
+            m_fadeNowLimit.trackId == pFromTrack->getId();
+    if (fadeNowPending) {
+        fromLimitSec = std::min(fromLimitSec, m_fadeNowLimit.trackSec / fromRatio);
+    }
     double toBodyStartSec = -1.0;
     // The outgoing track's Outro Start marker (set by the analysis or by the
     // DJ) is where its energy starts to go: the fade must be over by then.
@@ -746,6 +755,7 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     pFromDeck->fadeBeginPos = plan->fromFadeBeginSec;
     pFromDeck->fadeEndPos = plan->fromFadeEndSec;
     pToDeck->startPos = plan->toStartSec;
+    m_lastAlignApplied = true;
     // A re-plan (e.g. after a tempo step) does not re-cue the waiting track
     // by itself. If it is not where the plan needs it, move it there, so its
     // beats and phrases line up. The seek re-plans once more; the answer is
@@ -757,6 +767,123 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
             pToDeck->setPlayPosition(plan->toStartSec / toDuration);
         }
     }
+}
+
+bool AutoDJProcessor::tryPhraseFadeNow() {
+    DeckAttributes* pLeftDeck = getLeftDeck();
+    DeckAttributes* pRightDeck = getRightDeck();
+    if (!pLeftDeck || !pRightDeck) {
+        return false;
+    }
+    // Same choice of decks as fadeNow().
+    DeckAttributes* pFromDeck;
+    DeckAttributes* pToDeck;
+    if (pLeftDeck->isPlaying() && (!pRightDeck->isPlaying() || getCrossfader() < 0.0)) {
+        pFromDeck = pLeftDeck;
+        pToDeck = pRightDeck;
+    } else if (pRightDeck->isPlaying()) {
+        pFromDeck = pRightDeck;
+        pToDeck = pLeftDeck;
+    } else {
+        return false;
+    }
+    if (pToDeck->isPlaying()) {
+        return false; // both playing: let Mixxx handle it as before
+    }
+    const TrackPointer pFromTrack = pFromDeck->getLoadedTrack();
+    if (!pFromTrack || !pToDeck->getLoadedTrack()) {
+        return false;
+    }
+    const mixxx::BeatsPointer pBeats = pFromTrack->getBeats();
+    const double bpm = pFromTrack->getBpm();
+    const double duration = getEndSecond(pFromDeck);
+    if (!pBeats || !(bpm > 0.0) || !(duration > 0.0)) {
+        return false;
+    }
+    const double ratio = pFromDeck->rateRatio();
+    phrasealign::Grid grid;
+    grid.firstBeatSec = framePositionToSeconds(pBeats->firstBeat(), pFromDeck);
+    grid.beatSec = 60.0 / (bpm * ratio);
+    const double nowSec = pFromDeck->playPosition() * duration;
+    const double wantedSec = m_transitionTime > 0.0 ? m_transitionTime : 16.0;
+    const int bars = phrasealign::barsForSeconds(wantedSec, grid.beatSec);
+    const double limitSec = phrasealign::fadeNowLimitSec(grid, nowSec, bars);
+    if (limitSec < 0.0) {
+        return false;
+    }
+    m_fadeNowLimit.trackId = pFromTrack->getId();
+    m_fadeNowLimit.trackSec = limitSec * ratio;
+    pFromDeck->setRepeat(false);
+    pFromDeck->isFromDeck = true;
+    pToDeck->isFromDeck = false;
+    calculateTransition(pFromDeck, pToDeck, false);
+    if (!m_lastAlignApplied) {
+        m_fadeNowLimit = FadeNowLimit();
+        kLogger.info() << "Fade now: no phrase fits, fading right away";
+        return false;
+    }
+    const double beginSec = pFromDeck->fadeBeginPos * duration;
+    kLogger.info() << "Fade now: waits for the next phrase, the mix starts at" << beginSec
+                   << "s (in" << beginSec - nowSec << "s)";
+    return true;
+}
+
+QStringList AutoDJProcessor::smartFill(int count) {
+    QStringList added;
+    if (count <= 0 || !m_pTrackCollectionManager ||
+            !m_pTrackCollectionManager->internalCollection()) {
+        return added;
+    }
+    const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
+    const QVector<TrackFeatures> library = loadBridgeCandidates(db);
+    QHash<TrackId, const TrackFeatures*> byId;
+    for (const TrackFeatures& t : library) {
+        byId.insert(t.id, &t);
+    }
+    // Never add a track that is queued or loaded, or another copy of it.
+    QSet<TrackId> excludeIds;
+    QSet<QString> excludeNames;
+    const auto exclude = [&](const TrackId& id) {
+        excludeIds.insert(id);
+        if (const TrackFeatures* p = byId.value(id)) {
+            if (!p->displayName.isEmpty()) {
+                excludeNames.insert(BridgeFinder::nameKey(*p));
+            }
+        }
+    };
+    const QList<std::pair<TrackId, int>> queue = m_pAutoDJTableModel->getTrackIdsAndPositions();
+    for (const auto& entry : queue) {
+        exclude(entry.first);
+    }
+    TrackId lastId;
+    for (const auto& pDeck : m_decks) {
+        if (const TrackPointer pTrack = pDeck->getLoadedTrack()) {
+            exclude(pTrack->getId());
+            if (queue.isEmpty() && pDeck->isPlaying()) {
+                lastId = pTrack->getId();
+            }
+        }
+    }
+    if (!queue.isEmpty()) {
+        lastId = queue.last().first;
+    }
+    const TrackFeatures* pLast = byId.value(lastId);
+    if (!pLast) {
+        kLogger.info() << "Smart fill: the last track has no key or BPM";
+        return added;
+    }
+    const QList<TrackFeatures> chain =
+            BridgeFinder(MixScorer()).extend(*pLast, library, excludeIds, excludeNames, count);
+    PlaylistDAO& playlistDao = m_pTrackCollectionManager->internalCollection()->getPlaylistDAO();
+    const int playlistId = m_pAutoDJTableModel->getPlaylist();
+    for (const TrackFeatures& t : chain) {
+        if (playlistDao.appendTrackToPlaylist(t.id, playlistId)) {
+            added << MixScorer::trackText(t);
+        }
+    }
+    m_pAutoDJTableModel->select();
+    kLogger.info() << "Smart fill: added" << added.size() << "tracks";
+    return added;
 }
 
 double AutoDJProcessor::skipToMix() {
@@ -882,6 +1009,7 @@ void AutoDJProcessor::applySmartSortResult(const SequenceResult& result,
     m_pAutoDJTableModel->setTrackOrder(newOrder);
     m_pendingBridges = result.bestBridges;
     m_pendingBridgeOrder = result.order;
+    m_bridgeGaps = result.gaps;
     emit smartSortFinished(static_cast<int>(result.order.size()),
             result.clashCount,
             result.warnings,
@@ -891,6 +1019,11 @@ void AutoDJProcessor::applySmartSortResult(const SequenceResult& result,
 void AutoDJProcessor::fadeNow() {
     if (m_eState != ADJ_IDLE) {
         // we cannot fade if AutoDj is disabled or already fading
+        return;
+    }
+    // Auto DJ 2.0: with beatmatch on, wait for the next phrase so the mix
+    // stays on the beat. Falls back to fading right away if that fails.
+    if (isBeatmatchEnabled() && tryPhraseFadeNow()) {
         return;
     }
 
@@ -1270,6 +1403,7 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::toggleAutoDJ(bool enable) {
         emitAutoDJStateChanged(m_eState);
     } else { // Disable Auto DJ
         endSmartTransition(false);
+        m_fadeNowLimit = FadeNowLimit(); // a pending Fade Now is cancelled
         // A glide in progress carries on (m_glideTicker): the last track of
         // the queue still eases back to its own tempo after Auto DJ stops.
         m_enabledAutoDJ.setAndConfirm(0.0);

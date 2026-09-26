@@ -15,6 +15,7 @@
 #include "control/pollingcontrolproxy.h"
 #include "engine/channels/enginechannel.h"
 #include "library/playlisttablemodel.h"
+#include "library/autodj/smart/smartsequencer.h"
 #include "preferences/usersettings.h"
 #include "track/track_decl.h"
 #include "util/class.h"
@@ -23,7 +24,6 @@
 class TrackCollectionManager;
 class PlayerManagerInterface;
 class BaseTrackPlayer;
-struct SequenceResult;
 typedef QList<QModelIndex> QModelIndexList;
 
 class DeckAttributes : public QObject {
@@ -234,6 +234,20 @@ class AutoDJProcessor : public QObject {
     /// already close to the mix).
     double skipToMix();
 
+    /// Every clash of the last Smart Sort with all its bridge options.
+    const QList<BridgeGap>& bridgeGaps() const {
+        return m_bridgeGaps;
+    }
+    /// The DJ's choice of bridges, as (k, track): insert after the k-th
+    /// track (from 1). Replaces the automatic best picks.
+    void choosePendingBridges(const QList<std::pair<int, TrackId>>& picks) {
+        m_pendingBridges = picks;
+    }
+    /// Smart Fill: appends up to `count` library tracks that each mix
+    /// smoothly after the one before, starting from the last queued track
+    /// (or the playing one if the queue is empty). Returns their names.
+    QStringList smartFill(int count);
+
     /// Adds the suggested bridge tracks into the gaps they bridge.
     /// Returns how many were added (0 if the queue changed meanwhile).
     int insertPendingBridges();
@@ -368,6 +382,16 @@ class AutoDJProcessor : public QObject {
     // after the k-th track of m_pendingBridgeOrder (counted from 1).
     QList<std::pair<int, TrackId>> m_pendingBridges;
     QList<TrackId> m_pendingBridgeOrder;
+    QList<BridgeGap> m_bridgeGaps;
+    // Fade Now with beatmatch on: the mix waits for the next phrase of this
+    // track. trackSec is the "fade over by" limit, in the track's own time.
+    struct FadeNowLimit {
+        TrackId trackId;
+        double trackSec = -1.0;
+    };
+    FadeNowLimit m_fadeNowLimit;
+    bool m_lastAlignApplied = false;
+    bool tryPhraseFadeNow();
 
     // Auto DJ 2.0 Phase 2: beatmatch + bass swap during a fade.
     void beginSmartTransition(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);

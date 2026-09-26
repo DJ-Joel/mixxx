@@ -1,6 +1,11 @@
 #include "library/autodj/dlgautodj.h"
 
+#include <QComboBox>
+#include <algorithm>
 #include <QDialog>
+#include <QGridLayout>
+#include <QScrollArea>
+#include <QToolTip>
 #include <QDialogButtonBox>
 #include <QFontDatabase>
 #include <QKeyEvent>
@@ -153,6 +158,20 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             [this]() {
                 m_pAutoDJProcessor->skipToMix();
             });
+
+    // Auto DJ 2.0 Smart Fill: add tracks that mix well after the last one.
+    pushButtonSmartFill->setText(tr("Smart Fill"));
+    pushButtonSmartFill->setToolTip(tr(
+            "Add tracks from your library to the end of the queue, each one\n"
+            "chosen to mix smoothly (key, tempo within 5%, energy) after the\n"
+            "one before. Tracks already queued are never added twice."));
+    auto* pFillMenu = new QMenu(pushButtonSmartFill);
+    for (int count : {3, 5, 10, 20}) {
+        pFillMenu->addAction(tr("Add %1 tracks").arg(count), this, [this, count]() {
+            slotSmartFill(count);
+        });
+    }
+    pushButtonSmartFill->setMenu(pFillMenu);
 
     // Auto DJ 2.0 energy rating: the DJ's own 1..10 score for the selected
     // tracks. It always wins over the measured energy.
@@ -382,16 +401,111 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
     pLayout->addWidget(pDetails);
     auto* pButtons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
     connect(pButtons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    // Auto DJ 2.0 bridge tracks: one click adds the best suggestion ("add:")
-    // into each gap it bridges. The DJ can remove any of them afterwards.
-    const int bridgeCount = m_pAutoDJProcessor->pendingBridgeCount();
-    if (bridgeCount > 0) {
+    // Auto DJ 2.0 bridge tracks, chosen per gap: a gap with only one track
+    // that bridges it gets that track; with several, the DJ picks one (the
+    // best match is preselected); "no bridge" leaves the gap as it is.
+    QList<std::pair<int, QComboBox*>> choices; // gap position, its choice box
+    QList<std::pair<int, TrackId>> onlyChoices; // gaps with one option
+    const QList<BridgeGap>& gaps = m_pAutoDJProcessor->bridgeGaps();
+    int bridgeableGaps = 0;
+    for (const BridgeGap& gap : gaps) {
+        if (!gap.options.isEmpty()) {
+            ++bridgeableGaps;
+        }
+    }
+    if (bridgeableGaps > 0) {
+        auto* pBridgeTitle = new QLabel(
+                tr("<b>Bridge tracks</b> — choose which track goes into each gap:"), &dialog);
+        pLayout->addWidget(pBridgeTitle);
+        auto* pGapWidget = new QWidget(&dialog);
+        auto* pGrid = new QGridLayout(pGapWidget);
+        int row = 0;
+        for (const BridgeGap& gap : gaps) {
+            auto* pGapLabel = new QLabel(tr("Between %1 and %2:\n  %3\n  -> %4")
+                                                 .arg(gap.k)
+                                                 .arg(gap.k + 1)
+                                                 .arg(gap.fromText, gap.toText),
+                    pGapWidget);
+            pGapLabel->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+            pGrid->addWidget(pGapLabel, row, 0);
+            if (gap.options.isEmpty()) {
+                pGrid->addWidget(new QLabel(tr("No track in your library bridges this gap."),
+                                         pGapWidget),
+                        row,
+                        1);
+            } else if (gap.options.size() == 1) {
+                onlyChoices.append(std::make_pair(gap.k, gap.options.first()));
+                pGrid->addWidget(new QLabel(tr("Only one fits, selected:\n%1")
+                                                    .arg(gap.optionTexts.first()),
+                                         pGapWidget),
+                        row,
+                        1);
+            } else {
+                auto* pCombo = new QComboBox(pGapWidget);
+                for (int i = 0; i < gap.options.size(); ++i) {
+                    pCombo->addItem(i == 0 ? tr("%1   (best match)").arg(gap.optionTexts[i])
+                                           : gap.optionTexts[i],
+                            gap.options[i].toVariant());
+                }
+                pCombo->addItem(tr("(no bridge here)"), QVariant());
+                choices.append(std::make_pair(gap.k, pCombo));
+                pGrid->addWidget(pCombo, row, 1);
+            }
+            ++row;
+        }
+        auto* pScroll = new QScrollArea(&dialog);
+        pScroll->setWidget(pGapWidget);
+        pScroll->setWidgetResizable(true);
+        pLayout->addWidget(pScroll);
+
         QPushButton* pAddBridges = pButtons->addButton(
-                tr("Add %1 bridge tracks").arg(bridgeCount), QDialogButtonBox::ActionRole);
+                tr("Add chosen bridge tracks"), QDialogButtonBox::ActionRole);
         pAddBridges->setToolTip(tr(
-                "Adds each track marked \"add:\" into the gap it bridges.\n"
+                "Adds the chosen track into each gap.\n"
                 "You can remove any of them from the queue afterwards."));
-        connect(pAddBridges, &QPushButton::clicked, &dialog, [this, &dialog]() {
+        connect(pAddBridges, &QPushButton::clicked, &dialog, [this, &dialog, choices, onlyChoices]() {
+            // One track can only go into one gap. The DJ's own choices must
+            // not repeat; a track that is the ONLY option for two gaps goes
+            // into the first of them.
+            QList<std::pair<int, TrackId>> picks;
+            QList<TrackId> chosen;
+            for (const auto& [k, pCombo] : choices) {
+                const QVariant value = pCombo->currentData();
+                if (!value.isValid()) {
+                    continue;
+                }
+                const TrackId id(value);
+                if (chosen.contains(id)) {
+                    QMessageBox::warning(&dialog,
+                            tr("Smart Sort"),
+                            tr("The same track is chosen for two gaps. "
+                               "Please choose a different track for one of them."));
+                    return;
+                }
+                chosen.append(id);
+                picks.append(std::make_pair(k, id));
+            }
+            int skipped = 0;
+            for (const auto& pick : onlyChoices) {
+                if (chosen.contains(pick.second)) {
+                    ++skipped; // already chosen for another gap
+                    continue;
+                }
+                chosen.append(pick.second);
+                picks.append(pick);
+            }
+            std::sort(picks.begin(), picks.end(), [](const auto& a, const auto& b) {
+                return a.first < b.first;
+            });
+            if (skipped > 0) {
+                QMessageBox::information(&dialog,
+                        tr("Smart Sort"),
+                        tr("%n gap(s) had only a track that is already used in another "
+                           "gap, so they stay without a bridge.",
+                                "",
+                                skipped));
+            }
+            m_pAutoDJProcessor->choosePendingBridges(picks);
             const int added = m_pAutoDJProcessor->insertPendingBridges();
             dialog.accept();
             if (added > 0) {
@@ -407,7 +521,7 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
         });
     }
     pLayout->addWidget(pButtons);
-    dialog.resize(820, 560);
+    dialog.resize(900, bridgeableGaps > 0 ? 720 : 560);
     dialog.exec();
 }
 
@@ -436,11 +550,50 @@ void DlgAutoDJ::slotSetEnergyRating(int rating) {
                 tr("Select one or more tracks in the Auto DJ queue first."));
         return;
     }
+    if (rating == 0 &&
+            QMessageBox::question(this,
+                    tr("Energy"),
+                    tr("Clear your energy rating for %n track(s)?\n"
+                       "Smart Sort will use the measured energy instead.",
+                            "",
+                            static_cast<int>(ids.size()))) != QMessageBox::Yes) {
+        return;
+    }
     if (!m_pAutoDJProcessor->setEnergyRating(ids, rating)) {
         QMessageBox::warning(this, tr("Energy"), tr("Could not save the energy rating."));
         return;
     }
     updateSelectionInfo();
+    // Short "saved" note next to the button (no dialog to click away).
+    const QString note = rating == 0
+            ? tr("Rating cleared for %n track(s)", "", static_cast<int>(ids.size()))
+            : tr("Saved: energy %1 for %n track(s)", "", static_cast<int>(ids.size()))
+                      .arg(rating);
+    QToolTip::showText(pushButtonEnergy->mapToGlobal(QPoint(0, pushButtonEnergy->height())),
+            note,
+            pushButtonEnergy,
+            QRect(),
+            3000);
+}
+
+void DlgAutoDJ::slotSmartFill(int count) {
+    const QStringList added = m_pAutoDJProcessor->smartFill(count);
+    if (added.isEmpty()) {
+        QMessageBox::information(this,
+                tr("Smart Fill"),
+                tr("No track in your library mixes smoothly after the last track "
+                   "in the queue (or it has no key or BPM yet)."));
+        return;
+    }
+    QMessageBox::information(this,
+            tr("Smart Fill"),
+            tr("Added %1 of %2 tracks to the end of the queue:\n\n%3%4")
+                    .arg(added.size())
+                    .arg(count)
+                    .arg(added.join(QChar('\n')),
+                            added.size() < count
+                                    ? tr("\n\nNothing else mixes smoothly after the last one.")
+                                    : QString()));
 }
 
 void DlgAutoDJ::skipNextButton(bool) {

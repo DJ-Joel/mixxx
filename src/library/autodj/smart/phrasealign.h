@@ -83,6 +83,11 @@ std::optional<Plan> plan(const Grid& from,
         double toBodyStartSec = -1.0,
         bool toBodyMarked = false);
 
+/// Fade Now: the "must be over by" limit that makes plan() start the fade
+/// at the NEXT phrase start at least `minLeadSec` from now (time to cue the
+/// incoming track). The wait is at most one phrase (8 bars).
+double fadeNowLimitSec(const Grid& from, double nowSec, int bars, double minLeadSec = 2.0);
+
 /// Like plan(), for a mix that is NOT beatmatched (tempos too far apart).
 /// The outgoing fade is placed on its phrases the same way, but the
 /// incoming beat kicks in as the fade ends instead of at its middle, so the

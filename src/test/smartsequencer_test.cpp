@@ -447,3 +447,49 @@ TEST(SmartSequencerTest, SaysSoWhenNoBridgeExists) {
     EXPECT_TRUE(r.bestBridges.isEmpty());
     EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("no single track")));
 }
+
+TEST(SmartSequencerTest, ListsEveryBridgeOptionPerGap) {
+    // One gap with two possible bridges, one gap with none.
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, false, 118.1),
+            makeTrack(2, 8, true, 129.5),
+    };
+    const QVector<TrackFeatures> library = {
+            makeTrack(10, 8, false, 123.5),
+            makeTrack(13, 8, true, 124.0),
+    };
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks, std::nullopt, 2000, library);
+    ASSERT_EQ(1, r.gaps.size());
+    EXPECT_EQ(1, r.gaps[0].k);
+    ASSERT_EQ(2, r.gaps[0].options.size());
+    EXPECT_EQ(2, r.gaps[0].optionTexts.size());
+    EXPECT_EQ(r.bestBridges[0].second, r.gaps[0].options[0]); // best first
+}
+
+TEST(BridgeFinderTest, SmartFillChainsSmoothMixes) {
+    // From 8A at 120: the library holds a smooth path 8A 121 -> 9A 122 ->
+    // 9A 123, plus tracks that clash (wrong key or far tempo) and one queued.
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    const QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 121),
+            makeTrack(11, 9, true, 122),
+            makeTrack(12, 9, true, 123),
+            makeTrack(13, 2, false, 121), // key clash
+            makeTrack(14, 8, true, 140),  // tempo clash
+            makeTrack(15, 8, true, 120),  // already queued
+    };
+    BridgeFinder finder{MixScorer()};
+    const auto chain = finder.extend(last, library, {TrackId(QVariant(15))}, {}, 5);
+    ASSERT_EQ(3, chain.size()); // stops when nothing mixes smoothly
+    QSet<TrackId> seen;
+    TrackFeatures prev = last;
+    for (const auto& t : chain) {
+        EXPECT_FALSE(seen.contains(t.id));
+        seen.insert(t.id);
+        EXPECT_TRUE(MixScorer::clashLabel(MixScorer().score(prev, t)).isEmpty());
+        prev = t;
+    }
+    EXPECT_FALSE(seen.contains(TrackId(QVariant(13))));
+    EXPECT_FALSE(seen.contains(TrackId(QVariant(14))));
+}

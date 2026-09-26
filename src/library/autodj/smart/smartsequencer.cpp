@@ -350,6 +350,8 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
             usedNames.insert(BridgeFinder::nameKey(t));
         }
     }
+    const QSet<TrackId> queuedIds = usedIds;
+    const QSet<QString> queuedNames = usedNames;
 
     // Report: the whole running order, with the clashes that could not be
     // avoided marked between the two tracks involved.
@@ -376,6 +378,21 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
                 result.warnings << warning;
                 result.orderLines << QStringLiteral("      !! %1: %2").arg(label, s.reason);
                 if (!bridgeCandidates.isEmpty()) {
+                    BridgeGap gap;
+                    gap.k = k;
+                    gap.fromText = MixScorer::trackText(from);
+                    gap.toText = MixScorer::trackText(to);
+                    const QList<BridgeSuggestion> all = bridgeFinder.find(from,
+                            to,
+                            bridgeCandidates,
+                            queuedIds,
+                            queuedNames,
+                            SequenceResult::kMaxBridgeOptions);
+                    for (const BridgeSuggestion& b : all) {
+                        gap.options.append(b.track.id);
+                        gap.optionTexts.append(MixScorer::trackText(b.track));
+                    }
+                    result.gaps.append(gap);
                     const QList<BridgeSuggestion> bridges = bridgeFinder.find(
                             from, to, bridgeCandidates, usedIds, usedNames);
                     if (bridges.isEmpty()) {

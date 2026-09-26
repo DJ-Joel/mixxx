@@ -32,6 +32,15 @@ class BridgeFinder {
             const QSet<QString>& excludeNames,
             int maxResults = 3) const;
 
+    /// Smart Fill: a chain of up to `count` library tracks to play after
+    /// `last`, each the smoothest next mix from the one before (no key or
+    /// tempo clash). Stops early when nothing mixes smoothly any more.
+    QList<TrackFeatures> extend(const TrackFeatures& last,
+            const QVector<TrackFeatures>& candidates,
+            QSet<TrackId> excludeIds,
+            QSet<QString> excludeNames,
+            int count) const;
+
     static QString nameKey(const TrackFeatures& track) {
         return track.displayName.trimmed().toLower();
     }

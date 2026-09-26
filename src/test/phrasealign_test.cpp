@@ -196,3 +196,15 @@ TEST(PhraseAlignTest, UnmatchedMixBringsTheBeatInAsTheFadeEnds) {
     ASSERT_TRUE(r.has_value());
     EXPECT_DOUBLE_EQ(0.28, r->toStartSec);
 }
+
+TEST(PhraseAlignTest, FadeNowWaitsForTheNextPhrase) {
+    // 120 BPM from 0 s: phrases every 16 s. Pressed at 50 s: the next phrase
+    // is at 64 s, so the 8-bar fade runs 64 -> 80 s.
+    const double limit = phrasealign::fadeNowLimitSec(k120, 50.0, 8);
+    EXPECT_DOUBLE_EQ(80.0, limit);
+    const auto p = phrasealign::plan(k120, k120, 50.0, limit, 0.0, 8);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(64.0, p->fromFadeBeginSec);
+    // Pressed 1 s before a phrase: too close to cue, so the one after.
+    EXPECT_DOUBLE_EQ(96.0, phrasealign::fadeNowLimitSec(k120, 63.0, 8));
+}

@@ -10,6 +10,15 @@
 
 #include "library/autodj/smart/mixscorer.h"
 
+/// A clash in the sorted order and the library tracks that could bridge it.
+struct BridgeGap {
+    int k = 0;              ///< the bridge goes right after the k-th track (from 1)
+    QString fromText;       ///< the two tracks either side, for the DJ
+    QString toText;
+    QList<TrackId> options; ///< best first; empty = nothing bridges this gap
+    QStringList optionTexts;
+};
+
 /// The outcome of SmartSequencer::solve().
 struct SequenceResult {
     QList<TrackId> order;
@@ -25,6 +34,11 @@ struct SequenceResult {
     /// Best bridge per clash, as (k, track): play `track` right after the
     /// k-th track of `order` (k counted from 1). Each track used once.
     QList<std::pair<int, TrackId>> bestBridges;
+    /// Every clash with ALL its bridge options (up to kMaxBridgeOptions),
+    /// so the DJ can choose. Options only exclude tracks already queued, so
+    /// one track may be offered for two gaps (the DJ picks where it goes).
+    QList<BridgeGap> gaps;
+    static constexpr int kMaxBridgeOptions = 6;
 };
 
 /// Sorts a set of tracks into the lowest-cost mixing order.

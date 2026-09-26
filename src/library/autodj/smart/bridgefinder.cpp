@@ -6,6 +6,47 @@ BridgeFinder::BridgeFinder(const MixScorer& scorer)
         : m_scorer(scorer) {
 }
 
+QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
+        const QVector<TrackFeatures>& candidates,
+        QSet<TrackId> excludeIds,
+        QSet<QString> excludeNames,
+        int count) const {
+    QList<TrackFeatures> chain;
+    TrackFeatures current = last;
+    excludeIds.insert(last.id);
+    if (!last.displayName.isEmpty()) {
+        excludeNames.insert(nameKey(last));
+    }
+    while (static_cast<int>(chain.size()) < count) {
+        const TrackFeatures* pBest = nullptr;
+        double bestCost = 0.0;
+        for (const TrackFeatures& x : candidates) {
+            if (!x.hasKey() || !x.hasBpm() || excludeIds.contains(x.id) ||
+                    (!x.displayName.isEmpty() && excludeNames.contains(nameKey(x)))) {
+                continue;
+            }
+            const MixScore s = m_scorer.score(current, x);
+            if (!MixScorer::clashLabel(s).isEmpty()) {
+                continue;
+            }
+            if (!pBest || s.total < bestCost) {
+                pBest = &x;
+                bestCost = s.total;
+            }
+        }
+        if (!pBest) {
+            break;
+        }
+        chain.append(*pBest);
+        excludeIds.insert(pBest->id);
+        if (!pBest->displayName.isEmpty()) {
+            excludeNames.insert(nameKey(*pBest));
+        }
+        current = *pBest;
+    }
+    return chain;
+}
+
 QList<BridgeSuggestion> BridgeFinder::find(const TrackFeatures& from,
         const TrackFeatures& to,
         const QVector<TrackFeatures>& candidates,

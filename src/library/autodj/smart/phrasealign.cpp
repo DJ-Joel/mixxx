@@ -101,6 +101,15 @@ std::optional<Plan> plan(const Grid& from,
     return p;
 }
 
+double fadeNowLimitSec(const Grid& from, double nowSec, int bars, double minLeadSec) {
+    if (!from.isValid()) {
+        return -1.0;
+    }
+    const double beat = (nowSec + minLeadSec - from.firstBeatSec) / from.beatSec;
+    const double phrase = std::max(0.0, std::ceil(beat / kBeatsPerPhrase)) * kBeatsPerPhrase;
+    return from.beatTime(phrase + static_cast<double>(bars) * kBeatsPerBar);
+}
+
 std::optional<Plan> planUnmatched(const Grid& from,
         const Grid& to,
         double fromNowSec,
