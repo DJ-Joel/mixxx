@@ -119,6 +119,28 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             this,
             &DlgAutoDJ::slotSmartSortFailed);
 
+    // Auto DJ 2.0 Phase 2: beatmatched mixes with a bass swap.
+    // The skins do not style this new button, so on/off is shown in its
+    // text instead of its colour.
+    const auto showBeatmatchState = [this](bool on) {
+        pushButtonBeatmatch->setText(on ? tr("Beatmatch: ON") : tr("Beatmatch: OFF"));
+    };
+    pushButtonBeatmatch->setCheckable(true);
+    pushButtonBeatmatch->setChecked(m_pAutoDJProcessor->isBeatmatchEnabled());
+    showBeatmatchState(pushButtonBeatmatch->isChecked());
+    pushButtonBeatmatch->setToolTip(tr(
+            "Beatmatched transitions: the next track is played at the same\n"
+            "tempo with its beats lined up (only if within 5%), the bass is\n"
+            "swapped halfway, and the tempo then glides back over 30 seconds.\n"
+            "Off: plain crossfade."));
+    connect(pushButtonBeatmatch,
+            &QPushButton::toggled,
+            this,
+            [this, showBeatmatchState](bool checked) {
+                m_pAutoDJProcessor->setBeatmatchEnabled(checked);
+                showBeatmatchState(checked);
+            });
+
     // Auto DJ 2.0 energy rating: the DJ's own 1..10 score for the selected
     // tracks. It always wins over the measured energy.
     pushButtonEnergy->setText(tr("Energy"));

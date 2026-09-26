@@ -1,0 +1,55 @@
+#include <gtest/gtest.h>
+
+#include <cmath>
+
+#include "library/autodj/smart/beatmatch.h"
+
+TEST(BeatmatchTest, MatchesCloseTempos) {
+    // 120 BPM track under a 124 BPM track plays 3.3% faster.
+    const auto r = beatmatch::matchRatio(124.0, 120.0, 5.0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(124.0 / 120.0, *r, 1e-9);
+    EXPECT_NEAR(1.0, *beatmatch::matchRatio(128.0, 128.0, 5.0), 1e-9);
+}
+
+TEST(BeatmatchTest, RefusesTooBigAChange) {
+    // The Promise (118.1) -> Rock The Casbah (129.5): about 9%.
+    EXPECT_FALSE(beatmatch::matchRatio(118.1, 129.5, 5.0).has_value());
+    EXPECT_FALSE(beatmatch::matchRatio(0.0, 120.0, 5.0).has_value());
+    EXPECT_FALSE(beatmatch::matchRatio(120.0, 0.0, 5.0).has_value());
+}
+
+TEST(BeatmatchTest, UsesHalfAndDoubleTime) {
+    // Cupid Shuffle (71.8) under Smalltown Boy at 144 BPM: plays at double
+    // time, so the ratio is small, not ~2.
+    const auto r = beatmatch::matchRatio(144.0, 71.8, 5.0);
+    ASSERT_TRUE(r.has_value());
+    EXPECT_NEAR(144.0 / (2.0 * 71.8), *r, 1e-9);
+    const auto r2 = beatmatch::matchRatio(71.8, 144.0, 5.0);
+    ASSERT_TRUE(r2.has_value());
+    EXPECT_NEAR(2.0 * 71.8 / 144.0, *r2, 1e-9);
+}
+
+TEST(BeatmatchTest, GlidesBackToOwnTempo) {
+    EXPECT_DOUBLE_EQ(1.04, beatmatch::glideRatio(1.04, 0.0, 30.0));
+    EXPECT_NEAR(1.02, beatmatch::glideRatio(1.04, 15.0, 30.0), 1e-9);
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::glideRatio(1.04, 30.0, 30.0));
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::glideRatio(0.97, 99.0, 30.0));
+    // Speed of change: at most 5% over 30 s = 0.17% per second.
+    const double perSecond = std::abs(beatmatch::glideRatio(1.05, 1.0, 30.0) - 1.05);
+    EXPECT_LT(perSecond, 0.002);
+}
+
+TEST(BeatmatchTest, BassSwapsHardAtTheMiddle) {
+    EXPECT_TRUE(beatmatch::bassSwap(0.0).toLowKilled);
+    EXPECT_FALSE(beatmatch::bassSwap(0.0).fromLowKilled);
+    EXPECT_TRUE(beatmatch::bassSwap(0.49).toLowKilled);
+    EXPECT_FALSE(beatmatch::bassSwap(0.5).toLowKilled);
+    EXPECT_TRUE(beatmatch::bassSwap(0.5).fromLowKilled);
+    EXPECT_TRUE(beatmatch::bassSwap(1.0).fromLowKilled);
+    // Never both basses at once, never both cut.
+    for (double p = 0.0; p <= 1.0; p += 0.05) {
+        const auto s = beatmatch::bassSwap(p);
+        EXPECT_NE(s.fromLowKilled, s.toLowKilled) << p;
+    }
+}

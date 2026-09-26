@@ -1417,6 +1417,7 @@ add_library(
   src/library/autodj/autodjprocessor.cpp
   src/library/autodj/dlgautodj.cpp
   src/library/autodj/dlgautodj.ui
+  src/library/autodj/smart/beatmatch.cpp
   src/library/autodj/smart/bridgefinder.cpp
   src/library/autodj/smart/energystore.cpp
   src/library/autodj/smart/mixscorer.cpp
@@ -2938,6 +2939,7 @@ if(BUILD_TESTING)
     src/test/beatgridtest.cpp
     src/test/beatmaptest.cpp
     src/test/beatstest.cpp
+    src/test/beatmatch_test.cpp
     src/test/beatstranslatetest.cpp
     src/test/borrowabletest.cpp
     src/test/bpmtest.cpp

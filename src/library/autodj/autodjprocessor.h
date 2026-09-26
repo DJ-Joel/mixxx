@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -220,6 +221,10 @@ class AutoDJProcessor : public QObject {
     int pendingBridgeCount() const {
         return static_cast<int>(m_pendingBridges.size());
     }
+    /// Auto DJ 2.0 Phase 2: beatmatched transitions with a bass swap.
+    bool isBeatmatchEnabled() const;
+    void setBeatmatchEnabled(bool enabled);
+
     /// Adds the suggested bridge tracks into the gaps they bridge.
     /// Returns how many were added (0 if the queue changed meanwhile).
     int insertPendingBridges();
@@ -354,6 +359,33 @@ class AutoDJProcessor : public QObject {
     // after the k-th track of m_pendingBridgeOrder (counted from 1).
     QList<std::pair<int, TrackId>> m_pendingBridges;
     QList<TrackId> m_pendingBridgeOrder;
+
+    // Auto DJ 2.0 Phase 2: beatmatch + bass swap during a fade.
+    void beginSmartTransition(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
+    void afterToDeckStarted();
+    void updateSmartTransition(double progress);
+    void endSmartTransition(bool completed);
+    void updateGlide(DeckAttributes* pDeck);
+    struct SmartTransition {
+        bool active = false;
+        DeckAttributes* pFrom = nullptr;
+        DeckAttributes* pTo = nullptr;
+        bool beatmatched = false;
+        double toRatio = 1.0;
+        // Values to put back afterwards (NaN = control missing).
+        double fromLowKill = 0.0;
+        double toLowKill = 0.0;
+        double toQuantize = 0.0;
+        double toKeylock = 0.0;
+    };
+    SmartTransition m_smart;
+    struct Glide {
+        DeckAttributes* pDeck = nullptr;
+        double startRatio = 1.0;
+        double keylockBefore = 0.0;
+        QElapsedTimer timer;
+    };
+    Glide m_glide;
     TrackCollectionManager* m_pTrackCollectionManager = nullptr;
 
     DISALLOW_COPY_AND_ASSIGN(AutoDJProcessor);

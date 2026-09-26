@@ -6,9 +6,13 @@
 #include <QSqlQuery>
 #include <QtConcurrentRun>
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <optional>
 
 #include "engine/channels/enginedeck.h"
+#include "control/controlobject.h"
+#include "library/autodj/smart/beatmatch.h"
 #include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/energystore.h"
 #include "library/autodj/smart/smartsequencer.h"
@@ -36,6 +40,28 @@ constexpr double kKeepPosition = -1.0;
 
 // A track needs to be longer than two callbacks to not stop AutoDJ
 constexpr double kMinimumTrackDurationSec = 0.2;
+
+// Auto DJ 2.0 Phase 2 helpers. Controls may be missing (e.g. in tests or
+// when the EQ rack is not loaded), so every access checks first.
+const QString kBeatmatchPreference = QStringLiteral("SmartBeatmatch");
+constexpr double kBeatmatchTolerancePct = 5.0; // the DJ's 5% rule
+constexpr double kMissing = std::numeric_limits<double>::quiet_NaN();
+
+ConfigKey eqKillKey(const QString& deckGroup) {
+    // parameter1 = low band; button_parameter1 = its kill switch.
+    return ConfigKey(QStringLiteral("[EqualizerRack1_%1_Effect1]").arg(deckGroup),
+            QStringLiteral("button_parameter1"));
+}
+
+double readControl(const ConfigKey& key) {
+    return ControlObject::exists(key) ? ControlObject::get(key) : kMissing;
+}
+
+void writeControl(const ConfigKey& key, double value) {
+    if (!std::isnan(value) && ControlObject::exists(key)) {
+        ControlObject::set(key, value);
+    }
+}
 
 // Auto DJ 2.0: every library track with a known key and BPM whose file
 // still exists, as bridge candidates. Read straight from the database so
@@ -394,6 +420,119 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
         return SmartSequencer(scorer).solve(features, startId, 2000, bridgeCandidates);
     }));
     return ADJ_OK;
+}
+
+bool AutoDJProcessor::isBeatmatchEnabled() const {
+    return m_pConfig->getValue(ConfigKey(kPreferenceGroup, kBeatmatchPreference), true);
+}
+
+void AutoDJProcessor::setBeatmatchEnabled(bool enabled) {
+    m_pConfig->setValue(ConfigKey(kPreferenceGroup, kBeatmatchPreference), enabled);
+}
+
+void AutoDJProcessor::beginSmartTransition(
+        DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
+    endSmartTransition(false); // safety: never two at once
+    m_glide.pDeck = nullptr;   // a new mix takes over from any glide
+    if (!isBeatmatchEnabled() || !pFromDeck || !pToDeck) {
+        return;
+    }
+    m_smart = SmartTransition();
+    m_smart.active = true;
+    m_smart.pFrom = pFromDeck;
+    m_smart.pTo = pToDeck;
+    m_smart.fromLowKill = readControl(eqKillKey(pFromDeck->group));
+    m_smart.toLowKill = readControl(eqKillKey(pToDeck->group));
+
+    // Tempo: play the incoming track at the outgoing track's tempo, but only
+    // within the 5% rule; otherwise it stays a plain crossfade.
+    const TrackPointer pToTrack = pToDeck->getLoadedTrack();
+    const ConfigKey fromBpmKey(pFromDeck->group, QStringLiteral("bpm"));
+    const double fromBpm = readControl(fromBpmKey); // includes its tempo change
+    const double toTrackBpm = pToTrack ? pToTrack->getBpm() : 0.0;
+    std::optional<double> ratio;
+    if (!std::isnan(fromBpm)) {
+        ratio = beatmatch::matchRatio(fromBpm, toTrackBpm, kBeatmatchTolerancePct);
+    }
+    const ConfigKey toRatioKey(pToDeck->group, QStringLiteral("rate_ratio"));
+    if (ratio && ControlObject::exists(toRatioKey)) {
+        const ConfigKey keylockKey(pToDeck->group, QStringLiteral("keylock"));
+        const ConfigKey quantizeKey(pToDeck->group, QStringLiteral("quantize"));
+        m_smart.toKeylock = readControl(keylockKey);
+        m_smart.toQuantize = readControl(quantizeKey);
+        writeControl(keylockKey, 1.0);  // tempo change without pitch change
+        writeControl(quantizeKey, 1.0); // start on a beat
+        ControlObject::set(toRatioKey, *ratio);
+        m_smart.beatmatched = true;
+        m_smart.toRatio = *ratio;
+        kLogger.info() << "Beatmatch" << pToDeck->group << "at ratio" << *ratio
+                       << "(" << toTrackBpm << "->" << fromBpm << "BPM)";
+    } else {
+        kLogger.info() << "No beatmatch for" << pToDeck->group
+                       << "(" << toTrackBpm << "vs" << fromBpm
+                       << "BPM): plain crossfade";
+    }
+    updateSmartTransition(0.0); // incoming bass starts cut
+}
+
+void AutoDJProcessor::afterToDeckStarted() {
+    if (!m_smart.active || !m_smart.beatmatched) {
+        return;
+    }
+    // Line the beats up with the outgoing track. A push button only acts on
+    // a change, so press and release.
+    const ConfigKey phaseKey(m_smart.pTo->group, QStringLiteral("beatsync_phase"));
+    writeControl(phaseKey, 1.0);
+    writeControl(phaseKey, 0.0);
+}
+
+void AutoDJProcessor::updateSmartTransition(double progress) {
+    if (!m_smart.active) {
+        return;
+    }
+    const beatmatch::BassState bass = beatmatch::bassSwap(progress);
+    if (!std::isnan(m_smart.fromLowKill)) {
+        writeControl(eqKillKey(m_smart.pFrom->group), bass.fromLowKilled ? 1.0 : 0.0);
+    }
+    if (!std::isnan(m_smart.toLowKill)) {
+        writeControl(eqKillKey(m_smart.pTo->group), bass.toLowKilled ? 1.0 : 0.0);
+    }
+}
+
+void AutoDJProcessor::endSmartTransition(bool completed) {
+    if (!m_smart.active) {
+        return;
+    }
+    // Put the EQ kills back as the DJ had them.
+    writeControl(eqKillKey(m_smart.pFrom->group), m_smart.fromLowKill);
+    writeControl(eqKillKey(m_smart.pTo->group), m_smart.toLowKill);
+    if (m_smart.beatmatched) {
+        writeControl(ConfigKey(m_smart.pTo->group, QStringLiteral("quantize")),
+                m_smart.toQuantize);
+        if (completed) {
+            // Ease the new track back to its own tempo, too slowly to hear.
+            m_glide.pDeck = m_smart.pTo;
+            m_glide.startRatio = m_smart.toRatio;
+            m_glide.keylockBefore = m_smart.toKeylock;
+            m_glide.timer.start();
+        }
+    }
+    m_smart = SmartTransition();
+}
+
+void AutoDJProcessor::updateGlide(DeckAttributes* pDeck) {
+    if (!pDeck || pDeck != m_glide.pDeck) {
+        return;
+    }
+    const double ratio = beatmatch::glideRatio(
+            m_glide.startRatio, m_glide.timer.elapsed() / 1000.0);
+    writeControl(ConfigKey(pDeck->group, QStringLiteral("rate_ratio")), ratio);
+    if (ratio == 1.0) {
+        // Back at its own tempo: key lock no longer needed.
+        writeControl(ConfigKey(pDeck->group, QStringLiteral("keylock")),
+                m_glide.keylockBefore);
+        m_glide.pDeck = nullptr;
+    }
 }
 
 bool AutoDJProcessor::setEnergyRating(const QList<TrackId>& trackIds, int rating) {
@@ -868,6 +1007,8 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::toggleAutoDJ(bool enable) {
         }
         emitAutoDJStateChanged(m_eState);
     } else { // Disable Auto DJ
+        endSmartTransition(false);
+        m_glide.pDeck = nullptr; // leave the tempo where it is
         m_enabledAutoDJ.setAndConfirm(0.0);
         qDebug() << "Auto DJ disabled";
         m_eState = ADJ_DISABLED;
@@ -977,6 +1118,8 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
         return;
     }
 
+    updateGlide(pAttributes);
+
     DeckAttributes* thisDeck = pAttributes;
     DeckAttributes* otherDeck = getOtherDeck(thisDeck);
     if (!otherDeck) {
@@ -1067,6 +1210,7 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
                                 << "fade complete" << autoDJStateName(m_eState)
                                 << "-> IDLE";
             }
+            endSmartTransition(true);
             m_eState = ADJ_IDLE;
             // Invalidate threshold calculated for the old otherDeck
             // This avoids starting a fade back before the new track is
@@ -1153,9 +1297,11 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
                     setCrossfader(thisDeck->isLeft() ? 1.0 : -1.0);
                 }
 
+                beginSmartTransition(thisDeck, otherDeck);
                 if (!otherDeckPlaying) {
                     otherDeck->play();
                 }
+                afterToDeckStarted();
 
                 // Now that we have started the other deck playing, remove the track
                 // that was "on deck" from the top of the queue.
@@ -1191,6 +1337,7 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
             // P1/P2FADING case above).
             thisDeck->stop();
             m_transitionProgress = 1.0;
+            updateSmartTransition(1.0);
             // Note: If the user has stopped the toDeck during the transition.
             // this deck just stops as well. In this case a stopped AutoDJ is accepted
             // because the use did it intentionally
@@ -1212,6 +1359,7 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
                 // we move the crossfader linearly with
                 // movements in this track's play position.
                 setCrossfader(currentCrossfader + adjustment);
+                updateSmartTransition(transitionProgress);
             }
             m_transitionProgress = transitionProgress;
             // if we are at 1.0 here, we need an additional callback until the last
