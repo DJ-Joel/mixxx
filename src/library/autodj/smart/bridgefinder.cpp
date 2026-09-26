@@ -50,6 +50,8 @@ unsigned genreFamilies(const QString& tidyGenre) {
             {"coldwave", kDark},
             {"industrial", kIndustrial},
             {"ebm", kIndustrial},
+            {"electronic body music", kIndustrial},
+            {"electro industrial", kIndustrial},
             {"aggrotech", kIndustrial},
             {"new wave", kNewWave},
             {"synthpop", kNewWave},

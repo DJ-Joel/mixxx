@@ -150,6 +150,16 @@
         </widget>
        </item>
        <item>
+        <widget class="QPushButton" name="pushButtonGenreScan">
+         <property name="focusPolicy">
+          <enum>Qt::NoFocus</enum>
+         </property>
+         <property name="text">
+          <string>Genre Scan</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QLabel" name="labelProgress">
          <property name="text">
           <string>Progress</string>

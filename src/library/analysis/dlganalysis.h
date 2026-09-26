@@ -6,6 +6,7 @@
 #include "analyzer/analyzerscheduledtrack.h"
 #include "library/analysis/analysislibrarytablemodel.h"
 #include "library/analysis/ui_dlganalysis.h"
+#include "library/autodj/genrescanner.h"
 #include "library/libraryview.h"
 #include "preferences/usersettings.h"
 
@@ -13,6 +14,7 @@ class Library;
 class WAnalysisLibraryTableView;
 class WLibrary;
 class QItemSelection;
+class QProgressDialog;
 
 class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual LibraryView {
     Q_OBJECT
@@ -44,6 +46,9 @@ class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual Libra
     void slotRecentDaysChanged(int days);
     void slotShowAllSongs();
     void installEventFilter(QObject* pFilter);
+    /// Auto DJ 2.0 Genre Scan: look up genres on MusicBrainz, then review.
+    void slotGenreScan();
+    void slotGenreScanFinished(const QList<GenreScanner::Result>& results, bool cancelled);
 
   signals:
     void loadTrack(TrackPointer pTrack);
@@ -60,4 +65,7 @@ class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual Libra
     QButtonGroup m_songsButtonGroup;
     WAnalysisLibraryTableView* m_pAnalysisLibraryTableView;
     AnalysisLibraryTableModel* m_pAnalysisLibraryTableModel;
+    Library* m_pLibrary;
+    GenreScanner* m_pGenreScanner;
+    QProgressDialog* m_pGenreProgress = nullptr;
 };
