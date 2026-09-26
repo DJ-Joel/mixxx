@@ -625,13 +625,32 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     // a tiny tempo change (a glide) then made no phrase fit any more.
     double fromLimitSec = getOutroEndSecond(pFromDeck);
     double toBodyStartSec = -1.0;
+    // The outgoing track's Outro Start marker (set by the analysis or by the
+    // DJ) is where its energy starts to go: the fade must be over by then.
+    const mixxx::audio::FramePos fromOutroStart = pFromDeck->outroStartPosition();
+    const bool fromOutroMarked = fromOutroStart.isValid() &&
+            fromOutroStart <= pFromDeck->trackEndPosition();
+    if (fromOutroMarked) {
+        fromLimitSec = std::min(fromLimitSec, framePositionToSeconds(fromOutroStart, pFromDeck));
+    }
+    QString introSource = QStringLiteral("Intro End marker");
     if (m_pTrackCollectionManager && m_pTrackCollectionManager->internalCollection()) {
         const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
-        if (const auto fromBody = EnergyStore::loadBody(db, pFromTrack->getId())) {
-            fromLimitSec = std::min(fromLimitSec, fromBody->endSec / fromRatio);
+        if (!fromOutroMarked) {
+            if (const auto fromBody = EnergyStore::loadBody(db, pFromTrack->getId())) {
+                fromLimitSec = std::min(fromLimitSec, fromBody->endSec / fromRatio);
+            }
         }
         if (const auto toBody = EnergyStore::loadBody(db, pToTrack->getId())) {
             toBodyStartSec = toBody->startSec / pToDeck->rateRatio();
+        }
+        if (toMarkedBeatSec >= 0.0) {
+            const double markerTrackSec = toMarkedBeatSec * pToDeck->rateRatio();
+            const auto autoMarkers = EnergyStore::loadAutoMarkers(db, pToTrack->getId());
+            introSource = autoMarkers.introEndSec >= 0.0 &&
+                            std::fabs(markerTrackSec - autoMarkers.introEndSec) < 0.02
+                    ? QStringLiteral("Intro End marker, set by analysis")
+                    : QStringLiteral("Intro End marker, set by DJ");
         }
     }
     const bool toBodyMarked = toMarkedBeatSec >= 0.0;
@@ -676,11 +695,23 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                     .arg(fromLimitSec)
                     .arg(plan->toStartSec)
                     .arg(toBodyStartSec)
-                    .arg(toBodyMarked ? QStringLiteral("Intro End marker")
-                                      : QStringLiteral("measured")));
+                    .arg(toBodyMarked ? introSource : QStringLiteral("measured"))
+                    .append(fromOutroMarked ? QStringLiteral(", limit from Outro Start")
+                                            : QString()));
     pFromDeck->fadeBeginPos = plan->fromFadeBeginSec;
     pFromDeck->fadeEndPos = plan->fromFadeEndSec;
     pToDeck->startPos = plan->toStartSec;
+    // A re-plan (e.g. after a tempo step) does not re-cue the waiting track
+    // by itself. If it is not where the plan needs it, move it there, so its
+    // beats and phrases line up. The seek re-plans once more; the answer is
+    // then the same, so it stops.
+    const double toDuration = getEndSecond(pToDeck);
+    if (!pToDeck->isPlaying() && toDuration > 0.0) {
+        const double toNowSec = pToDeck->playPosition() * toDuration;
+        if (std::fabs(toNowSec - plan->toStartSec) > 0.05) {
+            pToDeck->setPlayPosition(plan->toStartSec / toDuration);
+        }
+    }
 }
 
 void AutoDJProcessor::resetDeckTempo(DeckAttributes* pDeck) {

@@ -16,6 +16,9 @@
 ///  - `autodj_energy`: measured by AnalyzerEnergy, rewritten on re-analysis
 ///  - `autodj_energy_manual`: the DJ's own 1..10 rating, never overwritten
 ///    by analysis. A rating always wins over the measured value.
+///  - `autodj_auto_markers`: the Intro End / Outro Start positions the
+///    analyzer set itself, so it can tell them apart from markers the DJ set
+///    or moved (those are never touched).
 class EnergyStore {
   public:
     static constexpr int kMinRating = 1;
@@ -44,6 +47,15 @@ class EnergyStore {
         double endSec = 0.0;
     };
     static std::optional<Body> loadBody(const QSqlDatabase& db, TrackId trackId);
+
+    /// Marker positions (seconds) the analyzer set itself; -1 = none.
+    struct AutoMarkers {
+        double introEndSec = -1.0;
+        double outroStartSec = -1.0;
+    };
+    static AutoMarkers loadAutoMarkers(const QSqlDatabase& db, TrackId trackId);
+    static bool saveAutoMarkers(
+            const QSqlDatabase& db, TrackId trackId, const AutoMarkers& markers);
 
     /// Sets the DJ's rating (1..10) for the tracks. rating 0 clears it, so
     /// the measured value is used again.

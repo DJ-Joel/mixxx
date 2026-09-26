@@ -24,6 +24,8 @@ class AnalyzerEnergy : public Analyzer {
     void cleanup() override;
 
   private:
+    void setAutoMarkers(const TrackPointer& pTrack, const EnergyCalculator::Result& result);
+
     QSqlDatabase m_db;
     bool m_tableReady;
     TrackId m_trackId;

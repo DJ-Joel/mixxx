@@ -21,7 +21,9 @@ class EnergyCalculator {
     /// Bump when the formula changes, so tracks get re-analysed.
     /// v2: adds bodyStartSec / bodyEndSec.
     /// v3: body end uses the stricter kBodyEndDropDb.
-    static constexpr int kVersion = 3;
+    /// v4: same numbers; re-run so the analyzer sets the Intro End and
+    ///     Outro Start markers on tracks analysed before that existed.
+    static constexpr int kVersion = 4;
 
     struct Result {
         double energy = 0.0;       ///< 1..10

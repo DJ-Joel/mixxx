@@ -39,6 +39,14 @@ bool EnergyStore::ensureTable(const QSqlDatabase& db) {
         }
     }
     if (!query.exec(QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS autodj_auto_markers ("
+                "track_id INTEGER PRIMARY KEY, "
+                "intro_end_sec REAL, "
+                "outro_start_sec REAL)"))) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    if (!query.exec(QStringLiteral(
                 "CREATE TABLE IF NOT EXISTS autodj_energy_manual ("
                 "track_id INTEGER PRIMARY KEY, "
                 "rating INTEGER NOT NULL)"))) {
@@ -148,6 +156,54 @@ std::optional<EnergyStore::Body> EnergyStore::loadBody(const QSqlDatabase& db, T
         return std::nullopt;
     }
     return body;
+}
+
+// static
+EnergyStore::AutoMarkers EnergyStore::loadAutoMarkers(const QSqlDatabase& db, TrackId trackId) {
+    AutoMarkers markers;
+    if (!ensureTable(db)) {
+        return markers;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "SELECT intro_end_sec, outro_start_sec FROM autodj_auto_markers "
+            "WHERE track_id=:id"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return markers;
+    }
+    if (query.next()) {
+        if (!query.value(0).isNull()) {
+            markers.introEndSec = query.value(0).toDouble();
+        }
+        if (!query.value(1).isNull()) {
+            markers.outroStartSec = query.value(1).toDouble();
+        }
+    }
+    return markers;
+}
+
+// static
+bool EnergyStore::saveAutoMarkers(
+        const QSqlDatabase& db, TrackId trackId, const AutoMarkers& markers) {
+    if (!ensureTable(db)) {
+        return false;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "INSERT OR REPLACE INTO autodj_auto_markers "
+            "(track_id, intro_end_sec, outro_start_sec) VALUES (:id, :intro, :outro)"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    query.bindValue(QStringLiteral(":intro"),
+            markers.introEndSec >= 0.0 ? QVariant(markers.introEndSec) : QVariant());
+    query.bindValue(QStringLiteral(":outro"),
+            markers.outroStartSec >= 0.0 ? QVariant(markers.outroStartSec) : QVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    return true;
 }
 
 // static

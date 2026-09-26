@@ -14,6 +14,8 @@ namespace phrasealign {
 constexpr int kBeatsPerBar = 4;
 constexpr int kBarsPerPhrase = 8;
 constexpr int kBeatsPerPhrase = kBeatsPerBar * kBarsPerPhrase; // 32
+/// How late a fade may still start (see plan()).
+constexpr int kLateStartBeats = kBeatsPerBar;
 
 /// A constant-tempo beat grid, in seconds of the track (at its own speed).
 struct Grid {
@@ -36,6 +38,17 @@ struct Plan {
     double toStartSec = 0.0;       ///< incoming track: starts here (a phrase start)
     int bars = 0;                  ///< length of the fade in bars
 };
+
+/// Where the main beat kicks in, as a beat number of `grid` (0 = first
+/// beat). `bodyStartSec` is either measured (rough, 1 s steps: snapped to a
+/// phrase start if one is close, otherwise the nearest bar) or `marked` by
+/// the DJ (trusted: just the nearest beat). Auto DJ and the analyzer (which
+/// sets the Intro End marker) both use this, so they always agree.
+double entryBeat(const Grid& grid, double bodyStartSec, bool marked);
+
+/// The last bar line at or before `bodyEndSec` (where the track starts to
+/// fade), in seconds. Used for the automatic Outro Start marker.
+double bodyEndBarSec(const Grid& grid, double bodyEndSec);
 
 /// Fade length in bars for a wanted length in seconds: a whole number of
 /// 8-bar phrases (at least one), measured at the outgoing track's tempo.

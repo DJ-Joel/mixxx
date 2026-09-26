@@ -142,3 +142,35 @@ TEST(PhraseAlignTest, MarkedBeatIsTrustedToTheBeat) {
     ASSERT_TRUE(marked.has_value());
     EXPECT_NEAR(ls.beatTime(31 - 16), marked->toStartSec, 1e-9);
 }
+
+TEST(PhraseAlignTest, EntryBeatForTheAutomaticIntroEndMarker) {
+    // Nothing Stays: measured 34.0 s -> the phrase at beat 64 (34.66 s).
+    phrasealign::Grid ns;
+    ns.firstBeatSec = 0.272;
+    ns.beatSec = 60.0 / 111.68;
+    EXPECT_DOUBLE_EQ(64.0, phrasealign::entryBeat(ns, 34.0, false));
+    // A marked time is only snapped to the nearest beat...
+    EXPECT_DOUBLE_EQ(63.0, phrasealign::entryBeat(ns, 34.0, true));
+    // ...and a value that is already on the grid stays where it is, so a
+    // marker set by the analyzer gives Auto DJ the same answer again.
+    const double marker = ns.beatTime(phrasealign::entryBeat(ns, 34.0, false));
+    EXPECT_DOUBLE_EQ(64.0, phrasealign::entryBeat(ns, marker, true));
+}
+
+TEST(PhraseAlignTest, BodyEndSnapsBackToABar) {
+    // 120 BPM from 0 s: bars every 2 s. 181.3 s -> 180 s; 182 s stays.
+    EXPECT_DOUBLE_EQ(180.0, phrasealign::bodyEndBarSec(k120, 181.3));
+    EXPECT_DOUBLE_EQ(182.0, phrasealign::bodyEndBarSec(k120, 182.0));
+}
+
+TEST(PhraseAlignTest, AReplanJustAfterThePhraseStartStillMixesOnTheBeat) {
+    // Limit 200 s at 120 BPM: the fade is 176 -> 192 s. A re-plan at
+    // 176.4 s (0.4 s late, e.g. a tempo step while gliding) keeps it: the
+    // fade starts now and the incoming track starts 0.4 s further in.
+    const auto p = phrasealign::plan(k120, k120, 176.4, 200.0, 0.0, 8);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(176.0, p->fromFadeBeginSec);
+    EXPECT_NEAR(0.4, p->toStartSec, 1e-9);
+    // More than one bar (2 s) late, e.g. the DJ jumped ahead: give up.
+    EXPECT_FALSE(phrasealign::plan(k120, k120, 178.5, 200.0, 0.0, 8).has_value());
+}
