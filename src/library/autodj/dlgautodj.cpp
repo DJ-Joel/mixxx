@@ -101,7 +101,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     // Auto DJ 2.0 Smart Sort. Always shows text: skins have no icon for it.
     pushButtonSmartSort->setText(tr("Smart Sort"));
     pushButtonSmartSort->setToolTip(tr(
-            "Sort the Auto DJ queue for smooth mixing (key and BPM).\n"
+            "Sort the Auto DJ queue for smooth mixing (key, BPM and energy).\n"
             "\n"
             "While Auto DJ is running, the next track stays first."));
     connect(pushButtonSmartSort,

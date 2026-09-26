@@ -4,6 +4,7 @@
 
 #include "analyzer/analyzerbeats.h"
 #include "analyzer/analyzerebur128.h"
+#include "analyzer/analyzerenergy.h"
 #include "analyzer/analyzergain.h"
 #include "analyzer/analyzerkey.h"
 #include "analyzer/analyzersilence.h"
@@ -91,10 +92,11 @@ void AnalyzerThread::doRun() {
     std::unique_ptr<AnalysisDao> pAnalysisDao;
     // The thread-local database connection  must not be closed
     // before returning from this function.
-    mixxx::DbConnectionPooler dbConnectionPooler;
+    // Auto DJ 2.0: always get a connection, because AnalyzerEnergy stores
+    // its results in the database too (not only the waveform analyzer).
+    mixxx::DbConnectionPooler dbConnectionPooler(m_dbConnectionPool);
 
     if (m_modeFlags & AnalyzerModeFlags::WithWaveform) {
-        dbConnectionPooler = mixxx::DbConnectionPooler(m_dbConnectionPool); // move assignment
         if (!dbConnectionPooler.isPooling()) {
             kLogger.warning()
                     << "Failed to obtain database connection for analyzer thread";
@@ -115,6 +117,10 @@ void AnalyzerThread::doRun() {
     m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerBeats>(m_pConfig, enforceBpmDetection)));
     m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerKey>(m_pConfig)));
     m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerSilence>(m_pConfig)));
+    if (dbConnectionPooler.isPooling()) {
+        QSqlDatabase dbConnection = mixxx::DbConnectionPooled(m_dbConnectionPool);
+        m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerEnergy>(dbConnection)));
+    }
     DEBUG_ASSERT(!m_analyzers.empty());
     kLogger.debug() << "Activated" << m_analyzers.size() << "analyzers";
 

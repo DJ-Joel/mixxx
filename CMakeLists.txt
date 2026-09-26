@@ -1202,7 +1202,9 @@ add_library(
   EXCLUDE_FROM_ALL
   src/analyzer/analyzerbeats.cpp
   src/analyzer/analyzerebur128.cpp
+  src/analyzer/analyzerenergy.cpp
   src/analyzer/analyzergain.cpp
+  src/analyzer/energycalculator.cpp
   src/analyzer/analyzerkey.cpp
   src/analyzer/analyzerscheduledtrack.cpp
   src/analyzer/analyzersilence.cpp
@@ -1415,6 +1417,7 @@ add_library(
   src/library/autodj/autodjprocessor.cpp
   src/library/autodj/dlgautodj.cpp
   src/library/autodj/dlgautodj.ui
+  src/library/autodj/smart/energystore.cpp
   src/library/autodj/smart/mixscorer.cpp
   src/library/autodj/smart/smartsequencer.cpp
   src/library/autodj/smart/trackfeatures.cpp
@@ -2969,6 +2972,7 @@ if(BUILD_TESTING)
     src/test/durationutiltest.cpp
     #TODO: write useful tests for refactored effects system
     #src/test/effectchainslottest.cpp
+    src/test/energycalculator_test.cpp
     src/test/enginebufferscalelineartest.cpp
     src/test/enginebuffertest.cpp
     src/test/enginefilterbiquadtest.cpp

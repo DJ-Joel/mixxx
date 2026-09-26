@@ -7,9 +7,12 @@
 #include <optional>
 
 #include "engine/channels/enginedeck.h"
+#include "library/autodj/smart/energystore.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "library/autodj/smart/trackfeatures.h"
 #include "library/columncache.h"
+#include "library/trackcollection.h"
+#include "library/trackcollectionmanager.h"
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
 #include "moc_autodjprocessor.cpp"
@@ -174,6 +177,7 @@ AutoDJProcessor::AutoDJProcessor(
           m_addRandomTrack(ConfigKey(kControlGroup, QStringLiteral("add_random_track"))),
           m_fadeNow(ConfigKey(kControlGroup, QStringLiteral("fade_now"))),
           m_enabledAutoDJ(ConfigKey(kControlGroup, QStringLiteral("enabled"))) {
+    m_pTrackCollectionManager = pTrackCollectionManager;
     m_pAutoDJTableModel = make_parented<PlaylistTableModel>(
             this, pTrackCollectionManager, "mixxx.db.model.autodj");
     m_pAutoDJTableModel->selectPlaylist(iAutoDJPlaylistId);
@@ -279,6 +283,20 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
     std::sort(rows.begin(), rows.end(), [](const Row& a, const Row& b) {
         return a.position < b.position;
     });
+
+    // Energy scores live in their own table (see EnergyStore).
+    if (m_pTrackCollectionManager && m_pTrackCollectionManager->internalCollection()) {
+        QList<TrackId> ids;
+        ids.reserve(rows.size());
+        for (const Row& row : std::as_const(rows)) {
+            ids.append(row.id);
+        }
+        const QHash<TrackId, double> energies = EnergyStore::loadEnergies(
+                m_pTrackCollectionManager->internalCollection()->database(), ids);
+        for (Row& row : rows) {
+            row.features.energy = energies.value(row.id, 0.0);
+        }
+    }
 
     if (rows.size() < 2) {
         emit smartSortFinished(static_cast<int>(rows.size()), 0, QStringList());

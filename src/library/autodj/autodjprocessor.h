@@ -335,6 +335,7 @@ class AutoDJProcessor : public QObject {
     ControlPushButton m_enabledAutoDJ;
 
     bool m_smartSortRunning = false;
+    TrackCollectionManager* m_pTrackCollectionManager = nullptr;
 
     DISALLOW_COPY_AND_ASSIGN(AutoDJProcessor);
 };
