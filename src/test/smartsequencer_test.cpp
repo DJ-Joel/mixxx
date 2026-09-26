@@ -153,10 +153,12 @@ TEST(MixScorerTest, TempoCostIsSymmetricAndSmooth) {
     EXPECT_NEAR(MixScorer::tempoCost(135, 149.4, 5, true),
             MixScorer::tempoCost(149.4, 135, 5, true),
             1e-9);
-    // No jump at the 2x-tolerance edge.
-    const double below = MixScorer::tempoCost(100, 100 * std::exp(0.0999), 5, true);
-    const double above = MixScorer::tempoCost(100, 100 * std::exp(0.1001), 5, true);
-    EXPECT_NEAR(below, above, 0.05);
+    // Just inside the tolerance mixes; just past it is a clash.
+    EXPECT_LT(MixScorer::tempoCost(100, 100 * std::exp(0.049), 5, true), 1.0);
+    EXPECT_GE(MixScorer::tempoCost(100, 100 * std::exp(0.051), 5, true),
+            MixScorer::kClashTempoCost);
+    // The Promise (118.1) -> Rock The Casbah (129.5): about 9%, a clash.
+    EXPECT_GE(MixScorer::tempoCost(118.1, 129.5, 5, true), MixScorer::kClashTempoCost);
 }
 
 TEST(MixScorerTest, EnergyBuildPenalisesDrops) {

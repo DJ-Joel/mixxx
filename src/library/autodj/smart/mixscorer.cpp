@@ -74,14 +74,11 @@ double MixScorer::tempoCost(double bpmFrom,
     }
     const double pct = diff * 100.0;
     if (pct <= tolerancePct) {
-        return pct / tolerancePct; // 0..1
+        return pct / tolerancePct; // 0..1: mixable
     }
-    if (pct <= 2.0 * tolerancePct) {
-        return 1.0 + 4.0 * (pct - tolerancePct) / tolerancePct; // 1..5
-    }
-    // Keeps rising smoothly, with no jump at the edge: a jump made one side
-    // of the edge far worse than the other.
-    return 5.0 + (pct - 2.0 * tolerancePct); // 5+
+    // Past the tolerance the crowd can hear the tempo change (DJ's own
+    // judgement: 5%), so it is a clash straight away and grows from there.
+    return kClashTempoCost + 1.5 * (pct - tolerancePct);
 }
 
 double MixScorer::energyCost(double energyFrom, double energyTo) const {

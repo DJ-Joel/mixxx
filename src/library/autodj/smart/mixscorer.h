@@ -58,8 +58,8 @@ class MixScorer {
             double energyDelta,
             bool boostExcusesKeyJump);
 
-    /// Tempo cost. 0..1 inside tolerance, 1..5 up to twice the tolerance,
-    /// 20+ beyond that.
+    /// Tempo cost. 0..1 inside the tolerance; beyond it a clash
+    /// (kClashTempoCost and up). Uses the log BPM ratio, so it is symmetric.
     static double tempoCost(double bpmFrom,
             double bpmTo,
             double tolerancePct,
