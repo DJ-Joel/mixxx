@@ -2,6 +2,7 @@
 
 #include <QFutureWatcher>
 #include <QHash>
+#include <QRandomGenerator>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QtConcurrentRun>
@@ -72,7 +73,7 @@ QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral(
                 "SELECT library.id, library.bpm, library.key_id, "
-                "library.artist, library.title "
+                "library.artist, library.title, library.genre "
                 "FROM library JOIN track_locations "
                 "ON track_locations.id = library.location "
                 "WHERE library.mixxx_deleted = 0 "
@@ -99,6 +100,9 @@ QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
         const QString artist = query.value(3).toString().trimmed();
         const QString title = query.value(4).toString().trimmed();
         f.displayName = artist.isEmpty() ? title : artist + QStringLiteral(" - ") + title;
+        f.artist = artist;
+        f.title = title;
+        f.genre = query.value(5).toString().trimmed();
         candidates.append(f);
         ids.append(f.id);
     }
@@ -828,16 +832,70 @@ bool AutoDJProcessor::tryPhraseFadeNow() {
     return true;
 }
 
-QStringList AutoDJProcessor::smartFill(int count) {
+QList<std::pair<QString, QString>> AutoDJProcessor::smartFillSources() const {
+    QList<std::pair<QString, QString>> sources;
+    if (!m_pTrackCollectionManager || !m_pTrackCollectionManager->internalCollection()) {
+        return sources;
+    }
+    const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
+    QSqlQuery query(db);
+    if (query.exec(QStringLiteral("SELECT id, name FROM crates ORDER BY name"))) {
+        while (query.next()) {
+            sources.append(std::make_pair(QStringLiteral("crate:") + query.value(0).toString(),
+                    tr("Crate: %1").arg(query.value(1).toString())));
+        }
+    }
+    // hidden = 0: the DJ's own playlists (not Auto DJ or history).
+    if (query.exec(QStringLiteral(
+                "SELECT id, name FROM Playlists WHERE hidden = 0 ORDER BY name"))) {
+        while (query.next()) {
+            sources.append(std::make_pair(QStringLiteral("playlist:") + query.value(0).toString(),
+                    tr("Playlist: %1").arg(query.value(1).toString())));
+        }
+    }
+    return sources;
+}
+
+QStringList AutoDJProcessor::smartFill(int count,
+        MixScoreWeights::EnergyDirection energy,
+        bool avoidSameArtist,
+        const QString& source) {
     QStringList added;
     if (count <= 0 || !m_pTrackCollectionManager ||
             !m_pTrackCollectionManager->internalCollection()) {
         return added;
     }
     const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
-    const QVector<TrackFeatures> library = loadBridgeCandidates(db);
+    const QVector<TrackFeatures> allTracks = loadBridgeCandidates(db);
+    // Only take songs from the chosen crate or playlist (if any). The start
+    // track (last queued) may come from anywhere.
+    QVector<TrackFeatures> library = allTracks;
+    const QString kind = source.section(QChar(':'), 0, 0);
+    const QString sourceId = source.section(QChar(':'), 1);
+    if (kind == QStringLiteral("crate") || kind == QStringLiteral("playlist")) {
+        QSqlQuery query(db);
+        query.prepare(kind == QStringLiteral("crate")
+                        ? QStringLiteral("SELECT track_id FROM crate_tracks WHERE crate_id = :id")
+                        : QStringLiteral(
+                                  "SELECT track_id FROM PlaylistTracks WHERE playlist_id = :id"));
+        query.bindValue(QStringLiteral(":id"), sourceId.toInt());
+        QSet<TrackId> members;
+        if (query.exec()) {
+            while (query.next()) {
+                members.insert(TrackId(query.value(0)));
+            }
+        }
+        library.clear();
+        for (const TrackFeatures& t : allTracks) {
+            if (members.contains(t.id)) {
+                library.append(t);
+            }
+        }
+        kLogger.info() << "Smart fill: taking songs from" << source << "-" << library.size()
+                       << "usable tracks";
+    }
     QHash<TrackId, const TrackFeatures*> byId;
-    for (const TrackFeatures& t : library) {
+    for (const TrackFeatures& t : allTracks) {
         byId.insert(t.id, &t);
     }
     // Never add a track that is queued or loaded, or another copy of it.
@@ -855,30 +913,67 @@ QStringList AutoDJProcessor::smartFill(int count) {
     for (const auto& entry : queue) {
         exclude(entry.first);
     }
+    // Start from: the last queued track; else the playing track; else any
+    // loaded track; else pick an opening track (see below).
     TrackId lastId;
+    TrackId loadedId;
     for (const auto& pDeck : m_decks) {
         if (const TrackPointer pTrack = pDeck->getLoadedTrack()) {
             exclude(pTrack->getId());
-            if (queue.isEmpty() && pDeck->isPlaying()) {
+            if (pDeck->isPlaying()) {
                 lastId = pTrack->getId();
             }
+            if (!loadedId.isValid()) {
+                loadedId = pTrack->getId();
+            }
         }
+    }
+    if (!lastId.isValid()) {
+        lastId = loadedId;
     }
     if (!queue.isEmpty()) {
         lastId = queue.last().first;
     }
     const TrackFeatures* pLast = byId.value(lastId);
+    QList<TrackFeatures> chain;
+    std::optional<TrackFeatures> opener;
     if (!pLast) {
-        kLogger.info() << "Smart fill: the last track has no key or BPM";
-        return added;
+        if (!queue.isEmpty()) {
+            kLogger.info() << "Smart fill: the last queued track has no key or BPM";
+            return added;
+        }
+        // Nothing to start from: open with a calm track when building energy.
+        opener = BridgeFinder::pickStart(library,
+                excludeIds,
+                excludeNames,
+                energy == MixScoreWeights::EnergyDirection::Build,
+                QRandomGenerator::global()->generate());
+        if (!opener) {
+            return added;
+        }
+        exclude(opener->id);
+        chain.append(*opener);
+        pLast = &*opener;
     }
-    const QList<TrackFeatures> chain =
-            BridgeFinder(MixScorer()).extend(*pLast, library, excludeIds, excludeNames, count);
+    MixScoreWeights weights;
+    weights.direction = energy;
+    chain += BridgeFinder(MixScorer(weights))
+                     .extend(*pLast,
+                             library,
+                             excludeIds,
+                             excludeNames,
+                             count - static_cast<int>(chain.size()),
+                             avoidSameArtist,
+                             // never 0 (0 = no randomness)
+                             QRandomGenerator::global()->generate() | 1u);
     PlaylistDAO& playlistDao = m_pTrackCollectionManager->internalCollection()->getPlaylistDAO();
     const int playlistId = m_pAutoDJTableModel->getPlaylist();
     for (const TrackFeatures& t : chain) {
         if (playlistDao.appendTrackToPlaylist(t.id, playlistId)) {
-            added << MixScorer::trackText(t);
+            added << (opener && t.id == opener->id
+                            ? tr("Opening track (chosen for you): %1")
+                                      .arg(MixScorer::trackText(t))
+                            : MixScorer::trackText(t));
         }
     }
     m_pAutoDJTableModel->select();

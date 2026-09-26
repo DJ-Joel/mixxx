@@ -493,3 +493,189 @@ TEST(BridgeFinderTest, SmartFillChainsSmoothMixes) {
     EXPECT_FALSE(seen.contains(TrackId(QVariant(13))));
     EXPECT_FALSE(seen.contains(TrackId(QVariant(14))));
 }
+
+namespace {
+TrackFeatures song(int id, const char* artist, const char* title) {
+    TrackFeatures f = makeTrack(id, 8, true, 120);
+    f.artist = QString::fromUtf8(artist);
+    f.title = QString::fromUtf8(title);
+    f.displayName = f.artist + QStringLiteral(" - ") + f.title;
+    return f;
+}
+} // namespace
+
+TEST(BridgeFinderTest, NameKeyMatchesOtherVersionsOfTheSameSong) {
+    const auto key = [](const char* a, const char* t) {
+        return BridgeFinder::nameKey(song(1, a, t));
+    };
+    EXPECT_EQ(key("The Ward Brothers", "Cross That Bridge (Extended)"),
+            key("Ward Brothers", "Cross That Bridge"));
+    EXPECT_EQ(key("Killing Joke", "Love Like Blood (12\" Version)"),
+            key("KILLING JOKE", "Love Like Blood"));
+    EXPECT_EQ(key("New Order", "Blue Monday - 1988 Remix"), key("New Order", "Blue Monday"));
+    EXPECT_EQ(key("Big Pig", "Big Pig - Breakaway! (Extended)"), key("Big Pig", "Breakaway"));
+    EXPECT_EQ(key("Ultravox", "White China [Razormaid]"), key("Ultravox", "White China"));
+    EXPECT_EQ(key("Echo & The Bunnymen", "The Killing Moon"),
+            key("Echo and the Bunnymen", "Killing Moon"));
+    // Different songs, or the same title by someone else, stay different.
+    EXPECT_NE(key("Ultravox", "White China"), key("Ultravox", "Vienna"));
+    // Covers and other artists' versions count as the same song.
+    EXPECT_EQ(key("Dio", "Rainbow in the Dark"), key("Computer Club", "Rainbow in the Dark"));
+    EXPECT_EQ(key("DJ Snake & Lil Jon", "Turn Down For What (Remix) (Dirty)"),
+            key("DJ Snake feat. Lil Jon", "Turn Down For What"));
+    EXPECT_EQ(key("George Michael", "Freedom! '90 (Back to Reality Mix)"),
+            key("Michael, George", "Freedom (remix)"));
+    EXPECT_EQ(key("Sisters of Mercy", "Lucretia My Reflection"),
+            key("", "Lucretia My Reflection by Destroid"));
+    EXPECT_EQ(key("Juvenile", "Back That Azz Up feat. Mannie Fresh"),
+            key("Juvenile", "Back That Azz Up"));
+    // A title that is not a version tag after " - " is kept.
+    EXPECT_NE(key("Band", "Song - Part One"), key("Band", "Song - Part Two"));
+}
+
+TEST(BridgeFinderTest, SmartFillSkipsOtherVersionsAndTheSameArtistInARow) {
+    TrackFeatures last = song(1, "Xymox", "Obsession");
+    last.bpm = 120;
+    QVector<TrackFeatures> library = {
+            song(10, "Xymox", "Obsession (Extended)"), // another version: never
+            song(11, "Xymox", "Evelyn"),               // same artist as the last
+            song(12, "Cyberaktif", "Nothing Stays"),
+    };
+    library[0].bpm = library[1].bpm = 120.5;
+    library[2].bpm = 121;
+    BridgeFinder finder{MixScorer()};
+    const auto withRule = finder.extend(last, library, {}, {}, 1, true);
+    ASSERT_EQ(1, withRule.size());
+    EXPECT_EQ(TrackId(QVariant(12)), withRule[0].id);
+    const auto chain = finder.extend(last, library, {}, {}, 5, false);
+    for (const auto& t : chain) {
+        EXPECT_FALSE(t.id == TrackId(QVariant(10)));
+    }
+}
+
+TEST(BridgeFinderTest, SmartFillFollowsTheEnergyDirection) {
+    // From energy 5: one candidate at 4 (down), one at 6 (up), same key/tempo.
+    TrackFeatures last = makeTrack(1, 8, true, 120, 5);
+    const QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 120, 4),
+            makeTrack(11, 8, true, 120, 6),
+    };
+    MixScoreWeights build;
+    build.direction = MixScoreWeights::EnergyDirection::Build;
+    const auto up = BridgeFinder(MixScorer(build)).extend(last, library, {}, {}, 1);
+    ASSERT_EQ(1, up.size());
+    EXPECT_EQ(TrackId(QVariant(11)), up[0].id);
+    // Keep level: a step of 1 either way costs the same, so both are fine;
+    // a jump of 3 is worse than a step of 1.
+    MixScoreWeights hold;
+    hold.direction = MixScoreWeights::EnergyDirection::Hold;
+    const QVector<TrackFeatures> levels = {
+            makeTrack(20, 8, true, 120, 8),
+            makeTrack(21, 8, true, 120, 5.5),
+    };
+    const auto level = BridgeFinder(MixScorer(hold)).extend(last, levels, {}, {}, 1);
+    ASSERT_EQ(1, level.size());
+    EXPECT_EQ(TrackId(QVariant(21)), level[0].id);
+}
+
+TEST(BridgeFinderTest, SmartFillPicksACalmOpenerWhenThereIsNothingToStartFrom) {
+    QVector<TrackFeatures> library;
+    for (int i = 1; i <= 8; ++i) {
+        library.append(makeTrack(i, 8, true, 120, i)); // energy 1..8
+    }
+    library.append(makeTrack(99, 0, true, 120, 1)); // no key: never
+    // Calmest quarter of the 8 rated tracks = energy 1 and 2.
+    for (quint32 r = 0; r < 20; ++r) {
+        const auto start = BridgeFinder::pickStart(library, {}, {}, true, r);
+        ASSERT_TRUE(start.has_value());
+        EXPECT_LE(start->energy, 2.0);
+    }
+    // Queued tracks are skipped; with nothing usable: nullopt.
+    EXPECT_FALSE(BridgeFinder::pickStart({library.last()}, {}, {}, true, 0).has_value());
+    const auto any = BridgeFinder::pickStart(library, {TrackId(QVariant(1))}, {}, false, 0);
+    ASSERT_TRUE(any.has_value());
+    EXPECT_FALSE(any->id == TrackId(QVariant(1)));
+}
+
+TEST(BridgeFinderTest, SmartFillMovesAroundTheKeysAndVaries) {
+    // Plenty of 8A tracks, plus neighbours 9A, 7A and 8B, all at 120 BPM.
+    QVector<TrackFeatures> library;
+    int id = 100;
+    for (int i = 0; i < 10; ++i) {
+        library.append(makeTrack(id++, 8, true, 120));
+    }
+    for (int i = 0; i < 4; ++i) {
+        library.append(makeTrack(id++, 9, true, 120));
+        library.append(makeTrack(id++, 7, true, 120));
+        library.append(makeTrack(id++, 8, false, 120));
+    }
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    BridgeFinder finder{MixScorer()};
+    const auto noLongRuns = [&last](const QList<TrackFeatures>& chain) {
+        TrackFeatures prev2 = last;
+        TrackFeatures prev = last;
+        int run = 1;
+        for (const auto& t : chain) {
+            const bool same = t.camelotNumber == prev.camelotNumber &&
+                    t.camelotMinor == prev.camelotMinor;
+            run = same ? run + 1 : 1;
+            if (run > 2) {
+                return false;
+            }
+            prev2 = prev;
+            prev = t;
+        }
+        return true;
+    };
+    const auto fixed = finder.extend(last, library, {}, {}, 10, false, 0);
+    ASSERT_EQ(10, fixed.size());
+    EXPECT_TRUE(noLongRuns(fixed));
+    // Random picks: different fills, still no long runs in one key.
+    QSet<QString> fills;
+    for (quint32 seed = 1; seed <= 10; ++seed) {
+        const auto chain = finder.extend(last, library, {}, {}, 10, false, seed);
+        ASSERT_EQ(10, chain.size());
+        EXPECT_TRUE(noLongRuns(chain));
+        QString ids;
+        for (const auto& t : chain) {
+            ids += t.id.toString() + QChar(',');
+        }
+        fills.insert(ids);
+    }
+    EXPECT_GT(fills.size(), 5);
+}
+
+TEST(BridgeFinderTest, GenreCostGroupsFamilies) {
+    const auto cost = [](const char* a, const char* b) {
+        return BridgeFinder::genreCost(QString::fromUtf8(a), QString::fromUtf8(b));
+    };
+    EXPECT_DOUBLE_EQ(0.0, cost("Goth", "Gothic Rock"));
+    EXPECT_DOUBLE_EQ(0.0, cost("Gothic Darkwave Rock", "Darkwave"));
+    EXPECT_DOUBLE_EQ(0.0, cost("80's", "New Wave"));
+    EXPECT_DOUBLE_EQ(0.0, cost("EBM ", "Industrial"));
+    EXPECT_DOUBLE_EQ(0.0, cost("Rock/Pop", "Pop"));
+    EXPECT_DOUBLE_EQ(BridgeFinder::kRelatedGenreCost, cost("Goth", "Industrial"));
+    EXPECT_DOUBLE_EQ(BridgeFinder::kRelatedGenreCost, cost("Synthpop", "Dance"));
+    EXPECT_DOUBLE_EQ(BridgeFinder::kOtherGenreCost, cost("Gothic Rock", "Hip Hop"));
+    EXPECT_DOUBLE_EQ(BridgeFinder::kOtherGenreCost, cost("Industrial", "Pop"));
+    EXPECT_DOUBLE_EQ(BridgeFinder::kUnknownGenreCost, cost("", "Goth"));
+    EXPECT_DOUBLE_EQ(BridgeFinder::kUnknownGenreCost, cost("Other", "Dance"));
+    EXPECT_DOUBLE_EQ(0.0, cost("General Post-Punk", "Post punk"));
+    EXPECT_DOUBLE_EQ(0.0, cost("World", "World"));
+}
+
+TEST(BridgeFinderTest, SmartFillPrefersTheSameStyle) {
+    // Same key and tempo; only the genre differs.
+    TrackFeatures last = makeTrack(1, 8, true, 120);
+    last.genre = QStringLiteral("Gothic Rock");
+    QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 120),
+            makeTrack(11, 8, true, 120),
+    };
+    library[0].genre = QStringLiteral("Hip Hop");
+    library[1].genre = QStringLiteral("Darkwave");
+    BridgeFinder finder{MixScorer()};
+    const auto chain = finder.extend(last, library, {}, {}, 1, false, 0);
+    ASSERT_EQ(1, chain.size());
+    EXPECT_EQ(TrackId(QVariant(11)), chain[0].id);
+}

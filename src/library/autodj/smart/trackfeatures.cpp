@@ -29,6 +29,9 @@ TrackFeatures TrackFeatures::fromTrack(const TrackPointer& pTrack) {
     f.bpm = pTrack->getBpm();
     f.durationSec = pTrack->getDuration();
     f.displayName = pTrack->getInfo();
+    f.artist = pTrack->getArtist();
+    f.title = pTrack->getTitle();
+    f.genre = pTrack->getGenre();
 
     const auto key = pTrack->getKey();
     if (key != mixxx::track::io::key::INVALID &&

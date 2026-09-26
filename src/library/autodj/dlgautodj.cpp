@@ -1,5 +1,6 @@
 #include "library/autodj/dlgautodj.h"
 
+#include <QActionGroup>
 #include <QComboBox>
 #include <algorithm>
 #include <QDialog>
@@ -29,6 +30,11 @@
 namespace {
 const char* kPreferenceGroupName = "[Auto DJ]";
 const char* kRepeatPlaylistPreference = "Requeue";
+// Auto DJ 2.0 Smart Fill options: 0 = build up, 1 = keep level, 2 = up and down.
+const char* kSmartFillEnergyPreference = "SmartFillEnergy";
+const char* kSmartFillAvoidArtistPreference = "SmartFillAvoidSameArtist";
+// "" = whole library, "crate:<id>" or "playlist:<id>".
+const char* kSmartFillSourcePreference = "SmartFillSource";
 } // anonymous namespace
 
 DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
@@ -171,6 +177,58 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             slotSmartFill(count);
         });
     }
+    // Options, remembered between sessions.
+    pFillMenu->addSeparator();
+    auto* pEnergyGroup = new QActionGroup(pFillMenu);
+    const int energyChoice = m_pConfig->getValue(
+            ConfigKey(kPreferenceGroupName, kSmartFillEnergyPreference), 0);
+    const std::pair<QString, int> energyOptions[] = {
+            {tr("Energy: build up"), 0},
+            {tr("Energy: keep level"), 1},
+            {tr("Energy: up and down"), 2},
+    };
+    for (const auto& [text, value] : energyOptions) {
+        QAction* pAction = pFillMenu->addAction(text);
+        pAction->setCheckable(true);
+        pAction->setChecked(value == energyChoice);
+        pEnergyGroup->addAction(pAction);
+        connect(pAction, &QAction::triggered, this, [this, value = value]() {
+            m_pConfig->setValue(ConfigKey(kPreferenceGroupName, kSmartFillEnergyPreference), value);
+        });
+    }
+    pFillMenu->addSeparator();
+    QAction* pAvoidArtist = pFillMenu->addAction(tr("Never the same artist twice in a row"));
+    pAvoidArtist->setCheckable(true);
+    pAvoidArtist->setChecked(m_pConfig->getValue(
+            ConfigKey(kPreferenceGroupName, kSmartFillAvoidArtistPreference), true));
+    connect(pAvoidArtist, &QAction::toggled, this, [this](bool on) {
+        m_pConfig->setValue(ConfigKey(kPreferenceGroupName, kSmartFillAvoidArtistPreference), on);
+    });
+    // Where the songs come from: the whole library, or one crate/playlist.
+    // Rebuilt each time the menu opens, so new crates show up.
+    pFillMenu->addSeparator();
+    QMenu* pSourceMenu = pFillMenu->addMenu(tr("Take songs from"));
+    connect(pSourceMenu, &QMenu::aboutToShow, this, [this, pSourceMenu]() {
+        pSourceMenu->clear();
+        const QString current = m_pConfig->getValue(
+                ConfigKey(kPreferenceGroupName, kSmartFillSourcePreference), QString());
+        auto* pGroup = new QActionGroup(pSourceMenu);
+        QList<std::pair<QString, QString>> sources = {{QString(), tr("Whole library")}};
+        sources += m_pAutoDJProcessor->smartFillSources();
+        for (const auto& [key, name] : std::as_const(sources)) {
+            QAction* pAction = pSourceMenu->addAction(name);
+            pAction->setCheckable(true);
+            pAction->setChecked(key == current);
+            pGroup->addAction(pAction);
+            connect(pAction, &QAction::triggered, this, [this, key = key]() {
+                m_pConfig->setValue(ConfigKey(kPreferenceGroupName, kSmartFillSourcePreference), key);
+            });
+        }
+        if (sources.size() == 1) {
+            QAction* pNone = pSourceMenu->addAction(tr("(no crates or playlists yet)"));
+            pNone->setEnabled(false);
+        }
+    });
     pushButtonSmartFill->setMenu(pFillMenu);
 
     // Auto DJ 2.0 energy rating: the DJ's own 1..10 score for the selected
@@ -577,23 +635,52 @@ void DlgAutoDJ::slotSetEnergyRating(int rating) {
 }
 
 void DlgAutoDJ::slotSmartFill(int count) {
-    const QStringList added = m_pAutoDJProcessor->smartFill(count);
+    const int energyChoice = m_pConfig->getValue(
+            ConfigKey(kPreferenceGroupName, kSmartFillEnergyPreference), 0);
+    const bool avoidArtist = m_pConfig->getValue(
+            ConfigKey(kPreferenceGroupName, kSmartFillAvoidArtistPreference), true);
+    const auto energy = energyChoice == 1
+            ? MixScoreWeights::EnergyDirection::Hold
+            : (energyChoice == 2 ? MixScoreWeights::EnergyDirection::Wave
+                                 : MixScoreWeights::EnergyDirection::Build);
+    // The chosen crate/playlist, if it still exists.
+    QString source = m_pConfig->getValue(
+            ConfigKey(kPreferenceGroupName, kSmartFillSourcePreference), QString());
+    QString sourceName = tr("the whole library");
+    if (!source.isEmpty()) {
+        bool found = false;
+        for (const auto& [key, name] : m_pAutoDJProcessor->smartFillSources()) {
+            if (key == source) {
+                found = true;
+                sourceName = name;
+            }
+        }
+        if (!found) {
+            source.clear(); // deleted meanwhile: use the whole library
+            m_pConfig->setValue(ConfigKey(kPreferenceGroupName, kSmartFillSourcePreference), source);
+        }
+    }
+    const QStringList added = m_pAutoDJProcessor->smartFill(count, energy, avoidArtist, source);
     if (added.isEmpty()) {
         QMessageBox::information(this,
                 tr("Smart Fill"),
-                tr("No track in your library mixes smoothly after the last track "
-                   "in the queue (or it has no key or BPM yet)."));
+                tr("Smart Fill found nothing to add.\n\n"
+                   "Either the last track in the queue has no key or BPM yet "
+                   "(analyze it first), or nothing in your library mixes smoothly "
+                   "after it. Turning off \"Never the same artist twice in a row\" "
+                   "or choosing \"Energy: up and down\" gives it more choice."));
         return;
     }
     QMessageBox::information(this,
             tr("Smart Fill"),
-            tr("Added %1 of %2 tracks to the end of the queue:\n\n%3%4")
+            tr("Added %1 of %2 tracks from %5 to the end of the queue:\n\n%3%4")
                     .arg(added.size())
                     .arg(count)
                     .arg(added.join(QChar('\n')),
                             added.size() < count
                                     ? tr("\n\nNothing else mixes smoothly after the last one.")
-                                    : QString()));
+                                    : QString())
+                    .arg(sourceName));
 }
 
 void DlgAutoDJ::skipNextButton(bool) {

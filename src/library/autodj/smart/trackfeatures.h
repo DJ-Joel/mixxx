@@ -22,6 +22,9 @@ struct TrackFeatures {
     double durationSec = 0.0;
     bool isStem = false;
     QString displayName; ///< "Artist - Title" (or file name), for messages
+    QString artist;      ///< as tagged (may be empty)
+    QString title;       ///< as tagged (may be empty)
+    QString genre;       ///< as tagged (may be empty)
 
     bool hasBpm() const {
         return bpm > 0.0;

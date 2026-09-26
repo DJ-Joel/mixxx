@@ -246,7 +246,17 @@ class AutoDJProcessor : public QObject {
     /// Smart Fill: appends up to `count` library tracks that each mix
     /// smoothly after the one before, starting from the last queued track
     /// (or the playing one if the queue is empty). Returns their names.
-    QStringList smartFill(int count);
+    /// Another version of a queued song is never added (BridgeFinder::nameKey).
+    /// @param energy build up / keep level / up and down
+    /// @param avoidSameArtist never the same artist twice in a row
+    /// @param source "" = whole library, "crate:<id>" or "playlist:<id>"
+    QStringList smartFill(int count,
+            MixScoreWeights::EnergyDirection energy,
+            bool avoidSameArtist,
+            const QString& source);
+    /// Crates and playlists Smart Fill can take songs from:
+    /// (source key for smartFill, name to show).
+    QList<std::pair<QString, QString>> smartFillSources() const;
 
     /// Adds the suggested bridge tracks into the gaps they bridge.
     /// Returns how many were added (0 if the queue changed meanwhile).
