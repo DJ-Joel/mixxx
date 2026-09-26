@@ -1,8 +1,13 @@
 #include "library/autodj/dlgautodj.h"
 
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QVBoxLayout>
 
 #include "controllers/keyboard/keyboardeventfilter.h"
 #include "library/library.h"
@@ -297,19 +302,29 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
                 tr("Sorted %1 tracks with no key or tempo clashes.").arg(trackCount));
         return;
     }
-    constexpr int kMaxShown = 10;
-    QStringList shown = warnings.mid(0, kMaxShown);
-    if (warnings.size() > kMaxShown) {
-        shown << tr("...and %1 more").arg(warnings.size() - kMaxShown);
-    }
-    QMessageBox::warning(this,
-            tr("Smart Sort"),
-            tr("Sorted %1 tracks.\n"
-               "%2 transitions could not be made smooth. "
-               "A bridge track between them would help:\n\n%3")
+    // A resizable dialog with a scrollable list, so long track names and
+    // long lists are never cut off (a QMessageBox is too narrow for this).
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Smart Sort"));
+    auto* pLayout = new QVBoxLayout(&dialog);
+    auto* pSummary = new QLabel(
+            tr("Sorted %1 tracks. %2 transitions could not be made smooth.\n"
+               "A bridge track between them would help.")
                     .arg(trackCount)
-                    .arg(clashCount)
-                    .arg(shown.join(QChar('\n'))));
+                    .arg(clashCount),
+            &dialog);
+    pSummary->setWordWrap(true);
+    pLayout->addWidget(pSummary);
+    auto* pDetails = new QPlainTextEdit(&dialog);
+    pDetails->setReadOnly(true);
+    pDetails->setLineWrapMode(QPlainTextEdit::NoWrap);
+    pDetails->setPlainText(warnings.join(QStringLiteral("\n\n")));
+    pLayout->addWidget(pDetails);
+    auto* pButtons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
+    connect(pButtons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    pLayout->addWidget(pButtons);
+    dialog.resize(760, 420);
+    dialog.exec();
 }
 
 void DlgAutoDJ::slotSmartSortFailed(const QString& message) {

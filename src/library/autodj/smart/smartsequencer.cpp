@@ -312,15 +312,23 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
         if (k == 0) {
             continue;
         }
-        const MixScore s = m_scorer.score(tracks[best[k - 1]], tracks[best[k]]);
-        if (s.keyCost >= MixScorer::kClashKeyCost ||
-                s.tempoCost >= MixScorer::kClashTempoCost) {
+        const TrackFeatures& from = tracks[best[k - 1]];
+        const TrackFeatures& to = tracks[best[k]];
+        const MixScore s = m_scorer.score(from, to);
+        const QString label = MixScorer::clashLabel(s);
+        if (!label.isEmpty()) {
             ++result.clashCount;
             // k is 0-based, so the pair is tracks k and k + 1 counted from 1.
-            result.warnings << QStringLiteral("Tracks %1 and %2: %3")
-                                       .arg(k)
-                                       .arg(k + 1)
-                                       .arg(s.reason);
+            QString warning = QStringLiteral("Tracks %1 and %2 (%3): %4")
+                                      .arg(QString::number(k),
+                                              QString::number(k + 1),
+                                              label,
+                                              s.reason);
+            if (!from.displayName.isEmpty() || !to.displayName.isEmpty()) {
+                warning += QStringLiteral("\n    %1\n    -> %2")
+                                   .arg(from.displayName, to.displayName);
+            }
+            result.warnings << warning;
         }
     }
     return result;

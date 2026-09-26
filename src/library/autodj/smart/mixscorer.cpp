@@ -111,11 +111,36 @@ MixScore MixScorer::score(const TrackFeatures& from, const TrackFeatures& to) co
     s.total = m_weights.key * s.keyCost +
             m_weights.tempo * s.tempoCost +
             m_weights.energy * s.energyCost;
-    s.reason = QStringLiteral("%1 -> %2 | %3 -> %4 BPM | energy %5%6")
-                       .arg(from.camelotText(), to.camelotText())
-                       .arg(from.bpm, 0, 'f', 1)
-                       .arg(to.bpm, 0, 'f', 1)
-                       .arg(energyDelta >= 0.0 ? QStringLiteral("+") : QString())
-                       .arg(energyDelta, 0, 'f', 1);
+    // Unknown values show as "?" so they are not mistaken for measurements.
+    const auto bpmText = [](const TrackFeatures& t) {
+        return t.hasBpm() ? QString::number(t.bpm, 'f', 1) : QStringLiteral("?");
+    };
+    QString energyText = QStringLiteral("?");
+    if (from.hasEnergy() && to.hasEnergy()) {
+        energyText = (energyDelta >= 0.0 ? QStringLiteral("+") : QString()) +
+                QString::number(energyDelta, 'f', 1);
+    }
+    s.reason = QStringLiteral("%1 -> %2 | %3 -> %4 BPM | energy %5")
+                       .arg(from.camelotText(),
+                               to.camelotText(),
+                               bpmText(from),
+                               bpmText(to),
+                               energyText);
     return s;
+}
+
+// static
+QString MixScorer::clashLabel(const MixScore& score) {
+    const bool keyClash = score.keyCost >= kClashKeyCost;
+    const bool tempoClash = score.tempoCost >= kClashTempoCost;
+    if (keyClash && tempoClash) {
+        return QStringLiteral("key + tempo clash");
+    }
+    if (keyClash) {
+        return QStringLiteral("key clash");
+    }
+    if (tempoClash) {
+        return QStringLiteral("tempo clash");
+    }
+    return QString();
 }

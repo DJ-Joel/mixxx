@@ -18,6 +18,7 @@ struct TrackFeatures {
     double loudnessLufs = 0.0; ///< integrated loudness, 0 = unknown
     double durationSec = 0.0;
     bool isStem = false;
+    QString displayName; ///< "Artist - Title" (or file name), for messages
 
     bool hasBpm() const {
         return bpm > 0.0;

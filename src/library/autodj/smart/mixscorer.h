@@ -62,6 +62,9 @@ class MixScorer {
     /// Energy-flow cost, depends on the chosen EnergyDirection.
     double energyCost(double energyFrom, double energyTo) const;
 
+    /// "key clash", "tempo clash", "key + tempo clash", or empty if smooth.
+    static QString clashLabel(const MixScore& score);
+
     /// Shortest distance round the Camelot wheel: 0..6.
     static int camelotDistance(int from, int to);
 

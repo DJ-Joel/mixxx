@@ -161,10 +161,33 @@ TEST(MixScorerTest, EnergyWaveAllowsSmallDips) {
     EXPECT_GT(scorer.energyCost(8, 4), 0.0);
 }
 
+TEST(MixScorerTest, UnknownEnergyShowsQuestionMark) {
+    MixScorer scorer;
+    const MixScore s = scorer.score(makeTrack(1, 8, true, 124), makeTrack(2, 9, true, 125));
+    EXPECT_TRUE(s.reason.contains(QStringLiteral("energy ?"))) << s.reason.toStdString();
+}
+
+TEST(MixScorerTest, ClashLabel) {
+    MixScorer scorer;
+    EXPECT_TRUE(MixScorer::clashLabel(
+            scorer.score(makeTrack(1, 8, true, 124), makeTrack(2, 9, true, 124)))
+                        .isEmpty());
+    EXPECT_EQ(QStringLiteral("key clash"),
+            MixScorer::clashLabel(
+                    scorer.score(makeTrack(1, 8, true, 124), makeTrack(2, 2, true, 124))));
+    EXPECT_EQ(QStringLiteral("tempo clash"),
+            MixScorer::clashLabel(
+                    scorer.score(makeTrack(1, 8, true, 100), makeTrack(2, 8, true, 125))));
+    EXPECT_EQ(QStringLiteral("key + tempo clash"),
+            MixScorer::clashLabel(
+                    scorer.score(makeTrack(1, 8, true, 100), makeTrack(2, 2, true, 125))));
+}
+
 TEST(MixScorerTest, ScoreHasReadableReason) {
     MixScorer scorer;
     const MixScore s = scorer.score(makeTrack(1, 8, true, 124, 5), makeTrack(2, 9, true, 125, 6));
     EXPECT_TRUE(s.reason.contains(QStringLiteral("8A -> 9A")));
+    EXPECT_TRUE(s.reason.contains(QStringLiteral("energy +1.0"))) << s.reason.toStdString();
     EXPECT_GT(s.total, 0.0);
 }
 
@@ -215,7 +238,8 @@ TEST(SmartSequencerTest, ReportsClashesItCannotAvoid) {
     SmartSequencer seq{MixScorer()};
     const auto r = seq.solve(tracks);
     EXPECT_EQ(1, r.clashCount);
-    EXPECT_EQ(1, r.warnings.size());
+    ASSERT_EQ(1, r.warnings.size());
+    EXPECT_TRUE(r.warnings[0].contains(QStringLiteral("key clash")));
 }
 
 TEST(SmartSequencerTest, ExactSolverMatchesBruteForce) {
