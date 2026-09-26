@@ -75,6 +75,8 @@ class MixScorer {
 
     /// One line of a running order, e.g. " 3. 8A  124.0 BPM  energy 7 (rated)  Artist - Title".
     static QString trackLine(int position, const TrackFeatures& track);
+    /// The same line without the position number.
+    static QString trackText(const TrackFeatures& track);
 
     /// "key clash", "tempo clash", "key + tempo clash", or empty if smooth.
     static QString clashLabel(const MixScore& score);

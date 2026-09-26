@@ -7,6 +7,7 @@
 #include <limits>
 #include <random>
 
+#include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/mixscorer.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "library/autodj/smart/trackfeatures.h"
@@ -379,4 +380,70 @@ TEST(SmartSequencerTest, LargeSetFindsClashFreeWheelWalk) {
     }
     EXPECT_EQ(24, seen.size()); // every track exactly once
     EXPECT_EQ(0, r.clashCount) << r.warnings.join('\n').toStdString();
+}
+
+// ---------- BridgeFinder ----------
+
+TEST(BridgeFinderTest, FindsTrackThatFixesATempoGap) {
+    // The Promise (8B, 118.1) -> Rock The Casbah (8A, 129.5): ~9% apart.
+    const TrackFeatures from = makeTrack(1, 8, false, 118.1);
+    const TrackFeatures to = makeTrack(2, 8, true, 129.5);
+    const QVector<TrackFeatures> library = {
+            makeTrack(10, 8, false, 123.5), // 8B, halfway: fixes both sides
+            makeTrack(11, 2, true, 123.5),  // right tempo, wrong key
+            makeTrack(12, 8, false, 100.0), // right key, wrong tempo
+            makeTrack(13, 8, true, 124.0),  // 8A, also fixes both sides
+    };
+    BridgeFinder finder{MixScorer()};
+    const auto found = finder.find(from, to, library, {}, {});
+    ASSERT_EQ(2, found.size());
+    for (const auto& b : found) {
+        EXPECT_TRUE(b.track.id == TrackId(QVariant(10)) || b.track.id == TrackId(QVariant(13)));
+        EXPECT_TRUE(MixScorer::clashLabel(b.in).isEmpty());
+        EXPECT_TRUE(MixScorer::clashLabel(b.out).isEmpty());
+    }
+    EXPECT_LE(found[0].cost, found[1].cost);
+}
+
+TEST(BridgeFinderTest, SkipsQueuedTracksAndCopiesOfThem) {
+    const TrackFeatures from = makeTrack(1, 8, false, 118.1);
+    const TrackFeatures to = makeTrack(2, 8, true, 129.5);
+    TrackFeatures queued = makeTrack(10, 8, false, 123.5);
+    TrackFeatures copy = makeTrack(11, 8, false, 123.6);
+    queued.displayName = QStringLiteral("Visage - Fade To Grey");
+    copy.displayName = QStringLiteral("visage - fade to grey ");
+    BridgeFinder finder{MixScorer()};
+    const auto found = finder.find(from,
+            to,
+            {queued, copy},
+            {queued.id},
+            {BridgeFinder::nameKey(queued)});
+    EXPECT_TRUE(found.isEmpty());
+}
+
+TEST(SmartSequencerTest, SuggestsBridgesForRemainingClashes) {
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, false, 118.1),
+            makeTrack(2, 8, true, 129.5),
+    };
+    const QVector<TrackFeatures> library = {makeTrack(10, 8, false, 123.5)};
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks, std::nullopt, 2000, library);
+    ASSERT_EQ(1, r.clashCount);
+    ASSERT_EQ(1, r.bestBridges.size());
+    EXPECT_EQ(1, r.bestBridges[0].first);
+    EXPECT_EQ(TrackId(QVariant(10)), r.bestBridges[0].second);
+    EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("add:")));
+}
+
+TEST(SmartSequencerTest, SaysSoWhenNoBridgeExists) {
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 124),
+            makeTrack(2, 2, true, 124),
+    };
+    const QVector<TrackFeatures> library = {makeTrack(10, 5, false, 90)};
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks, std::nullopt, 2000, library);
+    EXPECT_TRUE(r.bestBridges.isEmpty());
+    EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("no single track")));
 }

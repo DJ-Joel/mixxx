@@ -347,6 +347,30 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
     pLayout->addWidget(pDetails);
     auto* pButtons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
     connect(pButtons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    // Auto DJ 2.0 bridge tracks: one click adds the best suggestion ("add:")
+    // into each gap it bridges. The DJ can remove any of them afterwards.
+    const int bridgeCount = m_pAutoDJProcessor->pendingBridgeCount();
+    if (bridgeCount > 0) {
+        QPushButton* pAddBridges = pButtons->addButton(
+                tr("Add %1 bridge tracks").arg(bridgeCount), QDialogButtonBox::ActionRole);
+        pAddBridges->setToolTip(tr(
+                "Adds each track marked \"add:\" into the gap it bridges.\n"
+                "You can remove any of them from the queue afterwards."));
+        connect(pAddBridges, &QPushButton::clicked, &dialog, [this, &dialog]() {
+            const int added = m_pAutoDJProcessor->insertPendingBridges();
+            dialog.accept();
+            if (added > 0) {
+                QMessageBox::information(this,
+                        tr("Smart Sort"),
+                        tr("Added %1 bridge tracks to the Auto DJ queue.").arg(added));
+            } else {
+                QMessageBox::warning(this,
+                        tr("Smart Sort"),
+                        tr("No bridge tracks were added. The queue may have "
+                           "changed since sorting; please sort again."));
+            }
+        });
+    }
     pLayout->addWidget(pButtons);
     dialog.resize(820, 560);
     dialog.exec();

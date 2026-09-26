@@ -159,6 +159,11 @@ double MixScorer::endCost(const TrackFeatures& track) const {
 
 // static
 QString MixScorer::trackLine(int position, const TrackFeatures& track) {
+    return QStringLiteral("%1. %2").arg(position, 2).arg(trackText(track));
+}
+
+// static
+QString MixScorer::trackText(const TrackFeatures& track) {
     QString energy = QStringLiteral("energy ?");
     if (track.hasEnergy()) {
         energy = track.energyIsManual
@@ -168,8 +173,7 @@ QString MixScorer::trackLine(int position, const TrackFeatures& track) {
     const QString bpm = track.hasBpm()
             ? QStringLiteral("%1 BPM").arg(track.bpm, 5, 'f', 1)
             : QStringLiteral("  ? BPM");
-    return QStringLiteral("%1. %2  %3  %4  %5")
-            .arg(position, 2)
+    return QStringLiteral("%1  %2  %3  %4")
             .arg(track.camelotText(), 3)
             .arg(bpm, energy, track.displayName);
 }

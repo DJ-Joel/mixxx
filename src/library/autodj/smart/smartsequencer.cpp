@@ -1,5 +1,9 @@
 #include "library/autodj/smart/smartsequencer.h"
 
+#include <QSet>
+
+#include "library/autodj/smart/bridgefinder.h"
+
 #include <QElapsedTimer>
 #include <algorithm>
 #include <limits>
@@ -313,7 +317,8 @@ QVector<int> SmartSequencer::heuristicPath(const Costs& c, int fixedStart, int t
 
 SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
         std::optional<TrackId> startId,
-        int timeBudgetMs) const {
+        int timeBudgetMs,
+        const QVector<TrackFeatures>& bridgeCandidates) const {
     SequenceResult result;
     const int n = static_cast<int>(tracks.size());
     if (n == 0) {
@@ -334,6 +339,17 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
     const QVector<int> best = n <= kExactLimit
             ? exactPath(c, fixedStart)
             : heuristicPath(c, fixedStart, timeBudgetMs);
+
+    // Bridges must not repeat a queued song (or another copy of it).
+    const BridgeFinder bridgeFinder(m_scorer);
+    QSet<TrackId> usedIds;
+    QSet<QString> usedNames;
+    for (const TrackFeatures& t : tracks) {
+        usedIds.insert(t.id);
+        if (!t.displayName.isEmpty()) {
+            usedNames.insert(BridgeFinder::nameKey(t));
+        }
+    }
 
     // Report: the whole running order, with the clashes that could not be
     // avoided marked between the two tracks involved.
@@ -359,6 +375,29 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
                 }
                 result.warnings << warning;
                 result.orderLines << QStringLiteral("      !! %1: %2").arg(label, s.reason);
+                if (!bridgeCandidates.isEmpty()) {
+                    const QList<BridgeSuggestion> bridges = bridgeFinder.find(
+                            from, to, bridgeCandidates, usedIds, usedNames);
+                    if (bridges.isEmpty()) {
+                        result.orderLines << QStringLiteral(
+                                "         no single track in your library bridges this gap");
+                    } else {
+                        for (int b = 0; b < bridges.size(); ++b) {
+                            result.orderLines << QStringLiteral("         %1 %2")
+                                                         .arg(b == 0 ? QStringLiteral("add:")
+                                                                     : QStringLiteral("or: "),
+                                                                 MixScorer::trackText(
+                                                                         bridges[b].track));
+                        }
+                        // The best one is reserved, so no track is suggested twice.
+                        const TrackFeatures& pick = bridges.first().track;
+                        result.bestBridges.append(std::make_pair(k, pick.id));
+                        usedIds.insert(pick.id);
+                        if (!pick.displayName.isEmpty()) {
+                            usedNames.insert(BridgeFinder::nameKey(pick));
+                        }
+                    }
+                }
             }
         }
         result.orderLines << MixScorer::trackLine(k + 1, to);

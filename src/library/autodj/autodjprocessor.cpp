@@ -2,11 +2,14 @@
 
 #include <QFutureWatcher>
 #include <QHash>
+#include <QSqlError>
+#include <QSqlQuery>
 #include <QtConcurrentRun>
 #include <algorithm>
 #include <optional>
 
 #include "engine/channels/enginedeck.h"
+#include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/energystore.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "library/autodj/smart/trackfeatures.h"
@@ -16,6 +19,7 @@
 #include "mixer/basetrackplayer.h"
 #include "mixer/playermanager.h"
 #include "moc_autodjprocessor.cpp"
+#include "track/keyutils.h"
 #include "track/track.h"
 #include "util/assert.h"
 #include "util/logger.h"
@@ -32,6 +36,53 @@ constexpr double kKeepPosition = -1.0;
 
 // A track needs to be longer than two callbacks to not stop AutoDJ
 constexpr double kMinimumTrackDurationSec = 0.2;
+
+// Auto DJ 2.0: every library track with a known key and BPM whose file
+// still exists, as bridge candidates. Read straight from the database so
+// no Track objects are loaded for the whole library.
+QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
+    QVector<TrackFeatures> candidates;
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral(
+                "SELECT library.id, library.bpm, library.key_id, "
+                "library.artist, library.title "
+                "FROM library JOIN track_locations "
+                "ON track_locations.id = library.location "
+                "WHERE library.mixxx_deleted = 0 "
+                "AND track_locations.fs_deleted = 0 "
+                "AND library.bpm > 0 AND library.key_id > 0"))) {
+        kLogger.warning() << "Could not read bridge candidates:" << query.lastError();
+        return candidates;
+    }
+    QList<TrackId> ids;
+    while (query.next()) {
+        TrackFeatures f;
+        f.id = TrackId(query.value(0));
+        f.bpm = query.value(1).toDouble();
+        const int keyValue = query.value(2).toInt();
+        if (!mixxx::track::io::key::ChromaticKey_IsValid(keyValue)) {
+            continue;
+        }
+        const auto key = static_cast<mixxx::track::io::key::ChromaticKey>(keyValue);
+        if (key == mixxx::track::io::key::INVALID) {
+            continue;
+        }
+        f.camelotNumber = TrackFeatures::camelotFromOpenKey(KeyUtils::keyToOpenKeyNumber(key));
+        f.camelotMinor = !KeyUtils::keyIsMajor(key);
+        const QString artist = query.value(3).toString().trimmed();
+        const QString title = query.value(4).toString().trimmed();
+        f.displayName = artist.isEmpty() ? title : artist + QStringLiteral(" - ") + title;
+        candidates.append(f);
+        ids.append(f.id);
+    }
+    const QHash<TrackId, EnergyStore::Value> energies = EnergyStore::loadEnergies(db, ids);
+    for (TrackFeatures& f : candidates) {
+        const EnergyStore::Value value = energies.value(f.id);
+        f.energy = value.energy;
+        f.energyIsManual = value.manual;
+    }
+    return candidates;
+}
 
 const char* autoDJStateName(AutoDJProcessor::AutoDJState state) {
     switch (state) {
@@ -334,8 +385,13 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
                 applySmartSortResult(pWatcher->result(), snapshot);
                 pWatcher->deleteLater();
             });
-    pWatcher->setFuture(QtConcurrent::run([features, startId, scorer]() {
-        return SmartSequencer(scorer).solve(features, startId);
+    QVector<TrackFeatures> bridgeCandidates;
+    if (m_pTrackCollectionManager && m_pTrackCollectionManager->internalCollection()) {
+        bridgeCandidates = loadBridgeCandidates(
+                m_pTrackCollectionManager->internalCollection()->database());
+    }
+    pWatcher->setFuture(QtConcurrent::run([features, startId, scorer, bridgeCandidates]() {
+        return SmartSequencer(scorer).solve(features, startId, 2000, bridgeCandidates);
     }));
     return ADJ_OK;
 }
@@ -356,6 +412,41 @@ std::pair<double, bool> AutoDJProcessor::energyOf(TrackId trackId) const {
             m_pTrackCollectionManager->internalCollection()->database(), {trackId});
     const EnergyStore::Value value = energies.value(trackId);
     return {value.energy, value.manual};
+}
+
+int AutoDJProcessor::insertPendingBridges() {
+    const QList<std::pair<int, TrackId>> bridges = m_pendingBridges;
+    m_pendingBridges.clear();
+    if (bridges.isEmpty() || !m_pTrackCollectionManager ||
+            !m_pTrackCollectionManager->internalCollection()) {
+        return 0;
+    }
+    // Only if the queue is still exactly the sorted order.
+    const QList<std::pair<TrackId, int>> current = m_pAutoDJTableModel->getTrackIdsAndPositions();
+    if (current.size() != m_pendingBridgeOrder.size()) {
+        return 0;
+    }
+    for (int i = 0; i < current.size(); ++i) {
+        if (current[i].first != m_pendingBridgeOrder[i]) {
+            return 0;
+        }
+    }
+    PlaylistDAO& playlistDao =
+            m_pTrackCollectionManager->internalCollection()->getPlaylistDAO();
+    const int playlistId = m_pAutoDJTableModel->getPlaylist();
+    int added = 0;
+    // Last gap first, so the positions of earlier gaps do not move.
+    for (auto it = bridges.crbegin(); it != bridges.crend(); ++it) {
+        const int k = it->first; // insert after the k-th track (from 1)
+        VERIFY_OR_DEBUG_ASSERT(k >= 1 && k <= current.size()) {
+            continue;
+        }
+        if (playlistDao.insertTrackIntoPlaylist(it->second, playlistId, current[k - 1].second + 1)) {
+            ++added;
+        }
+    }
+    m_pAutoDJTableModel->select();
+    return added;
 }
 
 void AutoDJProcessor::applySmartSortResult(const SequenceResult& result,
@@ -388,6 +479,8 @@ void AutoDJProcessor::applySmartSortResult(const SequenceResult& result,
     }
 
     m_pAutoDJTableModel->setTrackOrder(newOrder);
+    m_pendingBridges = result.bestBridges;
+    m_pendingBridgeOrder = result.order;
     emit smartSortFinished(static_cast<int>(result.order.size()),
             result.clashCount,
             result.warnings,

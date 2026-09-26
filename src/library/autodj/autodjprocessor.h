@@ -216,6 +216,13 @@ class AutoDJProcessor : public QObject {
     bool setEnergyRating(const QList<TrackId>& trackIds, int rating);
     /// Energy of one track: {value 1..10, rated by DJ?}. value 0 = unknown.
     std::pair<double, bool> energyOf(TrackId trackId) const;
+    /// Bridge tracks suggested by the last Smart Sort, not yet added.
+    int pendingBridgeCount() const {
+        return static_cast<int>(m_pendingBridges.size());
+    }
+    /// Adds the suggested bridge tracks into the gaps they bridge.
+    /// Returns how many were added (0 if the queue changed meanwhile).
+    int insertPendingBridges();
     AutoDJError skipNext();
     void fadeNow();
     AutoDJError toggleAutoDJ(bool enable);
@@ -343,6 +350,10 @@ class AutoDJProcessor : public QObject {
     ControlPushButton m_enabledAutoDJ;
 
     bool m_smartSortRunning = false;
+    // Best bridge per clash from the last Smart Sort: (k, track) = insert
+    // after the k-th track of m_pendingBridgeOrder (counted from 1).
+    QList<std::pair<int, TrackId>> m_pendingBridges;
+    QList<TrackId> m_pendingBridgeOrder;
     TrackCollectionManager* m_pTrackCollectionManager = nullptr;
 
     DISALLOW_COPY_AND_ASSIGN(AutoDJProcessor);

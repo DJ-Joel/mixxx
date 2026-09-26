@@ -6,6 +6,8 @@
 #include <QVector>
 #include <optional>
 
+#include <utility>
+
 #include "library/autodj/smart/mixscorer.h"
 
 /// The outcome of SmartSequencer::solve().
@@ -17,8 +19,12 @@ struct SequenceResult {
     /// One human-readable line per clash, so the DJ knows where a bridge
     /// track is needed.
     QStringList warnings;
-    /// The whole running order, one entry per track, with clash notes.
+    /// The whole running order, one entry per track, with clash notes and
+    /// bridge-track suggestions.
     QStringList orderLines;
+    /// Best bridge per clash, as (k, track): play `track` right after the
+    /// k-th track of `order` (k counted from 1). Each track used once.
+    QList<std::pair<int, TrackId>> bestBridges;
 };
 
 /// Sorts a set of tracks into the lowest-cost mixing order.
@@ -40,9 +46,12 @@ class SmartSequencer {
 
     /// @param startId optional track that must stay first (e.g. playing now)
     /// @param timeBudgetMs stop improving after this long, return best so far
+    /// @param bridgeCandidates library tracks to suggest as bridges for
+    ///        clashes that remain; empty = no suggestions
     SequenceResult solve(const QVector<TrackFeatures>& tracks,
             std::optional<TrackId> startId = std::nullopt,
-            int timeBudgetMs = 2000) const;
+            int timeBudgetMs = 2000,
+            const QVector<TrackFeatures>& bridgeCandidates = {}) const;
 
   private:
     struct Costs {

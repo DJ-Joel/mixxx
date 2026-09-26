@@ -1417,6 +1417,7 @@ add_library(
   src/library/autodj/autodjprocessor.cpp
   src/library/autodj/dlgautodj.cpp
   src/library/autodj/dlgautodj.ui
+  src/library/autodj/smart/bridgefinder.cpp
   src/library/autodj/smart/energystore.cpp
   src/library/autodj/smart/mixscorer.cpp
   src/library/autodj/smart/smartsequencer.cpp
