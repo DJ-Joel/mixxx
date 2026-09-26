@@ -1421,6 +1421,7 @@ add_library(
   src/library/autodj/smart/bridgefinder.cpp
   src/library/autodj/smart/energystore.cpp
   src/library/autodj/smart/mixscorer.cpp
+  src/library/autodj/smart/phrasealign.cpp
   src/library/autodj/smart/smartsequencer.cpp
   src/library/autodj/smart/trackfeatures.cpp
   src/library/banshee/bansheedbconnection.cpp
@@ -2940,6 +2941,7 @@ if(BUILD_TESTING)
     src/test/beatmaptest.cpp
     src/test/beatstest.cpp
     src/test/beatmatch_test.cpp
+    src/test/phrasealign_test.cpp
     src/test/beatstranslatetest.cpp
     src/test/borrowabletest.cpp
     src/test/bpmtest.cpp

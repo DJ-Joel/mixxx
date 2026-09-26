@@ -14,6 +14,7 @@
 #include "control/controlobject.h"
 #include "library/autodj/smart/beatmatch.h"
 #include "library/autodj/smart/bridgefinder.h"
+#include "library/autodj/smart/phrasealign.h"
 #include "library/autodj/smart/energystore.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "library/autodj/smart/trackfeatures.h"
@@ -433,7 +434,9 @@ void AutoDJProcessor::setBeatmatchEnabled(bool enabled) {
 void AutoDJProcessor::beginSmartTransition(
         DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
     endSmartTransition(false); // safety: never two at once
-    m_glide.pDeck = nullptr;   // a new mix takes over from any glide
+    // If the outgoing track is still gliding back (a short track), hold its
+    // tempo steady during this mix; it is reset once it has faded out.
+    m_glide.pDeck = nullptr;
     if (!isBeatmatchEnabled() || !pFromDeck || !pToDeck) {
         return;
     }
@@ -460,6 +463,9 @@ void AutoDJProcessor::beginSmartTransition(
         const ConfigKey quantizeKey(pToDeck->group, QStringLiteral("quantize"));
         m_smart.toKeylock = readControl(keylockKey);
         m_smart.toQuantize = readControl(quantizeKey);
+        if (!m_keylockBefore.contains(pToDeck->group)) {
+            m_keylockBefore.insert(pToDeck->group, m_smart.toKeylock);
+        }
         writeControl(keylockKey, 1.0);  // tempo change without pitch change
         writeControl(quantizeKey, 1.0); // start on a beat
         ControlObject::set(toRatioKey, *ratio);
@@ -513,9 +519,12 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
             // Ease the new track back to its own tempo, too slowly to hear.
             m_glide.pDeck = m_smart.pTo;
             m_glide.startRatio = m_smart.toRatio;
-            m_glide.keylockBefore = m_smart.toKeylock;
             m_glide.timer.start();
         }
+    }
+    if (completed) {
+        // The outgoing track has stopped: put its deck back to normal tempo.
+        resetDeckTempo(m_smart.pFrom);
     }
     m_smart = SmartTransition();
 }
@@ -528,11 +537,76 @@ void AutoDJProcessor::updateGlide(DeckAttributes* pDeck) {
             m_glide.startRatio, m_glide.timer.elapsed() / 1000.0);
     writeControl(ConfigKey(pDeck->group, QStringLiteral("rate_ratio")), ratio);
     if (ratio == 1.0) {
-        // Back at its own tempo: key lock no longer needed.
-        writeControl(ConfigKey(pDeck->group, QStringLiteral("keylock")),
-                m_glide.keylockBefore);
+        m_glide.pDeck = nullptr;
+        resetDeckTempo(pDeck); // back at its own tempo: restore key lock
+    }
+}
+
+void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
+        DeckAttributes* pToDeck,
+        double fromDeckPositionSec) {
+    if (!isBeatmatchEnabled() || pToDeck->startPos < 0.0 ||
+            pFromDeck->fadeEndPos <= pFromDeck->fadeBeginPos) {
+        return; // off, or a special case (jump cut / keep position)
+    }
+    const TrackPointer pFromTrack = pFromDeck->getLoadedTrack();
+    const TrackPointer pToTrack = pToDeck->getLoadedTrack();
+    if (!pFromTrack || !pToTrack) {
+        return;
+    }
+    const mixxx::BeatsPointer pFromBeats = pFromTrack->getBeats();
+    const mixxx::BeatsPointer pToBeats = pToTrack->getBeats();
+    const double fromBpm = pFromTrack->getBpm();
+    const double toBpm = pToTrack->getBpm();
+    if (!pFromBeats || !pToBeats || !(fromBpm > 0.0) || !(toBpm > 0.0)) {
+        return;
+    }
+    // Only when the mix will really be beatmatched (the 5% rule).
+    const double fromRatio = pFromDeck->rateRatio();
+    if (!beatmatch::matchRatio(fromBpm * fromRatio, toBpm, kBeatmatchTolerancePct)) {
+        return;
+    }
+    // Seconds here are real time at each deck's current speed, the same
+    // convention as the rest of calculateTransition.
+    phrasealign::Grid from;
+    from.firstBeatSec = framePositionToSeconds(pFromBeats->firstBeat(), pFromDeck);
+    from.beatSec = 60.0 / (fromBpm * fromRatio);
+    phrasealign::Grid to;
+    to.firstBeatSec = framePositionToSeconds(pToBeats->firstBeat(), pToDeck);
+    to.beatSec = 60.0 / (toBpm * pToDeck->rateRatio());
+
+    // Keep the length the transition mode chose (intro/outro or the
+    // seconds setting), rounded to whole 8-bar phrases.
+    const double wantedSec = pFromDeck->fadeEndPos - pFromDeck->fadeBeginPos;
+    const int bars = phrasealign::barsForSeconds(wantedSec, from.beatSec);
+    const auto plan = phrasealign::plan(from,
+            to,
+            fromDeckPositionSec,
+            pFromDeck->fadeEndPos, // the fade must be over by here
+            pToDeck->startPos,     // the incoming track starts no earlier
+            bars);
+    if (!plan) {
+        kLogger.info() << "Phrase align: no phrase fits, keeping the plain timing";
+        return;
+    }
+    kLogger.info() << "Phrase align:" << bars << "bars, fade" << plan->fromFadeBeginSec
+                   << "->" << plan->fromFadeEndSec << "s, incoming starts at"
+                   << plan->toStartSec << "s";
+    pFromDeck->fadeBeginPos = plan->fromFadeBeginSec;
+    pFromDeck->fadeEndPos = plan->fromFadeEndSec;
+    pToDeck->startPos = plan->toStartSec;
+}
+
+void AutoDJProcessor::resetDeckTempo(DeckAttributes* pDeck) {
+    if (!pDeck || !m_keylockBefore.contains(pDeck->group)) {
+        return; // we never changed this deck
+    }
+    if (m_glide.pDeck == pDeck) {
         m_glide.pDeck = nullptr;
     }
+    writeControl(ConfigKey(pDeck->group, QStringLiteral("rate_ratio")), 1.0);
+    writeControl(ConfigKey(pDeck->group, QStringLiteral("keylock")),
+            m_keylockBefore.take(pDeck->group));
 }
 
 bool AutoDJProcessor::setEnergyRating(const QList<TrackId>& trackIds, int rating) {
@@ -2005,6 +2079,9 @@ void AutoDJProcessor::calculateTransition(DeckAttributes* pFromDeck,
         useFixedFadeTime(pFromDeck, pToDeck, fromDeckPosition, fromDeckEndPosition, startPoint);
         }
     }
+
+    // Auto DJ 2.0 Phase 2: put a beatmatched fade on phrase boundaries.
+    alignTransitionToPhrases(pFromDeck, pToDeck, fromDeckPosition);
 
     // These are expected to be a fraction of the track length.
     pFromDeck->fadeBeginPos /= fromDeckDuration;

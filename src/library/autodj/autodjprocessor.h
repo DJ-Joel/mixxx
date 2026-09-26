@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QElapsedTimer>
+#include <QHash>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -382,10 +383,19 @@ class AutoDJProcessor : public QObject {
     struct Glide {
         DeckAttributes* pDeck = nullptr;
         double startRatio = 1.0;
-        double keylockBefore = 0.0;
         QElapsedTimer timer;
     };
     Glide m_glide;
+    // Decks whose tempo/key lock we changed, with the key lock to restore.
+    // A deck is reset to its own tempo once its track has faded out, so the
+    // next track loaded there does not inherit a leftover tempo.
+    QHash<QString, double> m_keylockBefore;
+    void resetDeckTempo(DeckAttributes* pDeck);
+    // Moves a planned beatmatched fade onto phrase boundaries (seconds, as
+    // used inside calculateTransition before they become fractions).
+    void alignTransitionToPhrases(DeckAttributes* pFromDeck,
+            DeckAttributes* pToDeck,
+            double fromDeckPositionSec);
     TrackCollectionManager* m_pTrackCollectionManager = nullptr;
 
     DISALLOW_COPY_AND_ASSIGN(AutoDJProcessor);
