@@ -1415,6 +1415,9 @@ add_library(
   src/library/autodj/autodjprocessor.cpp
   src/library/autodj/dlgautodj.cpp
   src/library/autodj/dlgautodj.ui
+  src/library/autodj/smart/mixscorer.cpp
+  src/library/autodj/smart/smartsequencer.cpp
+  src/library/autodj/smart/trackfeatures.cpp
   src/library/banshee/bansheedbconnection.cpp
   src/library/banshee/bansheefeature.cpp
   src/library/banshee/bansheeplaylistmodel.cpp
@@ -3019,6 +3022,7 @@ if(BUILD_TESTING)
     src/test/seratomarkers2test.cpp
     src/test/seratotagstest.cpp
     src/test/signalpathtest.cpp
+    src/test/smartsequencer_test.cpp
     src/test/skincontext_test.cpp
     src/test/softtakeover_test.cpp
     src/test/soundproxy_test.cpp
