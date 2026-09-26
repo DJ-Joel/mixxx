@@ -222,6 +222,51 @@ TEST(MixScorerTest, OnlyRatedEnergyExcusesKeyJump) {
     EXPECT_GE(scorer.score(a, b).keyCost, MixScorer::kClashKeyCost);
 }
 
+TEST(MixScorerTest, ShiftKeyMovesSevenStepsPerSemitone) {
+    const TrackFeatures t = makeTrack(1, 8, true, 120);
+    EXPECT_EQ(3, MixScorer::shiftKey(t, 1).camelotNumber);  // 8A up = 3A
+    EXPECT_EQ(1, MixScorer::shiftKey(t, -1).camelotNumber); // 8A down = 1A
+    EXPECT_EQ(10, MixScorer::shiftKey(t, 2).camelotNumber); // 2 up = +2 steps
+    EXPECT_EQ(8, MixScorer::shiftKey(t, 12).camelotNumber); // an octave
+    EXPECT_TRUE(MixScorer::shiftKey(t, 1).camelotMinor);    // letter stays
+    EXPECT_EQ(0, MixScorer::shiftKey(makeTrack(2, 0, true, 120), 1).camelotNumber);
+}
+
+TEST(MixScorerTest, KeyMorphOnlyWhenTheKeysClash) {
+    const TrackFeatures from = makeTrack(1, 8, true, 120);
+    // Already fits: same key, neighbour, relative.
+    EXPECT_EQ(0, MixScorer::keyMorphSemitones(from, makeTrack(2, 8, true, 120), 1));
+    EXPECT_EQ(0, MixScorer::keyMorphSemitones(from, makeTrack(2, 9, true, 120), 1));
+    EXPECT_EQ(0, MixScorer::keyMorphSemitones(from, makeTrack(2, 8, false, 120), 1));
+    // Unknown key: leave it.
+    EXPECT_EQ(0, MixScorer::keyMorphSemitones(from, makeTrack(2, 0, true, 120), 1));
+    EXPECT_EQ(0, MixScorer::keyMorphSemitones(makeTrack(1, 0, true, 120), from, 1));
+}
+
+TEST(MixScorerTest, KeyMorphFindsTheSmallestShift) {
+    const TrackFeatures from = makeTrack(1, 8, true, 120);
+    // 3A is one semitone above 8A: pitch it down one.
+    EXPECT_EQ(-1, MixScorer::keyMorphSemitones(from, makeTrack(2, 3, true, 120), 1));
+    // 1A is one semitone below 8A: pitch it up one.
+    EXPECT_EQ(1, MixScorer::keyMorphSemitones(from, makeTrack(2, 1, true, 120), 1));
+    // Every result really fits.
+    for (int camelot = 1; camelot <= 12; ++camelot) {
+        for (bool minor : {true, false}) {
+            const TrackFeatures to = makeTrack(2, camelot, minor, 120);
+            const int shift = MixScorer::keyMorphSemitones(from, to, 2);
+            if (shift != 0) {
+                EXPECT_LE(std::abs(shift), 2);
+                EXPECT_LT(MixScorer::camelotCost(from, MixScorer::shiftKey(to, shift), 0, false),
+                        MixScorer::kClashKeyCost)
+                        << to.camelotText().toStdString();
+            }
+        }
+    }
+    // 10A (two steps) needs two semitones: not with a limit of one.
+    EXPECT_EQ(0, MixScorer::keyMorphSemitones(from, makeTrack(2, 10, true, 120), 1));
+    EXPECT_EQ(-2, MixScorer::keyMorphSemitones(from, makeTrack(2, 10, true, 120), 2));
+}
+
 TEST(MixScorerTest, ScoreHasReadableReason) {
     MixScorer scorer;
     const MixScore s = scorer.score(makeTrack(1, 8, true, 124, 5), makeTrack(2, 9, true, 125, 6));

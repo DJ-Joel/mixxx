@@ -143,13 +143,43 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             "Beatmatched transitions: the next track is played at the same\n"
             "tempo with its beats lined up (only if within 5%), the bass is\n"
             "swapped halfway, and the tempo then glides back over 30 seconds.\n"
-            "Off: plain crossfade."));
+            "If the keys clash, the next track is pitched up or down a little\n"
+            "so they fit (key morph).\n"
+            "Off: plain crossfade.\n"
+            "Right-click: key morph setting."));
     connect(pushButtonBeatmatch,
             &QPushButton::toggled,
             this,
             [this, showBeatmatchState](bool checked) {
                 m_pAutoDJProcessor->setBeatmatchEnabled(checked);
                 showBeatmatchState(checked);
+            });
+    // Key morph setting: right-click the Beatmatch button.
+    pushButtonBeatmatch->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(pushButtonBeatmatch,
+            &QWidget::customContextMenuRequested,
+            this,
+            [this](const QPoint& pos) {
+                QMenu menu(this);
+                menu.addSection(tr("Key morph, when the keys clash"));
+                auto* pGroup = new QActionGroup(&menu);
+                const int current = m_pAutoDJProcessor->keyMorphLimit();
+                const QList<QPair<int, QString>> choices = {
+                        {0, tr("Off")},
+                        {1, tr("Up to 1 semitone (recommended)")},
+                        {2, tr("Up to 2 semitones (fixes more, voices may sound odd)")},
+                };
+                for (const auto& choice : choices) {
+                    QAction* pAction = menu.addAction(choice.second);
+                    pAction->setCheckable(true);
+                    pAction->setChecked(choice.first == current);
+                    pGroup->addAction(pAction);
+                    const int value = choice.first;
+                    connect(pAction, &QAction::triggered, this, [this, value]() {
+                        m_pAutoDJProcessor->setKeyMorphLimit(value);
+                    });
+                }
+                menu.exec(pushButtonBeatmatch->mapToGlobal(pos));
             });
 
     // Auto DJ 2.0: skip most of the playing track to hear the next mix now.

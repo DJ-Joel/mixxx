@@ -18,6 +18,7 @@
 #include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/phrasealign.h"
 #include "library/autodj/smart/energystore.h"
+#include "library/autodj/smart/mixscorer.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "library/autodj/smart/trackfeatures.h"
 #include "library/columncache.h"
@@ -47,6 +48,9 @@ constexpr double kMinimumTrackDurationSec = 0.2;
 // Auto DJ 2.0 Phase 2 helpers. Controls may be missing (e.g. in tests or
 // when the EQ rack is not loaded), so every access checks first.
 const QString kBeatmatchPreference = QStringLiteral("SmartBeatmatch");
+const QString kKeyMorphPreference = QStringLiteral("SmartKeyMorph");
+constexpr int kKeyMorphDefault = 1; // semitones
+constexpr int kKeyMorphMax = 2;
 constexpr double kBeatmatchTolerancePct = 5.0; // the DJ's 5% rule
 constexpr double kMissing = std::numeric_limits<double>::quiet_NaN();
 
@@ -446,6 +450,27 @@ void AutoDJProcessor::setBeatmatchEnabled(bool enabled) {
     m_pConfig->setValue(ConfigKey(kPreferenceGroup, kBeatmatchPreference), enabled);
 }
 
+int AutoDJProcessor::keyMorphLimit() const {
+    return std::clamp(m_pConfig->getValue(ConfigKey(kPreferenceGroup, kKeyMorphPreference),
+                              kKeyMorphDefault),
+            0,
+            kKeyMorphMax);
+}
+
+void AutoDJProcessor::setKeyMorphLimit(int semitones) {
+    m_pConfig->setValue(ConfigKey(kPreferenceGroup, kKeyMorphPreference),
+            std::clamp(semitones, 0, kKeyMorphMax));
+}
+
+int AutoDJProcessor::currentKeyShift(DeckAttributes* pDeck) const {
+    if (!pDeck || !m_keyShift.contains(pDeck->group)) {
+        return 0;
+    }
+    const TrackPointer pTrack = pDeck->getLoadedTrack();
+    const KeyShift shift = m_keyShift.value(pDeck->group);
+    return pTrack && pTrack->getId() == shift.trackId ? shift.semitones : 0;
+}
+
 void AutoDJProcessor::beginSmartTransition(
         DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
     m_fadeNowLimit = FadeNowLimit(); // the mix has started
@@ -500,6 +525,31 @@ void AutoDJProcessor::beginSmartTransition(
         m_smart.toRatio = *ratio;
         kLogger.info() << "Beatmatch" << pToDeck->group << "at ratio" << *ratio
                        << "(" << toTrackBpm << "->" << fromBpm << "BPM)";
+        // Key morph: if the keys clash, pitch the incoming track a little
+        // (key lock is on, so its tempo is not touched) so the two fit. It
+        // keeps that key to the end of the track: gliding the pitch back
+        // would be heard as the song going out of tune.
+        const int limit = keyMorphLimit();
+        m_keyShift.remove(pToDeck->group);
+        if (limit > 0) {
+            // The outgoing track plays in its own key plus its own morph.
+            const TrackFeatures from = MixScorer::shiftKey(
+                    TrackFeatures::fromTrack(pFromDeck->getLoadedTrack()),
+                    currentKeyShift(pFromDeck));
+            const TrackFeatures to = TrackFeatures::fromTrack(pToTrack);
+            const int shift = MixScorer::keyMorphSemitones(from, to, limit);
+            if (shift != 0) {
+                m_smart.toKeyShift = shift;
+                m_keyShift.insert(pToDeck->group, KeyShift{pToTrack->getId(), shift});
+                kLogger.info() << "Key morph" << pToDeck->group << to.camelotText()
+                               << "->" << MixScorer::shiftKey(to, shift).camelotText()
+                               << "(" << shift << "semitone ) to fit" << from.camelotText();
+            } else if (from.hasKey() && to.hasKey() &&
+                    MixScorer::camelotCost(from, to, 0.0, false) >= MixScorer::kClashKeyCost) {
+                kLogger.info() << "Key morph: no shift of up to" << limit << "semitone fits"
+                               << to.camelotText() << "to" << from.camelotText();
+            }
+        }
     } else if (!gridsOk) {
         kLogger.info() << "No beatmatch for" << pToDeck->group << ":" << gridWhy
                        << ": plain crossfade";
@@ -533,6 +583,15 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     if (!std::isnan(m_smart.toLowKill)) {
         writeControl(eqKillKey(m_smart.pTo->group), bass.toLowKilled ? 1.0 : 0.0);
     }
+    // Key morph. Written on every update, because switching key lock on
+    // can reset the pitch in the engine a moment after we set it.
+    if (m_smart.toKeyShift != 0) {
+        const ConfigKey pitchKey(m_smart.pTo->group, QStringLiteral("pitch_adjust"));
+        const double now = readControl(pitchKey);
+        if (!std::isnan(now) && std::fabs(now - m_smart.toKeyShift) > 0.01) {
+            writeControl(pitchKey, m_smart.toKeyShift);
+        }
+    }
     // Full EQ transition: the mids and highs cross over gradually, relative
     // to where the DJ had them (a missing control stays NaN = untouched).
     const beatmatch::EqBlend eq = beatmatch::eqBlend(progress);
@@ -563,7 +622,7 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
     }
     if (completed) {
         // The outgoing track has stopped: put its deck back to normal tempo.
-        resetDeckTempo(m_smart.pFrom);
+        resetDeckTempo(m_smart.pFrom, true);
     }
     m_smart = SmartTransition();
 }
@@ -608,7 +667,7 @@ void AutoDJProcessor::updateGlide(DeckAttributes* pDeck) {
     if (ratio == 1.0) {
         m_glide.pDeck = nullptr;
         m_glideTicker.stop();
-        resetDeckTempo(pDeck); // back at its own tempo: restore key lock
+        resetDeckTempo(pDeck, false); // back at its own tempo: restore key lock
     }
 }
 
@@ -1075,7 +1134,7 @@ double AutoDJProcessor::skipToMix() {
     return targetSec - nowSec;
 }
 
-void AutoDJProcessor::resetDeckTempo(DeckAttributes* pDeck) {
+void AutoDJProcessor::resetDeckTempo(DeckAttributes* pDeck, bool trackDone) {
     if (!pDeck || !m_keylockBefore.contains(pDeck->group)) {
         return; // we never changed this deck
     }
@@ -1083,6 +1142,14 @@ void AutoDJProcessor::resetDeckTempo(DeckAttributes* pDeck) {
         m_glide.pDeck = nullptr;
     }
     writeControl(ConfigKey(pDeck->group, QStringLiteral("rate_ratio")), 1.0);
+    if (m_keyShift.contains(pDeck->group)) {
+        if (!trackDone) {
+            return; // keep key lock on while the key morph plays
+        }
+        // Played out: the deck back to the track's own key.
+        writeControl(ConfigKey(pDeck->group, QStringLiteral("pitch_adjust")), 0.0);
+        m_keyShift.remove(pDeck->group);
+    }
     writeControl(ConfigKey(pDeck->group, QStringLiteral("keylock")),
             m_keylockBefore.take(pDeck->group));
 }

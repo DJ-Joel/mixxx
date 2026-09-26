@@ -226,6 +226,10 @@ class AutoDJProcessor : public QObject {
     /// Auto DJ 2.0 Phase 2: beatmatched transitions with a bass swap.
     bool isBeatmatchEnabled() const;
     void setBeatmatchEnabled(bool enabled);
+    // Auto DJ 2.0 key morph: pitch a beatmatched incoming track by up to this
+    // many semitones (0 = off) when its key clashes with the outgoing one.
+    int keyMorphLimit() const;
+    void setKeyMorphLimit(int semitones);
 
     /// For testing mixes quickly: jumps the playing track to a few seconds
     /// before its planned mix, so the mix itself still happens exactly as
@@ -433,6 +437,7 @@ class AutoDJProcessor : public QObject {
         double toHigh = 1.0;
         double toQuantize = 0.0;
         double toKeylock = 0.0;
+        int toKeyShift = 0; // key morph, semitones (0 = none)
     };
     SmartTransition m_smart;
     struct Glide {
@@ -451,7 +456,16 @@ class AutoDJProcessor : public QObject {
     // A deck is reset to its own tempo once its track has faded out, so the
     // next track loaded there does not inherit a leftover tempo.
     QHash<QString, double> m_keylockBefore;
-    void resetDeckTempo(DeckAttributes* pDeck);
+    // trackDone = the track has faded out. Before that, a deck with a key
+    // morph keeps key lock on (turning it off would undo the morph).
+    void resetDeckTempo(DeckAttributes* pDeck, bool trackDone);
+    // The key morph now on a deck (semitones), 0 if none or another track.
+    int currentKeyShift(DeckAttributes* pDeck) const;
+    struct KeyShift {
+        TrackId trackId;
+        int semitones = 0;
+    };
+    QHash<QString, KeyShift> m_keyShift;
     // Moves a planned beatmatched fade onto phrase boundaries (seconds, as
     // used inside calculateTransition before they become fractions).
     void alignTransitionToPhrases(DeckAttributes* pFromDeck,

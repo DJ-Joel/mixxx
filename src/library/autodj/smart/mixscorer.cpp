@@ -52,6 +52,38 @@ double MixScorer::camelotCost(const TrackFeatures& from,
 }
 
 // static
+TrackFeatures MixScorer::shiftKey(const TrackFeatures& track, int semitones) {
+    TrackFeatures shifted = track;
+    if (track.hasKey()) {
+        const int steps = ((7 * semitones) % 12 + 12) % 12;
+        shifted.camelotNumber = (track.camelotNumber - 1 + steps) % 12 + 1;
+    }
+    return shifted;
+}
+
+// static
+int MixScorer::keyMorphSemitones(
+        const TrackFeatures& from, const TrackFeatures& to, int maxShift) {
+    if (!from.hasKey() || !to.hasKey()) {
+        return 0;
+    }
+    const auto cost = [&from](const TrackFeatures& t) {
+        return camelotCost(from, t, 0.0, false);
+    };
+    if (cost(to) < kClashKeyCost) {
+        return 0; // already fits
+    }
+    for (int size = 1; size <= maxShift; ++size) {
+        const double down = cost(shiftKey(to, -size));
+        const double up = cost(shiftKey(to, size));
+        if (std::min(down, up) < kClashKeyCost) {
+            return down <= up ? -size : size;
+        }
+    }
+    return 0;
+}
+
+// static
 double MixScorer::tempoCost(double bpmFrom,
         double bpmTo,
         double tolerancePct,

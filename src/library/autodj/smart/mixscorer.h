@@ -81,6 +81,19 @@ class MixScorer {
     /// "key clash", "tempo clash", "key + tempo clash", or empty if smooth.
     static QString clashLabel(const MixScore& score);
 
+    /// Key morph: the key a track plays in when pitched by `semitones`
+    /// (key lock on, tempo unchanged). One semitone up = 7 steps round the
+    /// Camelot wheel (8A -> 3A), the letter stays.
+    static TrackFeatures shiftKey(const TrackFeatures& track, int semitones);
+
+    /// Key morph: how many semitones (-maxShift..+maxShift) to pitch the
+    /// incoming track so its key fits the outgoing one (no key clash).
+    /// 0 = leave it alone: the keys already fit, a key is unknown, or no
+    /// shift that small makes them fit. The smallest shift wins; with a tie,
+    /// the better fit, then down (a lower voice sounds more natural than a
+    /// higher one).
+    static int keyMorphSemitones(const TrackFeatures& from, const TrackFeatures& to, int maxShift);
+
     /// Shortest distance round the Camelot wheel: 0..6.
     static int camelotDistance(int from, int to);
 
