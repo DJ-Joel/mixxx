@@ -53,3 +53,34 @@ TEST(BeatmatchTest, BassSwapsHardAtTheMiddle) {
         EXPECT_NE(s.fromLowKilled, s.toLowKilled) << p;
     }
 }
+
+TEST(BeatmatchTest, EqBlendsMidsAndHighsGradually) {
+    using beatmatch::eqBlend;
+    using beatmatch::kEqBlendFloor;
+    // Start: the outgoing track as the DJ set it, the incoming one held back.
+    EXPECT_DOUBLE_EQ(1.0, eqBlend(0.0).fromMidHigh);
+    EXPECT_DOUBLE_EQ(kEqBlendFloor, eqBlend(0.0).toMidHigh);
+    // Middle: both at full.
+    EXPECT_DOUBLE_EQ(1.0, eqBlend(0.5).fromMidHigh);
+    EXPECT_DOUBLE_EQ(1.0, eqBlend(0.5).toMidHigh);
+    // End: the outgoing track held back, the incoming one at full.
+    EXPECT_DOUBLE_EQ(kEqBlendFloor, eqBlend(1.0).fromMidHigh);
+    EXPECT_DOUBLE_EQ(1.0, eqBlend(1.0).toMidHigh);
+    // Gradual, never a jump, never outside floor..1.
+    double lastFrom = 1.0;
+    double lastTo = 0.0;
+    for (int i = 0; i <= 100; ++i) {
+        const auto e = eqBlend(i / 100.0);
+        EXPECT_LE(e.fromMidHigh, lastFrom);
+        EXPECT_GE(e.toMidHigh, lastTo);
+        EXPECT_LT(lastFrom - e.fromMidHigh, 0.02);
+        EXPECT_LT(e.toMidHigh - lastTo, i == 0 ? 1.0 : 0.02);
+        EXPECT_GE(e.fromMidHigh, kEqBlendFloor);
+        EXPECT_LE(e.toMidHigh, 1.0);
+        lastFrom = e.fromMidHigh;
+        lastTo = e.toMidHigh;
+    }
+    // Out-of-range progress is clamped.
+    EXPECT_DOUBLE_EQ(kEqBlendFloor, eqBlend(-1.0).toMidHigh);
+    EXPECT_DOUBLE_EQ(kEqBlendFloor, eqBlend(2.0).fromMidHigh);
+}

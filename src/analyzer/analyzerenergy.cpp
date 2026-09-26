@@ -22,6 +22,25 @@ bool isOurs(double markerSec, double autoSec) {
 
 } // namespace
 
+// static
+bool AnalyzerEnergy::gridOf(const TrackPointer& pTrack, double* pBpm, double* pFirstBeatSec) {
+    *pBpm = 0.0;
+    *pFirstBeatSec = 0.0;
+    const mixxx::BeatsPointer pBeats = pTrack ? pTrack->getBeats() : nullptr;
+    if (!pBeats) {
+        return false;
+    }
+    const double bpm = pTrack->getBpm();
+    const double sampleRate = pTrack->getSampleRate().value();
+    const mixxx::audio::FramePos firstBeat = pBeats->firstBeat();
+    if (!(bpm > 0.0) || !(sampleRate > 0.0) || !firstBeat.isValid()) {
+        return false;
+    }
+    *pBpm = bpm;
+    *pFirstBeatSec = firstBeat.value() / sampleRate;
+    return true;
+}
+
 AnalyzerEnergy::AnalyzerEnergy(const QSqlDatabase& dbConnection)
         : m_db(dbConnection),
           m_tableReady(EnergyStore::ensureTable(dbConnection)) {
@@ -43,7 +62,14 @@ bool AnalyzerEnergy::initialize(const AnalyzerTrack& track,
     // still refresh the Intro End / Outro Start markers from the stored
     // body, so "Analyze" puts back a marker the DJ cleared.
     const auto version = EnergyStore::storedVersion(m_db, m_trackId);
-    if (version && *version == EnergyCalculator::kVersion) {
+    // The beat grid check belongs to the grid it was made on: if the DJ
+    // has changed the grid since (or it was never checked), run again.
+    double bpm = 0.0;
+    double firstBeatSec = 0.0;
+    gridOf(pTrack, &bpm, &firstBeatSec);
+    const auto gridCheck = EnergyStore::loadGridCheck(m_db, m_trackId);
+    const bool gridChecked = gridCheck && gridCheck->isFor(bpm, firstBeatSec);
+    if (version && *version == EnergyCalculator::kVersion && gridChecked) {
         if (const auto body = EnergyStore::loadBody(m_db, m_trackId)) {
             EnergyCalculator::Result stored;
             stored.bodyStartSec = body->startSec;
@@ -74,6 +100,7 @@ void AnalyzerEnergy::storeResults(TrackPointer pTrack) {
     if (!m_pCalculator->finish(&result)) {
         qDebug() << "AnalyzerEnergy: not enough audio for an energy score"
                  << pTrack->getInfo();
+        storeGridCheck(pTrack, nullptr); // so it is not tried again and again
         return;
     }
     if (EnergyStore::save(m_db, m_trackId, result, EnergyCalculator::kVersion)) {
@@ -84,6 +111,25 @@ void AnalyzerEnergy::storeResults(TrackPointer pTrack) {
                  << "onsets/s" << result.onsetsPerSec;
         setAutoMarkers(pTrack, result);
     }
+    storeGridCheck(pTrack, &result);
+}
+
+void AnalyzerEnergy::storeGridCheck(
+        const TrackPointer& pTrack, const EnergyCalculator::Result* pResult) {
+    EnergyStore::GridCheck check;
+    check.version = EnergyCalculator::kGridCheckVersion;
+    if (gridOf(pTrack, &check.bpm, &check.firstBeatSec) && pResult) {
+        check.driftBeats = m_pCalculator->gridDriftBeats(check.firstBeatSec,
+                60.0 / check.bpm,
+                pResult->bodyStartSec,
+                pResult->bodyEndSec);
+    }
+    EnergyStore::saveGridCheck(m_db, m_trackId, check);
+    qInfo() << "AnalyzerEnergy: beat grid check" << pTrack->getInfo()
+            << "bpm" << check.bpm << "drift" << check.driftBeats << "beats"
+            << (check.driftBeats > EnergyCalculator::kGridMaxDriftBeats
+                               ? "-> grid does NOT stay on the beat, Auto DJ will not beatmatch it"
+                               : (check.driftBeats < 0.0 ? "(cannot tell)" : "(OK)"));
 }
 
 void AnalyzerEnergy::setAutoMarkers(

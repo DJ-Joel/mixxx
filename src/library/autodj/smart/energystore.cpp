@@ -5,6 +5,7 @@
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
+#include <cmath>
 
 #include "library/queryutil.h"
 
@@ -43,6 +44,28 @@ bool EnergyStore::ensureTable(const QSqlDatabase& db) {
                 "track_id INTEGER PRIMARY KEY, "
                 "intro_end_sec REAL, "
                 "outro_start_sec REAL)"))) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    if (!query.exec(QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS autodj_grid_check ("
+                "track_id INTEGER PRIMARY KEY, "
+                "bpm REAL, "
+                "first_beat_sec REAL, "
+                "drift_beats REAL)"))) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    // Added with grid check v2. Older rows get NULL = version 0.
+    bool hasVersion = false;
+    if (query.exec(QStringLiteral("PRAGMA table_info(autodj_grid_check)"))) {
+        while (query.next()) {
+            hasVersion = hasVersion || query.value(1).toString() == QStringLiteral("version");
+        }
+    }
+    if (!hasVersion &&
+            !query.exec(QStringLiteral(
+                    "ALTER TABLE autodj_grid_check ADD COLUMN version INTEGER"))) {
         LOG_FAILED_QUERY(query);
         return false;
     }
@@ -199,6 +222,62 @@ bool EnergyStore::saveAutoMarkers(
             markers.introEndSec >= 0.0 ? QVariant(markers.introEndSec) : QVariant());
     query.bindValue(QStringLiteral(":outro"),
             markers.outroStartSec >= 0.0 ? QVariant(markers.outroStartSec) : QVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    return true;
+}
+
+bool EnergyStore::GridCheck::isFor(double gridBpm, double gridFirstBeatSec) const {
+    // Tiny differences are rounding in the database, not a new grid.
+    return version == EnergyCalculator::kGridCheckVersion &&
+            std::fabs(bpm - gridBpm) < 0.001 &&
+            std::fabs(firstBeatSec - gridFirstBeatSec) < 0.002;
+}
+
+// static
+std::optional<EnergyStore::GridCheck> EnergyStore::loadGridCheck(
+        const QSqlDatabase& db, TrackId trackId) {
+    if (!ensureTable(db)) {
+        return std::nullopt;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "SELECT bpm, first_beat_sec, drift_beats, version FROM autodj_grid_check "
+            "WHERE track_id=:id"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return std::nullopt;
+    }
+    if (!query.next()) {
+        return std::nullopt;
+    }
+    GridCheck check;
+    check.bpm = query.value(0).toDouble();
+    check.firstBeatSec = query.value(1).toDouble();
+    check.driftBeats = query.value(2).isNull() ? -1.0 : query.value(2).toDouble();
+    check.version = query.value(3).toInt(); // NULL -> 0
+    return check;
+}
+
+// static
+bool EnergyStore::saveGridCheck(
+        const QSqlDatabase& db, TrackId trackId, const GridCheck& check) {
+    if (!ensureTable(db)) {
+        return false;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "INSERT OR REPLACE INTO autodj_grid_check "
+            "(track_id, bpm, first_beat_sec, drift_beats, version) "
+            "VALUES (:id, :bpm, :first, :drift, :version)"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    query.bindValue(QStringLiteral(":bpm"), check.bpm);
+    query.bindValue(QStringLiteral(":first"), check.firstBeatSec);
+    query.bindValue(QStringLiteral(":drift"), check.driftBeats);
+    query.bindValue(QStringLiteral(":version"), check.version);
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return false;

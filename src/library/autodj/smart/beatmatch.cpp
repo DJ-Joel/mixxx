@@ -45,4 +45,15 @@ BassState bassSwap(double progress) {
     return s;
 }
 
+EqBlend eqBlend(double progress) {
+    const double p = std::isnan(progress) ? 0.0 : std::clamp(progress, 0.0, 1.0);
+    EqBlend e;
+    if (p < 0.5) {
+        e.toMidHigh = kEqBlendFloor + (1.0 - kEqBlendFloor) * (p / 0.5);
+    } else {
+        e.fromMidHigh = 1.0 - (1.0 - kEqBlendFloor) * ((p - 0.5) / 0.5);
+    }
+    return e;
+}
+
 } // namespace beatmatch

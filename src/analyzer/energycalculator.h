@@ -60,6 +60,34 @@ class EnergyCalculator {
     /// Returns false if there was too little non-silent audio (< 5 s).
     bool finish(Result* pResult) const;
 
+    /// Beat grid check: does a steady beat grid (first beat + beat length,
+    /// seconds) stay on the music from the start of the body to its end?
+    ///
+    /// For the bass hits and for the treble hits (hats, snares) separately,
+    /// it finds where in the beat the hits fall (the "phase") in 16-beat
+    /// windows at the start, middle and end of the body. With a good grid
+    /// that place stays the same all through the track; with a wrong tempo
+    /// or a drummer who drifts it wanders. Where the hits fall does not
+    /// matter (an off-beat bass line is fine), only that it stays put.
+    ///
+    /// Returns how far it wanders, in beats (0 = rock steady, 0.5 = half a
+    /// beat off somewhere), using whichever band shows the beat most
+    /// clearly. -1 = cannot tell (body too short or no clear beat), which
+    /// counts as OK. Call after process().
+    double gridDriftBeats(double firstBeatSec,
+            double beatSec,
+            double bodyStartSec,
+            double bodyEndSec) const;
+
+    /// More drift than this and Auto DJ does not beatmatch the track (it
+    /// fades plainly instead). 0.15 beats = 75 ms at 120 BPM: a flam you
+    /// can hear. On 5 real tracks: good grids 0.04..0.13, a grid 0.05% off
+    /// 0.15..0.33, bigger errors 0.2..0.5.
+    static constexpr double kGridMaxDriftBeats = 0.15;
+    /// Bump when gridDriftBeats() changes, so every track is checked again.
+    /// v2: only the first tick of a double kick counts.
+    static constexpr int kGridCheckVersion = 2;
+
     /// Maps the three 0..1 parts to the 1..10 score.
     static double combine(double loudness01, double brightness01, double busyness01);
 
@@ -92,6 +120,7 @@ class EnergyCalculator {
     // Per-block results.
     std::vector<float> m_blockDb;    // full-band level of each 20 ms block
     std::vector<float> m_blockLowDb; // bass-band level of each 20 ms block
+    std::vector<float> m_blockHighDb; // treble-band level of each 20 ms block
 
     // Totals over non-silent blocks.
     double m_totalFull = 0.0;

@@ -257,6 +257,9 @@ class AutoDJProcessor : public QObject {
     /// Crates and playlists Smart Fill can take songs from:
     /// (source key for smartFill, name to show).
     QList<std::pair<QString, QString>> smartFillSources() const;
+    /// Tops up the queue when it runs low: Smart Fill first (config
+    /// [Auto DJ] SmartFillAuto, default on), random tracks for the rest.
+    void fillQueue(int tracksToAdd);
 
     /// Adds the suggested bridge tracks into the gaps they bridge.
     /// Returns how many were added (0 if the queue changed meanwhile).
@@ -402,6 +405,11 @@ class AutoDJProcessor : public QObject {
     FadeNowLimit m_fadeNowLimit;
     bool m_lastAlignApplied = false;
     bool tryPhraseFadeNow();
+    // Auto DJ 2.0: false if the beat grid check found that one of the two
+    // tracks has a grid that drifts off the beat (then a plain fade).
+    bool gridsAllowBeatmatch(const TrackPointer& pFromTrack,
+            const TrackPointer& pToTrack,
+            QString* pWhy) const;
 
     // Auto DJ 2.0 Phase 2: beatmatch + bass swap during a fade.
     void beginSmartTransition(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
@@ -418,6 +426,11 @@ class AutoDJProcessor : public QObject {
         // Values to put back afterwards (NaN = control missing).
         double fromLowKill = 0.0;
         double toLowKill = 0.0;
+        // The DJ's mid and high EQ settings (full EQ transition).
+        double fromMid = 1.0;
+        double fromHigh = 1.0;
+        double toMid = 1.0;
+        double toHigh = 1.0;
         double toQuantize = 0.0;
         double toKeylock = 0.0;
     };

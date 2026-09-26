@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+constexpr double kTwoPi = 2.0 * kPi;
 constexpr double kBlockSeconds = 0.02; // 20 ms analysis blocks
 constexpr int kBlocksPerWindow = 50;   // 1 s loudness windows
 constexpr double kWindowSeconds = kBlockSeconds * kBlocksPerWindow;
@@ -46,6 +48,22 @@ constexpr double kOnsetsMax = 6.0;
 constexpr double kWeightLoudness = 0.45;
 constexpr double kWeightBrightness = 0.30;
 constexpr double kWeightBusyness = 0.25;
+
+// Beat grid check (gridDriftBeats). A "hit" = a rise in a band's level from
+// one 20 ms block to the next. Tested on 5 real tracks: correct grids
+// drifted 0.04..0.13 beats; a grid 0.05% too fast/slow 0.15 and more.
+constexpr double kGridFloorDb = -60.0;
+constexpr int kGridWindowBeats = 16;
+constexpr int kGridWindowsPerRegion = 4; // 64 beats per region
+// A band whose hits line up with the beat less than this is ignored
+// (0 = hits anywhere, 1 = every hit exactly on the same spot of the beat).
+constexpr double kGridMinClarity = 0.05;
+// Double kicks ("two ticks" close together): only the first tick counts.
+// A hit this strong starts a short quiet time in which later rises are
+// ignored; the block right after it still counts (the same attack can
+// straddle two blocks).
+constexpr double kGridHitDb = 3.0;
+constexpr int kGridDoubleHitBlocks = 5; // 100 ms
 
 double onePoleCoefficient(double cutoffHz, double sampleRate) {
     return 1.0 - std::exp(-2.0 * kPi * cutoffHz / sampleRate);
@@ -97,6 +115,7 @@ void EnergyCalculator::endBlock() {
     const double db = powerToDb(meanFull);
     m_blockDb.push_back(static_cast<float>(db));
     m_blockLowDb.push_back(static_cast<float>(powerToDb(m_blockSumLow / m_framesInBlock)));
+    m_blockHighDb.push_back(static_cast<float>(powerToDb(m_blockSumHigh / m_framesInBlock)));
     if (db > kSilenceDb) {
         m_totalFull += m_blockSumFull;
         m_totalLow += m_blockSumLow;
@@ -106,6 +125,109 @@ void EnergyCalculator::endBlock() {
     m_blockSumFull = 0.0;
     m_blockSumLow = 0.0;
     m_blockSumHigh = 0.0;
+}
+
+double EnergyCalculator::gridDriftBeats(double firstBeatSec,
+        double beatSec,
+        double bodyStartSec,
+        double bodyEndSec) const {
+    const int blockCount = static_cast<int>(m_blockLowDb.size());
+    const double blockSec = m_blockFrames / m_sampleRate;
+    const double regionSec = kGridWindowBeats * kGridWindowsPerRegion * beatSec;
+    if (!(beatSec > 0.1) || !(bodyEndSec - bodyStartSec >= regionSec) || blockCount < 2) {
+        return -1.0;
+    }
+    // Circular distance between two phases, in beats (0..0.5).
+    const auto distance = [](double a, double b) {
+        const double d = std::fmod(std::fabs(a - b), 1.0);
+        return std::min(d, 1.0 - d);
+    };
+    const double regionStarts[] = {
+            bodyStartSec,
+            0.5 * (bodyStartSec + bodyEndSec - regionSec),
+            bodyEndSec - regionSec,
+    };
+    double best = -1.0;
+    for (const std::vector<float>* pLevels : {&m_blockLowDb, &m_blockHighDb}) {
+        const std::vector<float>& levels = *pLevels;
+        // Sum of the hits in [fromSec, toSec) as a vector: its angle is where
+        // in the beat they fall, its length (/ weight) how clearly.
+        const auto window = [&](double fromSec, double toSec, double* pWeight) {
+            double re = 0.0;
+            double im = 0.0;
+            double weight = 0.0;
+            const int from = std::max(1, static_cast<int>(std::ceil(fromSec / blockSec)));
+            const int to = std::min(blockCount, static_cast<int>(std::ceil(toSec / blockSec)));
+            int lastHit = -kGridDoubleHitBlocks - 1;
+            for (int b = from; b < to; ++b) {
+                const double hit = std::max(0.0,
+                        std::max<double>(levels[b], kGridFloorDb) -
+                                std::max<double>(levels[b - 1], kGridFloorDb));
+                if (hit <= 0.0) {
+                    continue;
+                }
+                const int sinceLastHit = b - lastHit;
+                if (sinceLastHit > 1 && sinceLastHit <= kGridDoubleHitBlocks) {
+                    continue; // the second tick of a double kick
+                }
+                if (hit >= kGridHitDb && sinceLastHit > 1) {
+                    lastHit = b;
+                }
+                const double angle = kTwoPi * (b * blockSec - firstBeatSec) / beatSec;
+                re += hit * std::cos(angle);
+                im += hit * std::sin(angle);
+                weight += hit;
+            }
+            *pWeight = weight;
+            return std::pair<double, double>(re, im);
+        };
+        const auto phaseOf = [](double re, double im) {
+            return std::atan2(im, re) / kTwoPi;
+        };
+        double regionPhase[3];
+        double worst = 0.0;
+        bool clear = true;
+        for (int r = 0; r < 3 && clear; ++r) {
+            // Each window counts the same, however loud: add up the
+            // windows' directions, each as long as that window is clear.
+            double sumRe = 0.0;
+            double sumIm = 0.0;
+            double sumClarity = 0.0;
+            double windowPhase[kGridWindowsPerRegion];
+            for (int w = 0; w < kGridWindowsPerRegion; ++w) {
+                const double from = regionStarts[r] + w * kGridWindowBeats * beatSec;
+                double weight = 0.0;
+                const auto v = window(from, from + kGridWindowBeats * beatSec, &weight);
+                windowPhase[w] = phaseOf(v.first, v.second);
+                if (weight > 0.0) {
+                    sumRe += v.first / weight;
+                    sumIm += v.second / weight;
+                    sumClarity += std::hypot(v.first, v.second) / weight;
+                }
+            }
+            if (sumClarity / kGridWindowsPerRegion < kGridMinClarity) {
+                clear = false;
+                break;
+            }
+            regionPhase[r] = phaseOf(sumRe, sumIm);
+            // Drift inside the region (the 16 bars a mix can take).
+            for (double p : windowPhase) {
+                worst = std::max(worst, distance(p, regionPhase[r]));
+            }
+        }
+        if (!clear) {
+            continue; // this band does not show the beat clearly enough
+        }
+        // Drift between start, middle and end (a slightly wrong tempo).
+        worst = std::max({worst,
+                distance(regionPhase[0], regionPhase[1]),
+                distance(regionPhase[1], regionPhase[2]),
+                distance(regionPhase[0], regionPhase[2])});
+        if (best < 0.0 || worst < best) {
+            best = worst;
+        }
+    }
+    return best;
 }
 
 // static

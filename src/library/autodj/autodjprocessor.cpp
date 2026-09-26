@@ -11,6 +11,7 @@
 #include <limits>
 #include <optional>
 
+#include "analyzer/analyzerenergy.h"
 #include "engine/channels/enginedeck.h"
 #include "control/controlobject.h"
 #include "library/autodj/smart/beatmatch.h"
@@ -53,6 +54,12 @@ ConfigKey eqKillKey(const QString& deckGroup) {
     // parameter1 = low band; button_parameter1 = its kill switch.
     return ConfigKey(QStringLiteral("[EqualizerRack1_%1_Effect1]").arg(deckGroup),
             QStringLiteral("button_parameter1"));
+}
+
+// Mid (2) and high (3) EQ gain of a deck: 1.0 = unchanged.
+ConfigKey eqGainKey(const QString& deckGroup, int band) {
+    return ConfigKey(QStringLiteral("[EqualizerRack1_%1_Effect1]").arg(deckGroup),
+            QStringLiteral("parameter%1").arg(band));
 }
 
 double readControl(const ConfigKey& key) {
@@ -455,6 +462,10 @@ void AutoDJProcessor::beginSmartTransition(
     m_smart.pTo = pToDeck;
     m_smart.fromLowKill = readControl(eqKillKey(pFromDeck->group));
     m_smart.toLowKill = readControl(eqKillKey(pToDeck->group));
+    m_smart.fromMid = readControl(eqGainKey(pFromDeck->group, 2));
+    m_smart.fromHigh = readControl(eqGainKey(pFromDeck->group, 3));
+    m_smart.toMid = readControl(eqGainKey(pToDeck->group, 2));
+    m_smart.toHigh = readControl(eqGainKey(pToDeck->group, 3));
 
     // Tempo: play the incoming track at the outgoing track's tempo, but only
     // within the 5% rule; otherwise it stays a plain crossfade.
@@ -465,6 +476,13 @@ void AutoDJProcessor::beginSmartTransition(
     std::optional<double> ratio;
     if (!std::isnan(fromBpm)) {
         ratio = beatmatch::matchRatio(fromBpm, toTrackBpm, kBeatmatchTolerancePct);
+    }
+    // A beat grid that drifts off the beat would make a messy beatmatch:
+    // then a plain fade instead (the same decision as the phrase plan).
+    QString gridWhy;
+    const bool gridsOk = gridsAllowBeatmatch(pFromDeck->getLoadedTrack(), pToTrack, &gridWhy);
+    if (!gridsOk) {
+        ratio.reset();
     }
     const ConfigKey toRatioKey(pToDeck->group, QStringLiteral("rate_ratio"));
     if (ratio && ControlObject::exists(toRatioKey)) {
@@ -482,6 +500,9 @@ void AutoDJProcessor::beginSmartTransition(
         m_smart.toRatio = *ratio;
         kLogger.info() << "Beatmatch" << pToDeck->group << "at ratio" << *ratio
                        << "(" << toTrackBpm << "->" << fromBpm << "BPM)";
+    } else if (!gridsOk) {
+        kLogger.info() << "No beatmatch for" << pToDeck->group << ":" << gridWhy
+                       << ": plain crossfade";
     } else {
         kLogger.info() << "No beatmatch for" << pToDeck->group
                        << "(" << toTrackBpm << "vs" << fromBpm
@@ -512,6 +533,13 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     if (!std::isnan(m_smart.toLowKill)) {
         writeControl(eqKillKey(m_smart.pTo->group), bass.toLowKilled ? 1.0 : 0.0);
     }
+    // Full EQ transition: the mids and highs cross over gradually, relative
+    // to where the DJ had them (a missing control stays NaN = untouched).
+    const beatmatch::EqBlend eq = beatmatch::eqBlend(progress);
+    writeControl(eqGainKey(m_smart.pFrom->group, 2), m_smart.fromMid * eq.fromMidHigh);
+    writeControl(eqGainKey(m_smart.pFrom->group, 3), m_smart.fromHigh * eq.fromMidHigh);
+    writeControl(eqGainKey(m_smart.pTo->group, 2), m_smart.toMid * eq.toMidHigh);
+    writeControl(eqGainKey(m_smart.pTo->group, 3), m_smart.toHigh * eq.toMidHigh);
 }
 
 void AutoDJProcessor::endSmartTransition(bool completed) {
@@ -521,6 +549,10 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
     // Put the EQ kills back as the DJ had them.
     writeControl(eqKillKey(m_smart.pFrom->group), m_smart.fromLowKill);
     writeControl(eqKillKey(m_smart.pTo->group), m_smart.toLowKill);
+    writeControl(eqGainKey(m_smart.pFrom->group, 2), m_smart.fromMid);
+    writeControl(eqGainKey(m_smart.pFrom->group, 3), m_smart.fromHigh);
+    writeControl(eqGainKey(m_smart.pTo->group, 2), m_smart.toMid);
+    writeControl(eqGainKey(m_smart.pTo->group, 3), m_smart.toHigh);
     if (m_smart.beatmatched) {
         writeControl(ConfigKey(m_smart.pTo->group, QStringLiteral("quantize")),
                 m_smart.toQuantize);
@@ -624,9 +656,17 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     // still placed on its phrases and the incoming intro is still skipped,
     // but the new beat comes in as the fade ends (no clashing beats).
     const double fromRatio = pFromDeck->rateRatio();
-    const bool matched =
+    // A grid that drifts off the beat counts as "not matched" too.
+    QString gridWhy;
+    const bool gridsOk = gridsAllowBeatmatch(pFromTrack, pToTrack, &gridWhy);
+    const bool matched = gridsOk &&
             beatmatch::matchRatio(fromBpm * fromRatio, toBpm, kBeatmatchTolerancePct)
                     .has_value();
+    const QString notMatchedWhy = gridsOk
+            ? QStringLiteral("%1 vs %2 BPM")
+                      .arg(fromBpm * fromRatio, 0, 'f', 1)
+                      .arg(toBpm, 0, 'f', 1)
+            : gridWhy;
     // Seconds here are real time at each deck's current speed, the same
     // convention as the rest of calculateTransition.
     phrasealign::Grid from;
@@ -740,14 +780,13 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     logOnce(QStringLiteral(" %1 %2")
                     .arg(plan->fromFadeBeginSec * fromRatio, 0, 'f', 1)
                     .arg(plan->toStartSec * pToDeck->rateRatio(), 0, 'f', 1),
-            QStringLiteral("%1 bars, fade %2 -> %3 s (limit %4 s), incoming starts at "
-                           "%5 s (beat at %6 s, %7)")
-                    .prepend(matched ? QString()
-                                     : QStringLiteral("NOT beatmatched (%1 vs %2 BPM), "
-                                                      "new beat at the END of the fade: ")
-                                               .arg(fromBpm * fromRatio, 0, 'f', 1)
-                                               .arg(toBpm, 0, 'f', 1))
-                    .arg(bars)
+            QString(matched ? QString()
+                            : QStringLiteral("NOT beatmatched (%1), new beat at the END "
+                                             "of the fade: ")
+                                      .arg(notMatchedWhy)) +
+                    QStringLiteral("%1 bars, fade %2 -> %3 s (limit %4 s), incoming starts at "
+                                   "%5 s (beat at %6 s, %7)")
+                            .arg(bars)
                     .arg(plan->fromFadeBeginSec)
                     .arg(plan->fromFadeEndSec)
                     .arg(fromLimitSec)
@@ -771,6 +810,35 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
             pToDeck->setPlayPosition(plan->toStartSec / toDuration);
         }
     }
+}
+
+bool AutoDJProcessor::gridsAllowBeatmatch(const TrackPointer& pFromTrack,
+        const TrackPointer& pToTrack,
+        QString* pWhy) const {
+    if (!m_pTrackCollectionManager || !m_pTrackCollectionManager->internalCollection()) {
+        return true;
+    }
+    const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
+    for (const TrackPointer& pTrack : {pFromTrack, pToTrack}) {
+        if (!pTrack) {
+            continue;
+        }
+        double bpm = 0.0;
+        double firstBeatSec = 0.0;
+        AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec);
+        const auto check = EnergyStore::loadGridCheck(db, pTrack->getId());
+        // Not checked yet, or the DJ changed the grid since: trust it.
+        if (check && check->isFor(bpm, firstBeatSec) &&
+                check->driftBeats > EnergyCalculator::kGridMaxDriftBeats) {
+            if (pWhy) {
+                *pWhy = QStringLiteral("the beat grid of \"%1\" drifts %2 beats off the music")
+                                .arg(pTrack->getInfo())
+                                .arg(check->driftBeats, 0, 'f', 2);
+            }
+            return false;
+        }
+    }
+    return true;
 }
 
 bool AutoDJProcessor::tryPhraseFadeNow() {
@@ -1878,7 +1946,7 @@ TrackPointer AutoDJProcessor::getNextTrackFromQueue() {
     int tracksToAdd = minAutoDJCrateTracks - m_pAutoDJTableModel->rowCount();
     // In case we start off with < minimum tracks
     if (randomQueueEnabled && (tracksToAdd > 0)) {
-        emit randomTrackRequested(tracksToAdd);
+        fillQueue(tracksToAdd);
     }
 
     while (true) {
@@ -1976,9 +2044,37 @@ void AutoDJProcessor::maybeFillRandomTracks() {
 
     int tracksToAdd = minAutoDJCrateTracks - m_pAutoDJTableModel->rowCount();
     if (randomQueueEnabled && (tracksToAdd > 0)) {
-        qDebug() << "Randomly adding tracks";
-        emit randomTrackRequested(tracksToAdd);
+        fillQueue(tracksToAdd);
     }
+}
+
+void AutoDJProcessor::fillQueue(int tracksToAdd) {
+    // Auto DJ 2.0: top up with Smart Fill (the DJ's saved Smart Fill
+    // options), and only fall back to random tracks for whatever Smart Fill
+    // could not find, so the music never stops.
+    if (m_pConfig->getValue(ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillAuto")), true)) {
+        const int energyChoice = m_pConfig->getValue(
+                ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillEnergy")), 0);
+        const auto energy = energyChoice == 1
+                ? MixScoreWeights::EnergyDirection::Hold
+                : (energyChoice == 2 ? MixScoreWeights::EnergyDirection::Wave
+                                     : MixScoreWeights::EnergyDirection::Build);
+        const bool avoidArtist = m_pConfig->getValue(
+                ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillAvoidSameArtist")), true);
+        const QString source = m_pConfig->getValue(
+                ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillSource")), QString());
+        const QStringList added = smartFill(tracksToAdd, energy, avoidArtist, source);
+        kLogger.info() << "Auto fill: Smart Fill added" << added.size() << "of" << tracksToAdd;
+        tracksToAdd -= static_cast<int>(added.size());
+        if (tracksToAdd <= 0) {
+            return;
+        }
+        kLogger.info() << "Auto fill: nothing else mixes smoothly, adding" << tracksToAdd
+                       << "random tracks";
+    } else {
+        qDebug() << "Randomly adding tracks";
+    }
+    emit randomTrackRequested(tracksToAdd);
 }
 
 void AutoDJProcessor::playerPlayChanged(DeckAttributes* thisDeck, bool playing) {

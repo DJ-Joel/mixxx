@@ -30,4 +30,16 @@ struct BassState {
 };
 BassState bassSwap(double progress);
 
+/// Full EQ transition, on top of the bass swap: the mids and highs cross
+/// over gradually instead of both tracks playing at full. First half: the
+/// incoming mids/highs rise from kEqBlendFloor to full. Second half: the
+/// outgoing mids/highs fall to kEqBlendFloor. The values multiply the
+/// DJ's own EQ setting (1 = leave it as the DJ set it).
+constexpr double kEqBlendFloor = 0.3; // about -10 dB
+struct EqBlend {
+    double fromMidHigh = 1.0;
+    double toMidHigh = 1.0;
+};
+EqBlend eqBlend(double progress);
+
 } // namespace beatmatch

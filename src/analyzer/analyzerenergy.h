@@ -9,9 +9,13 @@
 
 /// Auto DJ 2.0: computes the energy score (1..10) of each track and saves
 /// it with EnergyStore. Skips tracks that already have a score from the
-/// current formula version.
+/// current formula version and a beat grid check for the grid it has now.
 class AnalyzerEnergy : public Analyzer {
   public:
+    /// The track's beat grid as tempo + first beat (seconds). False (and
+    /// 0, 0) if it has none.
+    static bool gridOf(const TrackPointer& pTrack, double* pBpm, double* pFirstBeatSec);
+
     explicit AnalyzerEnergy(const QSqlDatabase& dbConnection);
     ~AnalyzerEnergy() override = default;
 
@@ -25,6 +29,7 @@ class AnalyzerEnergy : public Analyzer {
 
   private:
     void setAutoMarkers(const TrackPointer& pTrack, const EnergyCalculator::Result& result);
+    void storeGridCheck(const TrackPointer& pTrack, const EnergyCalculator::Result* pResult);
 
     QSqlDatabase m_db;
     bool m_tableReady;

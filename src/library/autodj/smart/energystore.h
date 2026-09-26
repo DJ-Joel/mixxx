@@ -19,6 +19,9 @@
 ///  - `autodj_auto_markers`: the Intro End / Outro Start positions the
 ///    analyzer set itself, so it can tell them apart from markers the DJ set
 ///    or moved (those are never touched).
+///  - `autodj_grid_check`: how far the track's beat grid drifts off the
+///    music (EnergyCalculator::gridDriftBeats), and which grid was checked,
+///    so a grid the DJ changes later is checked again.
 class EnergyStore {
   public:
     static constexpr int kMinRating = 1;
@@ -56,6 +59,19 @@ class EnergyStore {
     static AutoMarkers loadAutoMarkers(const QSqlDatabase& db, TrackId trackId);
     static bool saveAutoMarkers(
             const QSqlDatabase& db, TrackId trackId, const AutoMarkers& markers);
+
+    /// Beat grid check result. bpm 0 = the track had no grid.
+    struct GridCheck {
+        double bpm = 0.0;
+        double firstBeatSec = 0.0;
+        double driftBeats = -1.0; ///< -1 = could not tell
+        int version = 0;          ///< EnergyCalculator::kGridCheckVersion
+        /// True if this check was made on that grid (the DJ has not
+        /// changed it since) with the current version of the check.
+        bool isFor(double gridBpm, double gridFirstBeatSec) const;
+    };
+    static std::optional<GridCheck> loadGridCheck(const QSqlDatabase& db, TrackId trackId);
+    static bool saveGridCheck(const QSqlDatabase& db, TrackId trackId, const GridCheck& check);
 
     /// Sets the DJ's rating (1..10) for the tracks. rating 0 clears it, so
     /// the measured value is used again.

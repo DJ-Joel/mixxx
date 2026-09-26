@@ -204,6 +204,39 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     connect(pAvoidArtist, &QAction::toggled, this, [this](bool on) {
         m_pConfig->setValue(ConfigKey(kPreferenceGroupName, kSmartFillAvoidArtistPreference), on);
     });
+    // Automatic top-up: Mixxx's own "add tracks when the queue runs low"
+    // (Preferences > Auto DJ) now uses Smart Fill with these options.
+    pFillMenu->addSeparator();
+    QAction* pAutoFill = pFillMenu->addAction(tr("Keep the queue filled automatically"));
+    pAutoFill->setCheckable(true);
+    const auto autoFillOn = [this]() {
+        return m_pConfig->getValue(ConfigKey(kPreferenceGroupName, "EnableRandomQueue"), false) &&
+                m_pConfig->getValue(ConfigKey(kPreferenceGroupName, "SmartFillAuto"), true);
+    };
+    pAutoFill->setChecked(autoFillOn());
+    connect(pFillMenu, &QMenu::aboutToShow, this, [this, pAutoFill, autoFillOn]() {
+        pAutoFill->setChecked(autoFillOn()); // may have changed in Preferences
+        const int minimum = m_pConfig->getValue(
+                ConfigKey(kPreferenceGroupName, "RandomQueueMinimumAllowed"), 5);
+        pAutoFill->setToolTip(tr("When fewer than %1 songs are left in the queue, add more "
+                                 "with Smart Fill (the minimum is set in Preferences > Auto DJ).")
+                                      .arg(minimum));
+    });
+    connect(pAutoFill, &QAction::toggled, this, [this](bool on) {
+        m_pConfig->setValue(ConfigKey(kPreferenceGroupName, "EnableRandomQueue"), on);
+        m_pConfig->setValue(ConfigKey(kPreferenceGroupName, "SmartFillAuto"), on);
+        if (on) {
+            // Top up straight away rather than at the next track change.
+            const int minimum = m_pConfig->getValue(
+                    ConfigKey(kPreferenceGroupName, "RandomQueueMinimumAllowed"), 5);
+            const int missing = minimum - m_pAutoDJTableModel->rowCount();
+            if (missing > 0) {
+                m_pAutoDJProcessor->fillQueue(missing);
+            }
+        }
+    });
+    pFillMenu->setToolTipsVisible(true);
+
     // Where the songs come from: the whole library, or one crate/playlist.
     // Rebuilt each time the menu opens, so new crates show up.
     pFillMenu->addSeparator();

@@ -183,3 +183,120 @@ TEST(EnergyCalculatorTest, FindsTheDrumsAfterALoudIntroWithoutBass) {
     ASSERT_TRUE(analyse(audio, &r));
     EXPECT_NEAR(20.3, r.bodyStartSec, 0.1) << r.bodyStartSec;
 }
+
+namespace {
+
+// A drum loop: a kick on every beat (beat `beatSec`, first at `firstSec`)
+// and a hat on every eighth note. `beatAt(n)` can bend the timing.
+// `offBeatBass` adds a bass note half-way between the kicks (common in EBM).
+template<typename BeatAt>
+std::vector<float> drumLoop(double seconds,
+        BeatAt beatAt,
+        bool offBeatBass,
+        double doubleKickFromSec = -1.0) {
+    std::mt19937 rng(7);
+    std::uniform_real_distribution<double> noise(-1.0, 1.0);
+    const auto frames = static_cast<std::size_t>(seconds * kRate);
+    std::vector<float> out(frames);
+    int beat = 0;
+    for (std::size_t i = 0; i < frames; ++i) {
+        const double t = i / kRate;
+        while (beatAt(beat + 1) <= t) {
+            ++beat;
+        }
+        const double start = beatAt(beat);
+        const double length = beatAt(beat + 1) - start;
+        const double sinceKick = t - start;
+        double v = 0.0;
+        if (sinceKick >= 0.0) {
+            // A double kick: a short tick, then the full kick 60 ms later.
+            constexpr double kSecondTick = 0.06;
+            if (doubleKickFromSec >= 0.0 && t >= doubleKickFromSec) {
+                v += 0.6 * std::sin(2 * kPi * 55 * sinceKick) * std::exp(-sinceKick / 0.015);
+                if (sinceKick >= kSecondTick) {
+                    const double since = sinceKick - kSecondTick;
+                    v += 0.6 * std::sin(2 * kPi * 55 * since) * std::exp(-since / 0.06);
+                }
+            } else {
+                v += 0.6 * std::sin(2 * kPi * 55 * sinceKick) * std::exp(-sinceKick / 0.06);
+            }
+            const double sinceHat = std::fmod(sinceKick, 0.5 * length);
+            v += 0.08 * noise(rng) * std::exp(-sinceHat / 0.02);
+            if (offBeatBass && sinceKick >= 0.5 * length) {
+                const double sinceBass = sinceKick - 0.5 * length;
+                v += 0.8 * std::sin(2 * kPi * 80 * sinceBass) * std::exp(-sinceBass / 0.1);
+            }
+        }
+        out[i] = static_cast<float>(v);
+    }
+    return out;
+}
+
+double gridDrift(const std::vector<float>& mono, double firstBeatSec, double beatSec) {
+    EnergyCalculator calc(kRate, 1);
+    calc.process(mono.data(), static_cast<std::int64_t>(mono.size()));
+    EnergyCalculator::Result r;
+    if (!calc.finish(&r)) {
+        return -2.0;
+    }
+    return calc.gridDriftBeats(firstBeatSec, beatSec, r.bodyStartSec, r.bodyEndSec);
+}
+
+} // namespace
+
+TEST(EnergyCalculatorTest, GridThatFitsDoesNotDrift) {
+    const auto loop = drumLoop(200, [](int n) { return 0.3 + 0.5 * n; }, false);
+    const double drift = gridDrift(loop, 0.3, 0.5);
+    EXPECT_GE(drift, 0.0);
+    EXPECT_LT(drift, 0.05);
+}
+
+TEST(EnergyCalculatorTest, OffBeatBassIsFine) {
+    // Where the hits fall in the beat does not matter, only that it stays.
+    const auto loop = drumLoop(200, [](int n) { return 0.3 + 0.5 * n; }, true);
+    const double drift = gridDrift(loop, 0.3, 0.5);
+    EXPECT_GE(drift, 0.0);
+    EXPECT_LT(drift, 0.05);
+    // Nor does a grid that is off by a steady amount (a wrong phase cannot
+    // be told from an off-beat pattern).
+    EXPECT_LT(gridDrift(loop, 0.4, 0.5), 0.05);
+}
+
+TEST(EnergyCalculatorTest, DoubleKicksDoNotLookLikeDrift) {
+    // Single kicks for the first half, double kicks after (a new beat
+    // style). Only the first tick counts, so the grid still fits.
+    const auto loop = drumLoop(
+            200, [](int n) { return 0.3 + 0.5 * n; }, false, 100.0);
+    const double drift = gridDrift(loop, 0.3, 0.5);
+    EXPECT_GE(drift, 0.0);
+    EXPECT_LT(drift, 0.02); // counting both ticks gives about 0.04
+}
+
+TEST(EnergyCalculatorTest, GridWithTheWrongTempoDrifts) {
+    const auto loop = drumLoop(200, [](int n) { return 0.3 + 0.5 * n; }, false);
+    // 0.1% and 1% too slow or fast.
+    EXPECT_GT(gridDrift(loop, 0.3, 0.5 * 1.001), EnergyCalculator::kGridMaxDriftBeats);
+    EXPECT_GT(gridDrift(loop, 0.3, 0.5 / 1.001), EnergyCalculator::kGridMaxDriftBeats);
+    EXPECT_GT(gridDrift(loop, 0.3, 0.5 * 1.01), EnergyCalculator::kGridMaxDriftBeats);
+}
+
+TEST(EnergyCalculatorTest, DrummerWhoSlowsDownDrifts) {
+    // Steady for the first half, then 1% slower: no steady grid fits.
+    const auto loop = drumLoop(200,
+            [](int n) { return n < 200 ? 0.3 + 0.5 * n : 100.3 + 0.505 * (n - 200); },
+            false);
+    EXPECT_GT(gridDrift(loop, 0.3, 0.5), EnergyCalculator::kGridMaxDriftBeats);
+}
+
+TEST(EnergyCalculatorTest, NoBeatMeansCannotTell) {
+    std::mt19937 rng(3);
+    std::uniform_real_distribution<double> noise(-0.3, 0.3);
+    std::vector<float> hiss(static_cast<std::size_t>(200 * kRate));
+    for (float& s : hiss) {
+        s = static_cast<float>(noise(rng));
+    }
+    EXPECT_DOUBLE_EQ(-1.0, gridDrift(hiss, 0.3, 0.5));
+    // Too short to judge: the body is shorter than 64 beats.
+    const auto shortLoop = drumLoop(25, [](int n) { return 0.3 + 0.5 * n; }, false);
+    EXPECT_DOUBLE_EQ(-1.0, gridDrift(shortLoop, 0.3, 0.5));
+}
