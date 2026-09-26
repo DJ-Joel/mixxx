@@ -38,6 +38,7 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     void smartSortButton(bool buttonChecked);
     void slotSmartSortFinished(int trackCount, int clashCount, const QStringList& warnings);
     void slotSmartSortFailed(const QString& message);
+    void slotSetEnergyRating(int rating);
     void skipNextButton(bool buttonChecked);
     void fadeNowButton(bool buttonChecked);
     void toggleAutoDJButton(bool enable);
@@ -75,6 +76,8 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     const bool m_bShowButtonText;
 
     PlaylistTableModel* m_pAutoDJTableModel;
+
+    QList<TrackId> selectedTrackIds() const;
 
     QString m_enableBtnTooltip;
     QString m_disableBtnTooltip;

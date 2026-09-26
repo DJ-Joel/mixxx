@@ -15,6 +15,7 @@ namespace {
 
 TrackFeatures makeTrack(int id, int camelot, bool minor, double bpm, double energy = 0.0) {
     TrackFeatures f;
+    f.energyIsManual = energy > 0.0; // tests rate energy by hand unless stated
     f.id = TrackId(QVariant(id));
     f.camelotNumber = camelot;
     f.camelotMinor = minor;
@@ -183,11 +184,32 @@ TEST(MixScorerTest, ClashLabel) {
                     scorer.score(makeTrack(1, 8, true, 100), makeTrack(2, 2, true, 125))));
 }
 
+TEST(MixScorerTest, MeasuredEnergyCountsLessThanRated) {
+    MixScorer scorer;
+    TrackFeatures a = makeTrack(1, 8, true, 124, 8);
+    TrackFeatures b = makeTrack(2, 8, true, 124, 4); // big energy drop
+    const double rated = scorer.score(a, b).energyCost;
+    a.energyIsManual = false;
+    const double measured = scorer.score(a, b).energyCost;
+    EXPECT_GT(rated, 0.0);
+    EXPECT_NEAR(measured, rated * scorer.weights().measuredEnergyTrust, 1e-9);
+    EXPECT_TRUE(scorer.score(a, b).reason.contains(QStringLiteral("(measured)")));
+}
+
+TEST(MixScorerTest, OnlyRatedEnergyExcusesKeyJump) {
+    MixScorer scorer;
+    TrackFeatures a = makeTrack(1, 8, true, 124, 5);
+    TrackFeatures b = makeTrack(2, 10, true, 124, 7); // +2 steps, energy +2
+    EXPECT_LT(scorer.score(a, b).keyCost, MixScorer::kClashKeyCost);
+    b.energyIsManual = false;
+    EXPECT_GE(scorer.score(a, b).keyCost, MixScorer::kClashKeyCost);
+}
+
 TEST(MixScorerTest, ScoreHasReadableReason) {
     MixScorer scorer;
     const MixScore s = scorer.score(makeTrack(1, 8, true, 124, 5), makeTrack(2, 9, true, 125, 6));
     EXPECT_TRUE(s.reason.contains(QStringLiteral("8A -> 9A")));
-    EXPECT_TRUE(s.reason.contains(QStringLiteral("energy +1.0"))) << s.reason.toStdString();
+    EXPECT_TRUE(s.reason.contains(QStringLiteral("energy +1.0 (rated)"))) << s.reason.toStdString();
     EXPECT_GT(s.total, 0.0);
 }
 

@@ -16,6 +16,9 @@ struct MixScoreWeights {
     double key = 1.0;
     double tempo = 1.0;
     double energy = 0.6;
+    /// How much a *measured* energy counts compared with a hand-rated one.
+    /// Low because measured energy did not match the DJ's ears in testing.
+    double measuredEnergyTrust = 0.25;
     double bpmTolerancePct = 5.0;
     bool allowHalfDoubleTime = true;
     bool energyBoostExcusesKeyJump = true;

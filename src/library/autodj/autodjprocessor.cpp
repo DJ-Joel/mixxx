@@ -291,10 +291,12 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
         for (const Row& row : std::as_const(rows)) {
             ids.append(row.id);
         }
-        const QHash<TrackId, double> energies = EnergyStore::loadEnergies(
+        const QHash<TrackId, EnergyStore::Value> energies = EnergyStore::loadEnergies(
                 m_pTrackCollectionManager->internalCollection()->database(), ids);
         for (Row& row : rows) {
-            row.features.energy = energies.value(row.id, 0.0);
+            const EnergyStore::Value value = energies.value(row.id);
+            row.features.energy = value.energy;
+            row.features.energyIsManual = value.manual;
         }
     }
 
@@ -336,6 +338,24 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
         return SmartSequencer(scorer).solve(features, startId);
     }));
     return ADJ_OK;
+}
+
+bool AutoDJProcessor::setEnergyRating(const QList<TrackId>& trackIds, int rating) {
+    if (!m_pTrackCollectionManager || !m_pTrackCollectionManager->internalCollection()) {
+        return false;
+    }
+    return EnergyStore::setManualRating(
+            m_pTrackCollectionManager->internalCollection()->database(), trackIds, rating);
+}
+
+std::pair<double, bool> AutoDJProcessor::energyOf(TrackId trackId) const {
+    if (!m_pTrackCollectionManager || !m_pTrackCollectionManager->internalCollection()) {
+        return {0.0, false};
+    }
+    const auto energies = EnergyStore::loadEnergies(
+            m_pTrackCollectionManager->internalCollection()->database(), {trackId});
+    const EnergyStore::Value value = energies.value(trackId);
+    return {value.energy, value.manual};
 }
 
 void AutoDJProcessor::applySmartSortResult(const SequenceResult& result,

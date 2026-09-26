@@ -10,12 +10,22 @@
 
 /// Auto DJ 2.0: saves and loads energy scores.
 ///
-/// Energy lives in its own table, `autodj_energy`, created on demand with
-/// CREATE TABLE IF NOT EXISTS. It is not part of Mixxx's versioned schema,
-/// so future official schema updates cannot collide with it, and official
-/// Mixxx simply ignores the table.
+/// Two tables, both created on demand with CREATE TABLE IF NOT EXISTS and
+/// not part of Mixxx's versioned schema (so official schema updates cannot
+/// collide with them, and official Mixxx ignores them):
+///  - `autodj_energy`: measured by AnalyzerEnergy, rewritten on re-analysis
+///  - `autodj_energy_manual`: the DJ's own 1..10 rating, never overwritten
+///    by analysis. A rating always wins over the measured value.
 class EnergyStore {
   public:
+    static constexpr int kMinRating = 1;
+    static constexpr int kMaxRating = 10;
+
+    struct Value {
+        double energy = 0.0; ///< 1..10
+        bool manual = false; ///< true = rated by the DJ
+    };
+
     /// Creates the table if needed. Safe to call often.
     static bool ensureTable(const QSqlDatabase& db);
 
@@ -27,7 +37,13 @@ class EnergyStore {
             const EnergyCalculator::Result& result,
             int version);
 
-    /// Energy (1..10) for the given tracks. Tracks without a score are left out.
-    static QHash<TrackId, double> loadEnergies(
+    /// Sets the DJ's rating (1..10) for the tracks. rating 0 clears it, so
+    /// the measured value is used again.
+    static bool setManualRating(
+            const QSqlDatabase& db, const QList<TrackId>& trackIds, int rating);
+
+    /// Energy for the given tracks: the rating if set, else the measured
+    /// value. Tracks with neither are left out.
+    static QHash<TrackId, Value> loadEnergies(
             const QSqlDatabase& db, const QList<TrackId>& trackIds);
 };

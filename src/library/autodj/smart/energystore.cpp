@@ -1,6 +1,7 @@
 #include "library/autodj/smart/energystore.h"
 
 #include <QSet>
+#include <QStringList>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QVariant>
@@ -22,6 +23,44 @@ bool EnergyStore::ensureTable(const QSqlDatabase& db) {
         LOG_FAILED_QUERY(query);
         return false;
     }
+    if (!query.exec(QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS autodj_energy_manual ("
+                "track_id INTEGER PRIMARY KEY, "
+                "rating INTEGER NOT NULL)"))) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    return true;
+}
+
+// static
+bool EnergyStore::setManualRating(
+        const QSqlDatabase& db, const QList<TrackId>& trackIds, int rating) {
+    if (trackIds.isEmpty() || !ensureTable(db)) {
+        return false;
+    }
+    const bool clear = rating == 0;
+    if (!clear && (rating < kMinRating || rating > kMaxRating)) {
+        return false;
+    }
+    ScopedTransaction transaction(db);
+    QSqlQuery query(db);
+    query.prepare(clear
+                    ? QStringLiteral("DELETE FROM autodj_energy_manual WHERE track_id=:id")
+                    : QStringLiteral(
+                              "INSERT OR REPLACE INTO autodj_energy_manual "
+                              "(track_id, rating) VALUES (:id, :rating)"));
+    for (const TrackId& id : trackIds) {
+        query.bindValue(QStringLiteral(":id"), id.toVariant());
+        if (!clear) {
+            query.bindValue(QStringLiteral(":rating"), rating);
+        }
+        if (!query.exec()) {
+            LOG_FAILED_QUERY(query);
+            return false;
+        }
+    }
+    transaction.commit();
     return true;
 }
 
@@ -66,23 +105,41 @@ bool EnergyStore::save(const QSqlDatabase& db,
 }
 
 // static
-QHash<TrackId, double> EnergyStore::loadEnergies(
+QHash<TrackId, EnergyStore::Value> EnergyStore::loadEnergies(
         const QSqlDatabase& db, const QList<TrackId>& trackIds) {
-    QHash<TrackId, double> energies;
+    QHash<TrackId, Value> energies;
     if (trackIds.isEmpty() || !ensureTable(db)) {
         return energies;
     }
     const QSet<TrackId> wanted(trackIds.begin(), trackIds.end());
-    QSqlQuery query(db);
-    if (!query.exec(QStringLiteral("SELECT track_id, energy FROM autodj_energy"))) {
-        LOG_FAILED_QUERY(query);
-        return energies;
-    }
-    while (query.next()) {
-        const TrackId id(query.value(0));
-        if (wanted.contains(id)) {
-            energies.insert(id, query.value(1).toDouble());
+    // Small requests (e.g. one selected track) ask for just those ids;
+    // large ones read the whole table, which is quicker than a huge IN list.
+    constexpr int kMaxIdsInQuery = 500;
+    const bool filter = wanted.size() <= kMaxIdsInQuery;
+    QString idList;
+    if (filter) {
+        QStringList parts;
+        parts.reserve(wanted.size());
+        for (const TrackId& id : wanted) {
+            parts << id.toString(); // integers from our own ids, safe to inline
         }
+        idList = QStringLiteral(" WHERE track_id IN (") + parts.join(QChar(',')) + QChar(')');
     }
+    const auto readInto = [&](const QString& sql, bool manual) {
+        QSqlQuery query(db);
+        if (!query.exec(sql + idList)) {
+            LOG_FAILED_QUERY(query);
+            return;
+        }
+        while (query.next()) {
+            const TrackId id(query.value(0));
+            if (wanted.contains(id)) {
+                energies.insert(id, Value{query.value(1).toDouble(), manual});
+            }
+        }
+    };
+    readInto(QStringLiteral("SELECT track_id, energy FROM autodj_energy"), false);
+    // Ratings last, so they replace measured values.
+    readInto(QStringLiteral("SELECT track_id, rating FROM autodj_energy_manual"), true);
     return energies;
 }

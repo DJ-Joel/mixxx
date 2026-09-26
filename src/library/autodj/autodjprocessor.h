@@ -212,6 +212,10 @@ class AutoDJProcessor : public QObject {
     bool isSmartSortRunning() const {
         return m_smartSortRunning;
     }
+    /// Auto DJ 2.0: the DJ's own energy rating, 1..10. 0 clears it.
+    bool setEnergyRating(const QList<TrackId>& trackIds, int rating);
+    /// Energy of one track: {value 1..10, rated by DJ?}. value 0 = unknown.
+    std::pair<double, bool> energyOf(TrackId trackId) const;
     AutoDJError skipNext();
     void fadeNow();
     AutoDJError toggleAutoDJ(bool enable);

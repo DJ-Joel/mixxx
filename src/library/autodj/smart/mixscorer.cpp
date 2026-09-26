@@ -102,12 +102,20 @@ MixScore MixScorer::score(const TrackFeatures& from, const TrackFeatures& to) co
     const double energyDelta = (from.hasEnergy() && to.hasEnergy())
             ? to.energy - from.energy
             : 0.0;
-    s.keyCost = camelotCost(from, to, energyDelta, m_weights.energyBoostExcusesKeyJump);
+    // Only hand-rated energy is trusted enough to excuse a key jump.
+    const bool bothManual = from.energyIsManual && to.energyIsManual;
+    s.keyCost = camelotCost(from,
+            to,
+            energyDelta,
+            m_weights.energyBoostExcusesKeyJump && bothManual);
     s.tempoCost = tempoCost(from.bpm,
             to.bpm,
             m_weights.bpmTolerancePct,
             m_weights.allowHalfDoubleTime);
     s.energyCost = energyCost(from.energy, to.energy);
+    if (!bothManual) {
+        s.energyCost *= m_weights.measuredEnergyTrust;
+    }
     s.total = m_weights.key * s.keyCost +
             m_weights.tempo * s.tempoCost +
             m_weights.energy * s.energyCost;
@@ -118,7 +126,8 @@ MixScore MixScorer::score(const TrackFeatures& from, const TrackFeatures& to) co
     QString energyText = QStringLiteral("?");
     if (from.hasEnergy() && to.hasEnergy()) {
         energyText = (energyDelta >= 0.0 ? QStringLiteral("+") : QString()) +
-                QString::number(energyDelta, 'f', 1);
+                QString::number(energyDelta, 'f', 1) +
+                (bothManual ? QStringLiteral(" (rated)") : QStringLiteral(" (measured)"));
     }
     s.reason = QStringLiteral("%1 -> %2 | %3 -> %4 BPM | energy %5")
                        .arg(from.camelotText(),

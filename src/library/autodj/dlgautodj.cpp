@@ -4,6 +4,7 @@
 #include <QDialogButtonBox>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMenu>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -116,6 +117,30 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             &AutoDJProcessor::smartSortFailed,
             this,
             &DlgAutoDJ::slotSmartSortFailed);
+
+    // Auto DJ 2.0 energy rating: the DJ's own 1..10 score for the selected
+    // tracks. It always wins over the measured energy.
+    pushButtonEnergy->setText(tr("Energy"));
+    pushButtonEnergy->setToolTip(tr(
+            "Rate the energy of the selected tracks, 1 (calm) to 10 (peak).\n"
+            "Your rating is used by Smart Sort instead of the measured energy."));
+    auto* pEnergyMenu = new QMenu(pushButtonEnergy);
+    for (int rating = 10; rating >= 1; --rating) {
+        QString text = QString::number(rating);
+        if (rating == 10) {
+            text += tr("  (peak)");
+        } else if (rating == 1) {
+            text += tr("  (calm)");
+        }
+        pEnergyMenu->addAction(text, this, [this, rating]() {
+            slotSetEnergyRating(rating);
+        });
+    }
+    pEnergyMenu->addSeparator();
+    pEnergyMenu->addAction(tr("Clear rating (use measured)"), this, [this]() {
+        slotSetEnergyRating(0);
+    });
+    pushButtonEnergy->setMenu(pEnergyMenu);
 
     m_enableBtnTooltip = tr(
             "Enable Auto DJ\n"
@@ -332,6 +357,33 @@ void DlgAutoDJ::slotSmartSortFailed(const QString& message) {
     QMessageBox::warning(this, tr("Smart Sort"), message);
 }
 
+QList<TrackId> DlgAutoDJ::selectedTrackIds() const {
+    QList<TrackId> ids;
+    const QModelIndexList rows = m_pTrackTableView->selectionModel()->selectedRows();
+    for (const QModelIndex& index : rows) {
+        const TrackId id = m_pAutoDJTableModel->getTrackId(index);
+        if (id.isValid() && !ids.contains(id)) {
+            ids.append(id);
+        }
+    }
+    return ids;
+}
+
+void DlgAutoDJ::slotSetEnergyRating(int rating) {
+    const QList<TrackId> ids = selectedTrackIds();
+    if (ids.isEmpty()) {
+        QMessageBox::information(this,
+                tr("Energy"),
+                tr("Select one or more tracks in the Auto DJ queue first."));
+        return;
+    }
+    if (!m_pAutoDJProcessor->setEnergyRating(ids, rating)) {
+        QMessageBox::warning(this, tr("Energy"), tr("Could not save the energy rating."));
+        return;
+    }
+    updateSelectionInfo();
+}
+
 void DlgAutoDJ::skipNextButton(bool) {
     // Activate regardless of button being checked
     m_pAutoDJProcessor->skipNext();
@@ -438,6 +490,18 @@ void DlgAutoDJ::updateSelectionInfo() {
     if (!indices.isEmpty()) {
         label.append(mixxx::DurationBase::formatTime(duration.toDoubleSeconds()));
         label.append(QString(" (%1)").arg(indices.size()));
+        // Auto DJ 2.0: show the energy when exactly one track is selected.
+        if (indices.size() == 1) {
+            const auto [energy, manual] = m_pAutoDJProcessor->energyOf(
+                    m_pAutoDJTableModel->getTrackId(indices.first()));
+            if (energy > 0.0) {
+                label.append(manual
+                                ? tr("  |  Energy %1 (your rating)").arg(energy, 0, 'f', 0)
+                                : tr("  |  Energy %1 (measured)").arg(energy, 0, 'f', 1));
+            } else {
+                label.append(tr("  |  Energy ?"));
+            }
+        }
         labelSelectionInfo->setToolTip(tr("Displays the duration and number of selected tracks."));
         labelSelectionInfo->setText(label);
         labelSelectionInfo->setEnabled(true);

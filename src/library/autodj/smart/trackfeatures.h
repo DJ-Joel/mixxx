@@ -14,7 +14,10 @@ struct TrackFeatures {
     double bpm = 0.0;          ///< 0 = unknown
     int camelotNumber = 0;     ///< 1..12, 0 = unknown
     bool camelotMinor = false; ///< true = "A" (minor), false = "B" (major)
-    double energy = 0.0;       ///< 1..10 from AnalyzerEnergy, 0 = unknown
+    double energy = 0.0;       ///< 1..10, 0 = unknown
+    /// true = the DJ rated this energy by hand; false = measured by
+    /// AnalyzerEnergy (less trustworthy, so it counts for less).
+    bool energyIsManual = false;
     double loudnessLufs = 0.0; ///< integrated loudness, 0 = unknown
     double durationSec = 0.0;
     bool isStem = false;
