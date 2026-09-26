@@ -19,6 +19,13 @@ struct BridgeSuggestion {
 /// Auto DJ 2.0: finds "bridge" tracks. For a clashing pair A -> B it looks
 /// for library tracks X where both A -> X and X -> B mix smoothly (no key or
 /// tempo clash), best first. Pure logic, safe on a worker thread.
+/// Live Assistant: one suggested next track.
+struct NextSuggestion {
+    TrackFeatures track;
+    MixScore score; ///< now -> this track
+    double cost = 0.0; ///< score + genre cost, lower is better
+};
+
 class BridgeFinder {
   public:
     explicit BridgeFinder(const MixScorer& scorer);
@@ -50,6 +57,17 @@ class BridgeFinder {
             int count,
             bool avoidSameArtist = false,
             quint32 randomSeed = 0) const;
+
+    /// Live Assistant: the best `count` tracks to play after `now`, best
+    /// first. Only smooth mixes (no key or tempo clash); ranked by the mix
+    /// score (key, tempo, energy direction) plus the genre cost. No
+    /// randomness: the same situation gives the same list.
+    QList<NextSuggestion> suggestNext(const TrackFeatures& now,
+            const QVector<TrackFeatures>& candidates,
+            const QSet<TrackId>& excludeIds,
+            const QSet<QString>& excludeNames,
+            int count,
+            bool avoidSameArtist) const;
 
     /// How well two genres go together, as an extra mixing cost:
     /// 0 = same genre or family (e.g. "Goth" and "Gothic Rock"),

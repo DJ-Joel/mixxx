@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPointer>
 #include <QString>
 #include <QWidget>
 
@@ -14,6 +15,10 @@ class WLibrary;
 class WTrackTableView;
 class Library;
 class KeyboardEventFilter;
+class QDialog;
+class QLabel;
+class QTableWidget;
+class QTimer;
 
 class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     Q_OBJECT
@@ -85,4 +90,16 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
 
     QString m_enableBtnTooltip;
     QString m_disableBtnTooltip;
+
+    // Auto DJ 2.0 Live Assistant window.
+    void showLiveAssistant();
+    // force = recompute even if the live deck, track, tempo and key are
+    // unchanged since the last time.
+    void refreshLiveAssistant(bool force);
+    QPointer<QDialog> m_pLiveAssistant;
+    QLabel* m_pLiveNow = nullptr;
+    QTableWidget* m_pLiveTable = nullptr;
+    QLabel* m_pLiveStatus = nullptr;
+    QTimer* m_pLiveTimer = nullptr;
+    QString m_liveState;
 };

@@ -15,6 +15,7 @@
 #include "control/pollingcontrolproxy.h"
 #include "engine/channels/enginechannel.h"
 #include "library/playlisttablemodel.h"
+#include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "preferences/usersettings.h"
 #include "track/track_decl.h"
@@ -230,6 +231,22 @@ class AutoDJProcessor : public QObject {
     // many semitones (0 = off) when its key clashes with the outgoing one.
     int keyMorphLimit() const;
     void setKeyMorphLimit(int semitones);
+
+    // Auto DJ 2.0 Live Assistant: the best next tracks for the deck that is
+    // playing live (the one heard most), from the whole library.
+    struct LiveSuggestions {
+        QString deckGroup; // empty = nothing is playing
+        TrackFeatures now; // with the deck's live tempo and key
+        QList<NextSuggestion> next;
+    };
+    LiveSuggestions liveSuggestions(int count);
+    // Remembers a track that was heard live this session, so the Live
+    // Assistant never suggests it again. (Mixxx's own "played" mark only
+    // reaches the database later, when the track leaves memory.)
+    void notePlayedLive(const TrackPointer& pTrack);
+    // Loads a track, paused, on the deck that is not playing. Returns false
+    // (with the reason in pMessage) if there is no free deck or Auto DJ is on.
+    bool loadOnFreeDeck(TrackId trackId, QString* pMessage);
 
     /// For testing mixes quickly: jumps the playing track to a few seconds
     /// before its planned mix, so the mix itself still happens exactly as
@@ -466,6 +483,7 @@ class AutoDJProcessor : public QObject {
         int semitones = 0;
     };
     QHash<QString, KeyShift> m_keyShift;
+    QSet<TrackId> m_playedLive;
     // Moves a planned beatmatched fade onto phrase boundaries (seconds, as
     // used inside calculateTransition before they become fractions).
     void alignTransitionToPhrases(DeckAttributes* pFromDeck,

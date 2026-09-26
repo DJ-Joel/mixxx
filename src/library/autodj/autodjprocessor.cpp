@@ -25,6 +25,7 @@
 #include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "mixer/basetrackplayer.h"
+#include "mixer/playerinfo.h"
 #include "mixer/playermanager.h"
 #include "moc_autodjprocessor.cpp"
 #include "track/keyutils.h"
@@ -460,6 +461,122 @@ int AutoDJProcessor::keyMorphLimit() const {
 void AutoDJProcessor::setKeyMorphLimit(int semitones) {
     m_pConfig->setValue(ConfigKey(kPreferenceGroup, kKeyMorphPreference),
             std::clamp(semitones, 0, kKeyMorphMax));
+}
+
+AutoDJProcessor::LiveSuggestions AutoDJProcessor::liveSuggestions(int count) {
+    LiveSuggestions result;
+    const int deckIndex = PlayerInfo::instance().getCurrentPlayingDeck();
+    const TrackPointer pTrack = PlayerInfo::instance().getCurrentPlayingTrack();
+    if (deckIndex < 0 || !pTrack || !m_pTrackCollectionManager ||
+            !m_pTrackCollectionManager->internalCollection()) {
+        return result;
+    }
+    result.deckGroup = PlayerManager::groupForDeck(deckIndex);
+    TrackFeatures now = TrackFeatures::fromTrack(pTrack);
+    // What is heard right now: the deck's tempo (tempo fader included) and
+    // key (key lock, pitch and key morph included).
+    const double liveBpm = readControl(ConfigKey(result.deckGroup, QStringLiteral("bpm")));
+    if (liveBpm > 0.0) {
+        now.bpm = liveBpm;
+    }
+    const double liveKey = readControl(ConfigKey(result.deckGroup, QStringLiteral("key")));
+    if (!std::isnan(liveKey)) {
+        const auto key = KeyUtils::keyFromNumericValue(liveKey);
+        if (key != mixxx::track::io::key::INVALID &&
+                mixxx::track::io::key::ChromaticKey_IsValid(key)) {
+            now.camelotNumber =
+                    TrackFeatures::camelotFromOpenKey(KeyUtils::keyToOpenKeyNumber(key));
+            now.camelotMinor = !KeyUtils::keyIsMajor(key);
+        }
+    }
+    const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
+    const QHash<TrackId, EnergyStore::Value> energies = EnergyStore::loadEnergies(db, {now.id});
+    if (energies.contains(now.id)) {
+        now.energy = energies.value(now.id).energy;
+        now.energyIsManual = energies.value(now.id).manual;
+    }
+    result.now = now;
+
+    // Never suggest a track that is loaded, or was played this session.
+    QSet<TrackId> excludeIds;
+    QSet<QString> excludeNames;
+    for (const auto& pDeck : m_decks) {
+        if (const TrackPointer pLoaded = pDeck->getLoadedTrack()) {
+            excludeIds.insert(pLoaded->getId());
+            excludeNames.insert(BridgeFinder::nameKey(TrackFeatures::fromTrack(pLoaded)));
+        }
+    }
+    // Played this session: heard live (our own list), or marked played in
+    // the database.
+    excludeIds.unite(m_playedLive);
+    QSqlQuery query(db);
+    if (query.exec(QStringLiteral("SELECT id FROM library WHERE played = 1"))) {
+        while (query.next()) {
+            excludeIds.insert(TrackId(query.value(0)));
+        }
+    }
+    const QVector<TrackFeatures> library = loadBridgeCandidates(db);
+    // Nor another version or a cover of a song that was played.
+    for (const TrackFeatures& t : library) {
+        if (excludeIds.contains(t.id) && !t.displayName.isEmpty()) {
+            excludeNames.insert(BridgeFinder::nameKey(t));
+        }
+    }
+    // The same energy direction and artist rule as Smart Fill.
+    const int energyChoice = m_pConfig->getValue(
+            ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillEnergy")), 0);
+    MixScoreWeights weights;
+    weights.direction = energyChoice == 1
+            ? MixScoreWeights::EnergyDirection::Hold
+            : (energyChoice == 2 ? MixScoreWeights::EnergyDirection::Wave
+                                 : MixScoreWeights::EnergyDirection::Build);
+    const bool avoidArtist = m_pConfig->getValue(
+            ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillAvoidSameArtist")), true);
+    result.next = BridgeFinder(MixScorer(weights))
+                          .suggestNext(now,
+                                  library,
+                                  excludeIds,
+                                  excludeNames,
+                                  count,
+                                  avoidArtist);
+    return result;
+}
+
+void AutoDJProcessor::notePlayedLive(const TrackPointer& pTrack) {
+    if (pTrack && pTrack->getId().isValid()) {
+        m_playedLive.insert(pTrack->getId());
+    }
+}
+
+bool AutoDJProcessor::loadOnFreeDeck(TrackId trackId, QString* pMessage) {
+    if (m_eState != ADJ_DISABLED) {
+        *pMessage = tr("Auto DJ is on. Turn it off to load songs by hand.");
+        return false;
+    }
+    const int liveIndex = PlayerInfo::instance().getCurrentPlayingDeck();
+    const QString liveGroup = liveIndex >= 0 ? PlayerManager::groupForDeck(liveIndex) : QString();
+    DeckAttributes* pFree = nullptr;
+    for (DeckAttributes* pDeck : {getLeftDeck(), getRightDeck()}) {
+        if (pDeck && pDeck->group != liveGroup && !pDeck->isPlaying()) {
+            pFree = pDeck;
+            break;
+        }
+    }
+    if (!pFree) {
+        *pMessage = tr("No free deck: both decks are playing.");
+        return false;
+    }
+    const TrackPointer pTrack = m_pTrackCollectionManager
+            ? m_pTrackCollectionManager->getTrackById(trackId)
+            : TrackPointer();
+    if (!pTrack) {
+        *pMessage = tr("Could not open that track.");
+        return false;
+    }
+    emitLoadTrackToPlayer(pTrack, pFree->group, false);
+    kLogger.info() << "Live Assistant: loaded" << pTrack->getInfo() << "on" << pFree->group;
+    *pMessage = tr("Loaded on %1: %2").arg(pFree->group, pTrack->getInfo());
+    return true;
 }
 
 int AutoDJProcessor::currentKeyShift(DeckAttributes* pDeck) const {

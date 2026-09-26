@@ -321,6 +321,49 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
     return chain;
 }
 
+QList<NextSuggestion> BridgeFinder::suggestNext(const TrackFeatures& now,
+        const QVector<TrackFeatures>& candidates,
+        const QSet<TrackId>& excludeIds,
+        const QSet<QString>& excludeNames,
+        int count,
+        bool avoidSameArtist) const {
+    QList<NextSuggestion> found;
+    if (count <= 0) {
+        return found;
+    }
+    const QString nowName = now.displayName.isEmpty() ? QString() : nameKey(now);
+    const QString nowArtist = avoidSameArtist ? artistKey(now) : QString();
+    for (const TrackFeatures& x : candidates) {
+        if (!x.hasKey() || !x.hasBpm() || x.id == now.id || excludeIds.contains(x.id)) {
+            continue;
+        }
+        if (!x.displayName.isEmpty()) {
+            const QString name = nameKey(x);
+            if (name == nowName || excludeNames.contains(name)) {
+                continue; // another copy (or a cover) of a song already used
+            }
+        }
+        if (!nowArtist.isEmpty() && nowArtist == artistKey(x)) {
+            continue;
+        }
+        NextSuggestion s;
+        s.score = m_scorer.score(now, x);
+        if (!MixScorer::clashLabel(s.score).isEmpty()) {
+            continue;
+        }
+        s.track = x;
+        s.cost = s.score.total + genreCost(now.genre, x.genre);
+        found.append(s);
+    }
+    std::sort(found.begin(), found.end(), [](const NextSuggestion& a, const NextSuggestion& b) {
+        return a.cost < b.cost;
+    });
+    if (found.size() > count) {
+        found.erase(found.begin() + count, found.end());
+    }
+    return found;
+}
+
 QList<BridgeSuggestion> BridgeFinder::find(const TrackFeatures& from,
         const TrackFeatures& to,
         const QVector<TrackFeatures>& candidates,

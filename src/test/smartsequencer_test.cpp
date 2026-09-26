@@ -724,3 +724,68 @@ TEST(BridgeFinderTest, SmartFillPrefersTheSameStyle) {
     ASSERT_EQ(1, chain.size());
     EXPECT_EQ(TrackId(QVariant(11)), chain[0].id);
 }
+
+TEST(BridgeFinderTest, LiveAssistantRanksTheBestNextTracks) {
+    TrackFeatures now = makeTrack(1, 8, true, 128, 5);
+    now.displayName = QStringLiteral("A - Now");
+    QVector<TrackFeatures> library = {
+            makeTrack(2, 8, true, 128, 6),  // same key, same tempo: best
+            makeTrack(3, 9, true, 127, 6),  // next key, close tempo
+            makeTrack(4, 2, true, 128, 6),  // key clash (opposite side): never
+            makeTrack(5, 8, true, 100, 6),  // tempo clash: never
+            makeTrack(6, 8, false, 129, 6), // relative key
+            makeTrack(7, 0, true, 128, 6),  // no key: cannot judge
+    };
+    const QStringList names = {"B - One", "C - Two", "D - Three", "E - Four", "F - Five", "G - Six"};
+    for (int i = 0; i < library.size(); ++i) {
+        library[i].displayName = names[i];
+    }
+    const BridgeFinder finder{MixScorer(MixScoreWeights())};
+    const auto list = finder.suggestNext(now, library, {}, {}, 10, false);
+    ASSERT_EQ(3, list.size());
+    EXPECT_TRUE(list[0].track.id == TrackId(QVariant(2)));
+    for (const auto& s : list) {
+        EXPECT_FALSE(s.track.id == TrackId(QVariant(4)));
+        EXPECT_FALSE(s.track.id == TrackId(QVariant(5)));
+        EXPECT_FALSE(s.track.id == TrackId(QVariant(7)));
+        EXPECT_TRUE(MixScorer::clashLabel(s.score).isEmpty());
+    }
+    for (int i = 1; i < list.size(); ++i) {
+        EXPECT_LE(list[i - 1].cost, list[i].cost);
+    }
+    // Limited to `count`.
+    EXPECT_EQ(1, finder.suggestNext(now, library, {}, {}, 1, false).size());
+}
+
+TEST(BridgeFinderTest, LiveAssistantSkipsUsedSongsAndSameArtist) {
+    TrackFeatures now = makeTrack(1, 8, true, 128, 5);
+    now.displayName = QStringLiteral("Mesh - Born To Lie");
+    now.artist = QStringLiteral("Mesh");
+    now.title = QStringLiteral("Born To Lie");
+    TrackFeatures otherVersion = makeTrack(2, 8, true, 128, 5);
+    otherVersion.displayName = QStringLiteral("Mesh - Born To Lie (Club Version)");
+    otherVersion.artist = QStringLiteral("Mesh");
+    otherVersion.title = QStringLiteral("Born To Lie (Club Version)");
+    TrackFeatures sameArtist = makeTrack(3, 8, true, 128, 5);
+    sameArtist.displayName = QStringLiteral("Mesh - Crash");
+    sameArtist.artist = QStringLiteral("Mesh");
+    sameArtist.title = QStringLiteral("Crash");
+    TrackFeatures played = makeTrack(4, 8, true, 128, 5);
+    played.displayName = QStringLiteral("And One - Military Fashion Show");
+    TrackFeatures fine = makeTrack(5, 8, true, 128, 5);
+    fine.displayName = QStringLiteral("VNV Nation - Chrome");
+    const QVector<TrackFeatures> library = {otherVersion, sameArtist, played, fine};
+    const BridgeFinder finder{MixScorer(MixScoreWeights())};
+
+    // The same song in another version never; a played track never.
+    auto list = finder.suggestNext(now, library, {played.id}, {}, 10, false);
+    ASSERT_EQ(2, list.size());
+    for (const auto& s : list) {
+        EXPECT_FALSE(s.track.id == otherVersion.id);
+        EXPECT_FALSE(s.track.id == played.id);
+    }
+    // Same artist only when allowed.
+    list = finder.suggestNext(now, library, {played.id}, {}, 10, true);
+    ASSERT_EQ(1, list.size());
+    EXPECT_TRUE(list[0].track.id == fine.id);
+}

@@ -17,7 +17,15 @@
 #include <QPlainTextEdit>
 #include <QVBoxLayout>
 
+#include <QHeaderView>
+#include <cmath>
+#include <QTableWidget>
+#include <QTimer>
+
+#include "control/controlobject.h"
 #include "controllers/keyboard/keyboardeventfilter.h"
+#include "mixer/playerinfo.h"
+#include "mixer/playermanager.h"
 #include "library/library.h"
 #include "library/playlisttablemodel.h"
 #include "moc_dlgautodj.cpp"
@@ -293,6 +301,25 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
         }
     });
     pushButtonSmartFill->setMenu(pFillMenu);
+
+    // Auto DJ 2.0 Live Assistant: a small window that follows the deck
+    // playing live and lists the best next songs from the library.
+    pushButtonLiveAssistant->setText(tr("Live Assistant"));
+    pushButtonLiveAssistant->setToolTip(tr(
+            "Opens a small window that follows the song playing live and\n"
+            "lists the 10 best songs to play next (key, tempo and energy).\n"
+            "Double-click one to load it on the free deck."));
+    connect(pushButtonLiveAssistant, &QPushButton::clicked, this, [this]() {
+        showLiveAssistant();
+    });
+    // Remember every song heard live this session, window open or not.
+    connect(&PlayerInfo::instance(),
+            &PlayerInfo::currentPlayingTrackChanged,
+            this,
+            [this](TrackPointer pTrack) {
+                m_pAutoDJProcessor->notePlayedLive(pTrack);
+            });
+    m_pAutoDJProcessor->notePlayedLive(PlayerInfo::instance().getCurrentPlayingTrack());
 
     // Auto DJ 2.0 energy rating: the DJ's own 1..10 score for the selected
     // tracks. It always wins over the measured energy.
@@ -904,4 +931,169 @@ void DlgAutoDJ::saveCurrentViewState() {
 
 bool DlgAutoDJ::restoreCurrentViewState() {
     return m_pTrackTableView->restoreCurrentViewState();
+}
+
+void DlgAutoDJ::showLiveAssistant() {
+    if (!m_pLiveAssistant) {
+        // Qt::Tool: a small window that stays above Mixxx while the DJ works
+        // in the library.
+        auto* pDialog = new QDialog(this, Qt::Tool);
+        pDialog->setWindowTitle(tr("Live Assistant"));
+        auto* pLayout = new QVBoxLayout(pDialog);
+        m_pLiveNow = new QLabel(pDialog);
+        m_pLiveNow->setWordWrap(true);
+        m_pLiveNow->setTextFormat(Qt::PlainText);
+        m_pLiveTable = new QTableWidget(0, 5, pDialog);
+        m_pLiveTable->setHorizontalHeaderLabels(
+                {tr("Song"), tr("Key"), tr("BPM"), tr("Energy"), tr("Why it fits")});
+        m_pLiveTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_pLiveTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+        m_pLiveTable->setSelectionMode(QAbstractItemView::SingleSelection);
+        m_pLiveTable->verticalHeader()->setVisible(false);
+        m_pLiveTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+        for (int column = 1; column < 5; ++column) {
+            m_pLiveTable->horizontalHeader()->setSectionResizeMode(
+                    column, QHeaderView::ResizeToContents);
+        }
+        m_pLiveStatus = new QLabel(pDialog);
+        m_pLiveStatus->setWordWrap(true);
+        m_pLiveStatus->setTextFormat(Qt::PlainText);
+        pLayout->addWidget(m_pLiveNow);
+        pLayout->addWidget(m_pLiveTable, 1);
+        pLayout->addWidget(m_pLiveStatus);
+        pDialog->resize(720, 400);
+
+        connect(m_pLiveTable, &QTableWidget::cellDoubleClicked, pDialog, [this](int row, int) {
+            const QTableWidgetItem* pItem = m_pLiveTable->item(row, 0);
+            if (!pItem) {
+                return;
+            }
+            QString message;
+            m_pAutoDJProcessor->loadOnFreeDeck(TrackId(pItem->data(Qt::UserRole)), &message);
+            m_pLiveStatus->setText(message);
+            refreshLiveAssistant(true); // the loaded song drops off the list
+        });
+        // The live deck can change without a new track (the DJ moves the
+        // tempo, or the crossfader), so check once a second. It only
+        // recomputes when something changed.
+        m_pLiveTimer = new QTimer(pDialog);
+        m_pLiveTimer->setInterval(1000);
+        connect(m_pLiveTimer, &QTimer::timeout, pDialog, [this]() {
+            refreshLiveAssistant(false);
+        });
+        connect(&PlayerInfo::instance(),
+                &PlayerInfo::currentPlayingTrackChanged,
+                pDialog,
+                [this](TrackPointer) {
+                    refreshLiveAssistant(true);
+                });
+        connect(pDialog, &QDialog::finished, pDialog, [this]() {
+            m_pLiveTimer->stop();
+        });
+        m_pLiveAssistant = pDialog;
+    }
+    m_pLiveStatus->setText(tr("Double-click a song to load it on the free deck."));
+    m_pLiveTimer->start();
+    m_pLiveAssistant->show();
+    m_pLiveAssistant->raise();
+    m_pLiveAssistant->activateWindow();
+    refreshLiveAssistant(true);
+}
+
+void DlgAutoDJ::refreshLiveAssistant(bool force) {
+    if (!m_pLiveAssistant || !m_pLiveAssistant->isVisible()) {
+        return;
+    }
+    // Cheap check first: which deck is live, what it plays, its tempo (in
+    // half-BPM steps) and key.
+    const int deckIndex = PlayerInfo::instance().getCurrentPlayingDeck();
+    const TrackPointer pTrack = PlayerInfo::instance().getCurrentPlayingTrack();
+    QString state = QStringLiteral("none");
+    if (deckIndex >= 0 && pTrack) {
+        const QString group = PlayerManager::groupForDeck(deckIndex);
+        const ConfigKey bpmKey(group, QStringLiteral("bpm"));
+        const ConfigKey keyKey(group, QStringLiteral("key"));
+        const double bpm = ControlObject::exists(bpmKey) ? ControlObject::get(bpmKey) : 0.0;
+        const double key = ControlObject::exists(keyKey) ? ControlObject::get(keyKey) : 0.0;
+        state = QStringLiteral("%1|%2|%3|%4")
+                        .arg(group, pTrack->getId().toString())
+                        .arg(qRound(bpm * 2))
+                        .arg(key);
+    }
+    if (!force && state == m_liveState) {
+        return;
+    }
+    m_liveState = state;
+
+    const AutoDJProcessor::LiveSuggestions live = m_pAutoDJProcessor->liveSuggestions(10);
+    m_pLiveTable->setRowCount(0);
+    if (live.deckGroup.isEmpty()) {
+        m_pLiveNow->setText(tr("Nothing is playing. Start a deck and the best next songs "
+                               "appear here."));
+        return;
+    }
+    const TrackFeatures& now = live.now;
+    const auto energyText = [](const TrackFeatures& t) {
+        return t.hasEnergy() ? QString::number(t.energy, 'f', 0) : QStringLiteral("?");
+    };
+    m_pLiveNow->setText(tr("Playing live on %1: %2  |  %3  |  %4 BPM  |  energy %5")
+                                .arg(live.deckGroup,
+                                        now.displayName,
+                                        now.camelotText(),
+                                        now.hasBpm() ? QString::number(now.bpm, 'f', 1)
+                                                     : QStringLiteral("?"),
+                                        energyText(now)));
+    if (live.next.isEmpty()) {
+        m_pLiveStatus->setText(tr("No song in your library mixes smoothly with this one "
+                                  "(key and tempo)."));
+        return;
+    }
+    // Why it fits, in words: key, tempo, energy.
+    const auto whyText = [&now](const TrackFeatures& t) {
+        QStringList parts;
+        const int distance = MixScorer::camelotDistance(now.camelotNumber, t.camelotNumber);
+        const bool sameLetter = now.camelotMinor == t.camelotMinor;
+        if (distance == 0) {
+            parts << (sameLetter ? tr("same key") : tr("relative key"));
+        } else if (distance == 1) {
+            parts << (sameLetter ? tr("next key") : tr("diagonal key"));
+        } else {
+            parts << tr("key jump (energy boost)");
+        }
+        double ratio = t.bpm / now.bpm;
+        QString timeNote;
+        if (ratio > 1.5) {
+            ratio /= 2.0;
+            timeNote = tr(" (half time)");
+        } else if (ratio < 0.75) {
+            ratio *= 2.0;
+            timeNote = tr(" (double time)");
+        }
+        const double pct = (ratio - 1.0) * 100.0;
+        parts << (std::fabs(pct) < 0.05
+                         ? tr("same tempo") + timeNote
+                         : tr("tempo %1%2%").arg(pct > 0 ? QStringLiteral("+") : QString())
+                                           .arg(pct, 0, 'f', 1) +
+                                 timeNote);
+        if (now.hasEnergy() && t.hasEnergy()) {
+            const double delta = t.energy - now.energy;
+            parts << (std::fabs(delta) < 0.5
+                             ? tr("same energy")
+                             : tr("energy %1%2")
+                                       .arg(delta > 0 ? QStringLiteral("+") : QString())
+                                       .arg(delta, 0, 'f', 0));
+        }
+        return parts.join(QStringLiteral(", "));
+    };
+    m_pLiveTable->setRowCount(static_cast<int>(live.next.size()));
+    for (int row = 0; row < live.next.size(); ++row) {
+        const TrackFeatures& t = live.next[row].track;
+        auto* pSong = new QTableWidgetItem(t.displayName);
+        pSong->setData(Qt::UserRole, t.id.toVariant());
+        m_pLiveTable->setItem(row, 0, pSong);
+        m_pLiveTable->setItem(row, 1, new QTableWidgetItem(t.camelotText()));
+        m_pLiveTable->setItem(row, 2, new QTableWidgetItem(QString::number(t.bpm, 'f', 1)));
+        m_pLiveTable->setItem(row, 3, new QTableWidgetItem(energyText(t)));
+        m_pLiveTable->setItem(row, 4, new QTableWidgetItem(whyText(t)));
+    }
 }
