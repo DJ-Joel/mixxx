@@ -19,6 +19,9 @@ struct MixScoreWeights {
     /// How much a *measured* energy counts compared with a hand-rated one.
     /// Low because measured energy did not match the DJ's ears in testing.
     double measuredEnergyTrust = 0.25;
+    /// Set shape (Build only): cost per energy point of opening with a
+    /// high-energy track, or closing with a low-energy one.
+    double setShape = 0.5;
     double bpmTolerancePct = 5.0;
     bool allowHalfDoubleTime = true;
     bool energyBoostExcusesKeyJump = true;
@@ -64,6 +67,14 @@ class MixScorer {
 
     /// Energy-flow cost, depends on the chosen EnergyDirection.
     double energyCost(double energyFrom, double energyTo) const;
+
+    /// Set-shape cost of opening the set with this track (Build: calm first).
+    double startCost(const TrackFeatures& track) const;
+    /// Set-shape cost of closing the set with this track (Build: peak last).
+    double endCost(const TrackFeatures& track) const;
+
+    /// One line of a running order, e.g. " 3. 8A  124.0 BPM  energy 7 (rated)  Artist - Title".
+    static QString trackLine(int position, const TrackFeatures& track);
 
     /// "key clash", "tempo clash", "key + tempo clash", or empty if smooth.
     static QString clashLabel(const MixScore& score);

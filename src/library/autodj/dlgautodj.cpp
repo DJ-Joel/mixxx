@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFontDatabase>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QMenu>
@@ -316,15 +317,11 @@ void DlgAutoDJ::smartSortButton(bool) {
 
 void DlgAutoDJ::slotSmartSortFinished(int trackCount,
         int clashCount,
-        const QStringList& warnings) {
+        const QStringList& warnings,
+        const QStringList& orderLines) {
+    Q_UNUSED(warnings); // the clashes are also marked inside orderLines
     pushButtonSmartSort->setEnabled(true);
     if (trackCount < 2) {
-        return;
-    }
-    if (clashCount == 0) {
-        QMessageBox::information(this,
-                tr("Smart Sort"),
-                tr("Sorted %1 tracks with no key or tempo clashes.").arg(trackCount));
         return;
     }
     // A resizable dialog with a scrollable list, so long track names and
@@ -332,23 +329,26 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
     QDialog dialog(this);
     dialog.setWindowTitle(tr("Smart Sort"));
     auto* pLayout = new QVBoxLayout(&dialog);
-    auto* pSummary = new QLabel(
-            tr("Sorted %1 tracks. %2 transitions could not be made smooth.\n"
-               "A bridge track between them would help.")
-                    .arg(trackCount)
-                    .arg(clashCount),
-            &dialog);
+    const QString summary = clashCount == 0
+            ? tr("Sorted %1 tracks with no key or tempo clashes.").arg(trackCount)
+            : tr("Sorted %1 tracks. %2 transitions could not be made smooth "
+                 "(marked !! below).\nA bridge track between them would help.")
+                      .arg(trackCount)
+                      .arg(clashCount);
+    auto* pSummary = new QLabel(summary, &dialog);
     pSummary->setWordWrap(true);
     pLayout->addWidget(pSummary);
     auto* pDetails = new QPlainTextEdit(&dialog);
     pDetails->setReadOnly(true);
     pDetails->setLineWrapMode(QPlainTextEdit::NoWrap);
-    pDetails->setPlainText(warnings.join(QStringLiteral("\n\n")));
+    // Fixed-width font so the key and BPM columns line up.
+    pDetails->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    pDetails->setPlainText(orderLines.join(QChar('\n')));
     pLayout->addWidget(pDetails);
     auto* pButtons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
     connect(pButtons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     pLayout->addWidget(pButtons);
-    dialog.resize(760, 420);
+    dialog.resize(820, 560);
     dialog.exec();
 }
 

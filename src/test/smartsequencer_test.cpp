@@ -35,7 +35,7 @@ double orderCost(const MixScorer& scorer,
         }
         return tracks.front();
     };
-    double sum = 0.0;
+    double sum = scorer.startCost(find(order.front())) + scorer.endCost(find(order.back()));
     for (int k = 1; k < order.size(); ++k) {
         sum += scorer.score(find(order[k - 1]), find(order[k])).total;
     }
@@ -49,7 +49,7 @@ double bruteForceBest(const MixScorer& scorer, QVector<TrackFeatures> tracks) {
     });
     double best = std::numeric_limits<double>::max();
     do {
-        double sum = 0.0;
+        double sum = scorer.startCost(tracks.front()) + scorer.endCost(tracks.back());
         for (int k = 1; k < tracks.size(); ++k) {
             sum += scorer.score(tracks[k - 1], tracks[k]).total;
         }
@@ -135,7 +135,7 @@ TEST(MixScorerTest, UnknownKeyIsMildPenalty) {
 
 TEST(MixScorerTest, TempoCost) {
     EXPECT_DOUBLE_EQ(0.0, MixScorer::tempoCost(124, 124, 5, true));
-    EXPECT_NEAR(1.0, MixScorer::tempoCost(100, 105, 5, true), 1e-9);
+    EXPECT_NEAR(1.0, MixScorer::tempoCost(100, 105, 5, true), 0.03);
     EXPECT_LT(MixScorer::tempoCost(124, 126, 5, true), 1.0);
     EXPECT_NEAR(0.0, MixScorer::tempoCost(87, 174, 5, true), 1e-9);  // double time
     EXPECT_GE(MixScorer::tempoCost(87, 174, 5, false), MixScorer::kClashTempoCost);
@@ -144,6 +144,20 @@ TEST(MixScorerTest, TempoCost) {
 }
 
 // ---------- MixScorer: energy ----------
+
+TEST(MixScorerTest, TempoCostIsSymmetricAndSmooth) {
+    // Speeding up costs the same as slowing down by the same ratio.
+    EXPECT_NEAR(MixScorer::tempoCost(118, 128, 5, true),
+            MixScorer::tempoCost(128, 118, 5, true),
+            1e-9);
+    EXPECT_NEAR(MixScorer::tempoCost(135, 149.4, 5, true),
+            MixScorer::tempoCost(149.4, 135, 5, true),
+            1e-9);
+    // No jump at the 2x-tolerance edge.
+    const double below = MixScorer::tempoCost(100, 100 * std::exp(0.0999), 5, true);
+    const double above = MixScorer::tempoCost(100, 100 * std::exp(0.1001), 5, true);
+    EXPECT_NEAR(below, above, 0.05);
+}
 
 TEST(MixScorerTest, EnergyBuildPenalisesDrops) {
     MixScoreWeights w;
@@ -262,6 +276,58 @@ TEST(SmartSequencerTest, ReportsClashesItCannotAvoid) {
     EXPECT_EQ(1, r.clashCount);
     ASSERT_EQ(1, r.warnings.size());
     EXPECT_TRUE(r.warnings[0].contains(QStringLiteral("key clash")));
+}
+
+TEST(SmartSequencerTest, BuildStartsCalmAndEndsAtPeak) {
+    // Same key and tempo, so only energy decides the order.
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 124, 9),
+            makeTrack(2, 8, true, 124, 3),
+            makeTrack(3, 8, true, 124, 6),
+            makeTrack(4, 8, true, 124, 7),
+    };
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks);
+    ASSERT_EQ(4, r.order.size());
+    EXPECT_EQ(TrackId(QVariant(2)), r.order.front()); // energy 3 first
+    EXPECT_EQ(TrackId(QVariant(1)), r.order.back());  // energy 9 last
+}
+
+TEST(SmartSequencerTest, HeuristicAlsoBuildsEnergy) {
+    // Above kExactLimit: 20 tracks, same key/tempo, energies 1..10 twice.
+    QVector<TrackFeatures> tracks;
+    std::mt19937 rng(11);
+    for (int i = 1; i <= 20; ++i) {
+        tracks.push_back(makeTrack(i, 8, true, 124, 1 + (i % 10)));
+    }
+    std::shuffle(tracks.begin(), tracks.end(), rng);
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks);
+    ASSERT_EQ(20, r.order.size());
+    auto energyOf = [&](const TrackId& id) {
+        for (const auto& t : tracks) {
+            if (t.id == id) {
+                return t.energy;
+            }
+        }
+        return 0.0;
+    };
+    for (int k = 1; k < r.order.size(); ++k) {
+        EXPECT_LE(energyOf(r.order[k - 1]), energyOf(r.order[k])) << "at " << k;
+    }
+}
+
+TEST(SmartSequencerTest, OrderLinesListEveryTrackAndClash) {
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 124),
+            makeTrack(2, 2, true, 124), // clash with 8A either way
+    };
+    tracks[0].displayName = QStringLiteral("Artist - One");
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks);
+    ASSERT_EQ(3, r.orderLines.size()); // track, clash note, track
+    EXPECT_TRUE(r.orderLines[1].contains(QStringLiteral("key clash")));
+    EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("Artist - One")));
 }
 
 TEST(SmartSequencerTest, ExactSolverMatchesBruteForce) {

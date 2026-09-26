@@ -36,7 +36,10 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
   public slots:
     void shufflePlaylistButton(bool buttonChecked);
     void smartSortButton(bool buttonChecked);
-    void slotSmartSortFinished(int trackCount, int clashCount, const QStringList& warnings);
+    void slotSmartSortFinished(int trackCount,
+            int clashCount,
+            const QStringList& warnings,
+            const QStringList& orderLines);
     void slotSmartSortFailed(const QString& message);
     void slotSetEnergyRating(int rating);
     void skipNextButton(bool buttonChecked);

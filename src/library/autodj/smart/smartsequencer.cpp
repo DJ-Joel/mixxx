@@ -16,16 +16,22 @@ SmartSequencer::SmartSequencer(const MixScorer& scorer)
         : m_scorer(scorer) {
 }
 
-// Cost of every ordered pair. Not symmetric: A->B can differ from B->A
-// because the energy direction matters.
-SmartSequencer::CostMatrix SmartSequencer::buildMatrix(
+// Cost of every ordered pair (not symmetric: A->B can differ from B->A
+// because the energy direction matters), plus the set-shape cost of each
+// track as the opener and as the closer.
+SmartSequencer::Costs SmartSequencer::buildCosts(
         const QVector<TrackFeatures>& tracks) const {
     const int n = static_cast<int>(tracks.size());
-    CostMatrix c(n, QVector<double>(n, 0.0));
+    Costs c;
+    c.pair = QVector<QVector<double>>(n, QVector<double>(n, 0.0));
+    c.start.resize(n);
+    c.end.resize(n);
     for (int i = 0; i < n; ++i) {
+        c.start[i] = m_scorer.startCost(tracks[i]);
+        c.end[i] = m_scorer.endCost(tracks[i]);
         for (int j = 0; j < n; ++j) {
             if (i != j) {
-                c[i][j] = m_scorer.score(tracks[i], tracks[j]).total;
+                c.pair[i][j] = m_scorer.score(tracks[i], tracks[j]).total;
             }
         }
     }
@@ -33,18 +39,21 @@ SmartSequencer::CostMatrix SmartSequencer::buildMatrix(
 }
 
 // static
-double SmartSequencer::pathCost(const CostMatrix& c, const QVector<int>& path) {
-    double sum = 0.0;
+double SmartSequencer::pathCost(const Costs& c, const QVector<int>& path) {
+    if (path.isEmpty()) {
+        return 0.0;
+    }
+    double sum = c.start[path.front()] + c.end[path.back()];
     for (int k = 1; k < path.size(); ++k) {
-        sum += c[path[k - 1]][path[k]];
+        sum += c.pair[path[k - 1]][path[k]];
     }
     return sum;
 }
 
 // static
 // Always go to the cheapest unused track next.
-QVector<int> SmartSequencer::greedyPath(const CostMatrix& c, int start) {
-    const int n = static_cast<int>(c.size());
+QVector<int> SmartSequencer::greedyPath(const Costs& c, int start) {
+    const int n = static_cast<int>(c.pair.size());
     QVector<bool> used(n, false);
     QVector<int> path;
     path.reserve(n);
@@ -55,8 +64,8 @@ QVector<int> SmartSequencer::greedyPath(const CostMatrix& c, int start) {
         int best = -1;
         double bestCost = std::numeric_limits<double>::max();
         for (int j = 0; j < n; ++j) {
-            if (!used[j] && c[last][j] < bestCost) {
-                bestCost = c[last][j];
+            if (!used[j] && c.pair[last][j] < bestCost) {
+                bestCost = c.pair[last][j];
                 best = j;
             }
         }
@@ -69,29 +78,37 @@ QVector<int> SmartSequencer::greedyPath(const CostMatrix& c, int start) {
 // static
 // 2-opt: try reversing a stretch of the list. Costs are not symmetric, so
 // the reversed stretch is priced with prefix sums; each test is O(1).
-bool SmartSequencer::improveTwoOpt(const CostMatrix& c, QVector<int>* pPath, bool lockFirst) {
+// Reversing a stretch that touches either end also changes which track
+// opens or closes the set, so the start/end costs are included.
+bool SmartSequencer::improveTwoOpt(const Costs& c, QVector<int>* pPath, bool lockFirst) {
     QVector<int>& p = *pPath;
     const int n = static_cast<int>(p.size());
-    if (n < 3) {
+    if (n < 2) {
         return false;
     }
     QVector<double> fwd(n, 0.0); // edges walked forwards
     QVector<double> rev(n, 0.0); // the same edges walked backwards
     for (int k = 1; k < n; ++k) {
-        fwd[k] = fwd[k - 1] + c[p[k - 1]][p[k]];
-        rev[k] = rev[k - 1] + c[p[k]][p[k - 1]];
+        fwd[k] = fwd[k - 1] + c.pair[p[k - 1]][p[k]];
+        rev[k] = rev[k - 1] + c.pair[p[k]][p[k - 1]];
     }
     for (int i = lockFirst ? 1 : 0; i < n - 1; ++i) {
         for (int j = i + 1; j < n; ++j) {
             double before = fwd[j] - fwd[i];
             double after = rev[j] - rev[i];
             if (i > 0) {
-                before += c[p[i - 1]][p[i]];
-                after += c[p[i - 1]][p[j]];
+                before += c.pair[p[i - 1]][p[i]];
+                after += c.pair[p[i - 1]][p[j]];
+            } else {
+                before += c.start[p[i]];
+                after += c.start[p[j]];
             }
             if (j < n - 1) {
-                before += c[p[j]][p[j + 1]];
-                after += c[p[i]][p[j + 1]];
+                before += c.pair[p[j]][p[j + 1]];
+                after += c.pair[p[i]][p[j + 1]];
+            } else {
+                before += c.end[p[j]];
+                after += c.end[p[i]];
             }
             if (after + kEps < before) {
                 std::reverse(p.begin() + i, p.begin() + j + 1);
@@ -104,16 +121,26 @@ bool SmartSequencer::improveTwoOpt(const CostMatrix& c, QVector<int>* pPath, boo
 
 // static
 // Or-opt: lift out 1-3 tracks in a row and drop them somewhere cheaper.
-bool SmartSequencer::improveOrOpt(const CostMatrix& c, QVector<int>* pPath, bool lockFirst) {
+bool SmartSequencer::improveOrOpt(const Costs& c, QVector<int>* pPath, bool lockFirst) {
     QVector<int>& p = *pPath;
     const int n = static_cast<int>(p.size());
-    // Edge cost; -1 means "no track here" (start or end of the list).
+    // Edge cost; -1 means "no track here" (start or end of the list), where
+    // the set-shape cost applies instead. Both -1 cannot happen here.
     auto edge = [&c](int a, int b) {
-        return (a < 0 || b < 0) ? 0.0 : c[a][b];
+        if (a < 0) {
+            return b < 0 ? 0.0 : c.start[b];
+        }
+        if (b < 0) {
+            return c.end[a];
+        }
+        return c.pair[a][b];
     };
     const int firstMovable = lockFirst ? 1 : 0;
     for (int len = 1; len <= 3; ++len) {
         for (int i = firstMovable; i + len <= n; ++i) {
+            if (len == n) {
+                continue; // nothing to move it next to
+            }
             const int prev = i > 0 ? p[i - 1] : -1;
             const int next = i + len < n ? p[i + len] : -1;
             const int s0 = p[i];
@@ -150,8 +177,8 @@ bool SmartSequencer::improveOrOpt(const CostMatrix& c, QVector<int>* pPath, bool
 // static
 // Exact answer by dynamic programming (Held-Karp), for small sets.
 // dp[mask][j] = cheapest way to play exactly the tracks in `mask`, ending on j.
-QVector<int> SmartSequencer::exactPath(const CostMatrix& c, int fixedStart) {
-    const int n = static_cast<int>(c.size());
+QVector<int> SmartSequencer::exactPath(const Costs& c, int fixedStart) {
+    const int n = static_cast<int>(c.pair.size());
     const int full = (1 << n) - 1;
     const double inf = std::numeric_limits<double>::max();
     const auto at = [n](int mask, int j) {
@@ -161,7 +188,7 @@ QVector<int> SmartSequencer::exactPath(const CostMatrix& c, int fixedStart) {
     std::vector<int> parent(static_cast<std::size_t>(full + 1) * n, -1);
     for (int s = 0; s < n; ++s) {
         if (fixedStart < 0 || s == fixedStart) {
-            dp[at(1 << s, s)] = 0.0;
+            dp[at(1 << s, s)] = c.start[s];
         }
     }
     for (int mask = 1; mask <= full; ++mask) {
@@ -175,7 +202,7 @@ QVector<int> SmartSequencer::exactPath(const CostMatrix& c, int fixedStart) {
                     continue;
                 }
                 const int next = mask | (1 << k);
-                const double v = cur + c[j][k];
+                const double v = cur + c.pair[j][k];
                 if (v < dp[at(next, k)]) {
                     dp[at(next, k)] = v;
                     parent[at(next, k)] = j;
@@ -183,9 +210,12 @@ QVector<int> SmartSequencer::exactPath(const CostMatrix& c, int fixedStart) {
             }
         }
     }
-    int bestEnd = 0;
-    for (int j = 1; j < n; ++j) {
-        if (dp[at(full, j)] < dp[at(full, bestEnd)]) {
+    int bestEnd = -1;
+    double bestTotal = inf;
+    for (int j = 0; j < n; ++j) {
+        const double v = dp[at(full, j)];
+        if (v != inf && v + c.end[j] < bestTotal) {
+            bestTotal = v + c.end[j];
             bestEnd = j;
         }
     }
@@ -204,7 +234,7 @@ QVector<int> SmartSequencer::exactPath(const CostMatrix& c, int fixedStart) {
 
 // static
 // Polish with 2-opt and Or-opt until nothing improves or time runs out.
-void SmartSequencer::localSearch(const CostMatrix& c,
+void SmartSequencer::localSearch(const Costs& c,
         QVector<int>* pPath,
         bool lockFirst,
         const QElapsedTimer& timer,
@@ -219,10 +249,10 @@ void SmartSequencer::localSearch(const CostMatrix& c,
 // static
 // For large sets: greedy start, polish, then repeatedly "kick" the order
 // (move a random block) and re-polish, keeping any improvement.
-QVector<int> SmartSequencer::heuristicPath(const CostMatrix& c, int fixedStart, int timeBudgetMs) {
+QVector<int> SmartSequencer::heuristicPath(const Costs& c, int fixedStart, int timeBudgetMs) {
     QElapsedTimer timer;
     timer.start();
-    const int n = static_cast<int>(c.size());
+    const int n = static_cast<int>(c.pair.size());
     const bool lockFirst = fixedStart >= 0;
 
     // Step 1: greedy from every possible first track; keep the best.
@@ -289,7 +319,7 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
     if (n == 0) {
         return result;
     }
-    const CostMatrix c = buildMatrix(tracks);
+    const Costs c = buildCosts(tracks);
 
     int fixedStart = -1;
     if (startId) {
@@ -305,31 +335,33 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
             ? exactPath(c, fixedStart)
             : heuristicPath(c, fixedStart, timeBudgetMs);
 
-    // Report, including the clashes that could not be avoided.
+    // Report: the whole running order, with the clashes that could not be
+    // avoided marked between the two tracks involved.
     result.totalCost = pathCost(c, best);
     for (int k = 0; k < n; ++k) {
-        result.order.push_back(tracks[best[k]].id);
-        if (k == 0) {
-            continue;
-        }
-        const TrackFeatures& from = tracks[best[k - 1]];
         const TrackFeatures& to = tracks[best[k]];
-        const MixScore s = m_scorer.score(from, to);
-        const QString label = MixScorer::clashLabel(s);
-        if (!label.isEmpty()) {
-            ++result.clashCount;
-            // k is 0-based, so the pair is tracks k and k + 1 counted from 1.
-            QString warning = QStringLiteral("Tracks %1 and %2 (%3): %4")
-                                      .arg(QString::number(k),
-                                              QString::number(k + 1),
-                                              label,
-                                              s.reason);
-            if (!from.displayName.isEmpty() || !to.displayName.isEmpty()) {
-                warning += QStringLiteral("\n    %1\n    -> %2")
-                                   .arg(from.displayName, to.displayName);
+        result.order.push_back(to.id);
+        if (k > 0) {
+            const TrackFeatures& from = tracks[best[k - 1]];
+            const MixScore s = m_scorer.score(from, to);
+            const QString label = MixScorer::clashLabel(s);
+            if (!label.isEmpty()) {
+                ++result.clashCount;
+                // k is 0-based, so the pair is tracks k and k + 1 counted from 1.
+                QString warning = QStringLiteral("Tracks %1 and %2 (%3): %4")
+                                          .arg(QString::number(k),
+                                                  QString::number(k + 1),
+                                                  label,
+                                                  s.reason);
+                if (!from.displayName.isEmpty() || !to.displayName.isEmpty()) {
+                    warning += QStringLiteral("\n    %1\n    -> %2")
+                                       .arg(from.displayName, to.displayName);
+                }
+                result.warnings << warning;
+                result.orderLines << QStringLiteral("      !! %1: %2").arg(label, s.reason);
             }
-            result.warnings << warning;
         }
+        result.orderLines << MixScorer::trackLine(k + 1, to);
     }
     return result;
 }

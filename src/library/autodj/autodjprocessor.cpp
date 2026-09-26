@@ -301,7 +301,7 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
     }
 
     if (rows.size() < 2) {
-        emit smartSortFinished(static_cast<int>(rows.size()), 0, QStringList());
+        emit smartSortFinished(static_cast<int>(rows.size()), 0, QStringList(), QStringList());
         return ADJ_OK;
     }
 
@@ -390,7 +390,8 @@ void AutoDJProcessor::applySmartSortResult(const SequenceResult& result,
     m_pAutoDJTableModel->setTrackOrder(newOrder);
     emit smartSortFinished(static_cast<int>(result.order.size()),
             result.clashCount,
-            result.warnings);
+            result.warnings,
+            result.orderLines);
 }
 
 void AutoDJProcessor::fadeNow() {

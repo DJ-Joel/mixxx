@@ -62,20 +62,26 @@ double MixScorer::tempoCost(double bpmFrom,
     if (tolerancePct <= 0.0) {
         tolerancePct = 0.1; // avoid division by zero
     }
-    double diff = std::abs(bpmTo / bpmFrom - 1.0);
+    // Log ratio, so speeding up and slowing down by the same amount cost the
+    // same (118 -> 128 and 128 -> 118 are equal). A plain percentage made
+    // going up dearer than going down, which pushed every sort to run from
+    // fast to slow.
+    double diff = std::abs(std::log(bpmTo / bpmFrom));
     if (allowHalfDoubleTime) {
         diff = std::min({diff,
-                std::abs(2.0 * bpmTo / bpmFrom - 1.0),
-                std::abs(bpmTo / (2.0 * bpmFrom) - 1.0)});
+                std::abs(std::log(2.0 * bpmTo / bpmFrom)),
+                std::abs(std::log(bpmTo / (2.0 * bpmFrom)))});
     }
     const double pct = diff * 100.0;
     if (pct <= tolerancePct) {
-        return pct / tolerancePct;
+        return pct / tolerancePct; // 0..1
     }
     if (pct <= 2.0 * tolerancePct) {
-        return 1.0 + 4.0 * (pct - tolerancePct) / tolerancePct;
+        return 1.0 + 4.0 * (pct - tolerancePct) / tolerancePct; // 1..5
     }
-    return 20.0 + pct;
+    // Keeps rising smoothly, with no jump at the edge: a jump made one side
+    // of the edge far worse than the other.
+    return 5.0 + (pct - 2.0 * tolerancePct); // 5+
 }
 
 double MixScorer::energyCost(double energyFrom, double energyTo) const {
@@ -136,6 +142,39 @@ MixScore MixScorer::score(const TrackFeatures& from, const TrackFeatures& to) co
                                bpmText(to),
                                energyText);
     return s;
+}
+
+double MixScorer::startCost(const TrackFeatures& track) const {
+    if (m_weights.direction != MixScoreWeights::EnergyDirection::Build || !track.hasEnergy()) {
+        return 0.0;
+    }
+    const double trust = track.energyIsManual ? 1.0 : m_weights.measuredEnergyTrust;
+    return m_weights.energy * m_weights.setShape * trust * std::max(0.0, track.energy - 1.0);
+}
+
+double MixScorer::endCost(const TrackFeatures& track) const {
+    if (m_weights.direction != MixScoreWeights::EnergyDirection::Build || !track.hasEnergy()) {
+        return 0.0;
+    }
+    const double trust = track.energyIsManual ? 1.0 : m_weights.measuredEnergyTrust;
+    return m_weights.energy * m_weights.setShape * trust * std::max(0.0, 10.0 - track.energy);
+}
+
+// static
+QString MixScorer::trackLine(int position, const TrackFeatures& track) {
+    QString energy = QStringLiteral("energy ?");
+    if (track.hasEnergy()) {
+        energy = track.energyIsManual
+                ? QStringLiteral("energy %1 (rated)").arg(track.energy, 0, 'f', 0)
+                : QStringLiteral("energy %1 (measured)").arg(track.energy, 0, 'f', 1);
+    }
+    const QString bpm = track.hasBpm()
+            ? QStringLiteral("%1 BPM").arg(track.bpm, 5, 'f', 1)
+            : QStringLiteral("  ? BPM");
+    return QStringLiteral("%1. %2  %3  %4  %5")
+            .arg(position, 2)
+            .arg(track.camelotText(), 3)
+            .arg(bpm, energy, track.displayName);
 }
 
 // static

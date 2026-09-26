@@ -234,7 +234,11 @@ class AutoDJProcessor : public QObject {
     void transitionTimeChanged(int time);
     void randomTrackRequested(int tracksToAdd);
     /// clashCount = transitions that could not be made smooth.
-    void smartSortFinished(int trackCount, int clashCount, const QStringList& warnings);
+    /// orderLines = the whole new running order, with clash notes.
+    void smartSortFinished(int trackCount,
+            int clashCount,
+            const QStringList& warnings,
+            const QStringList& orderLines);
     void smartSortFailed(const QString& message);
 
   private slots:
