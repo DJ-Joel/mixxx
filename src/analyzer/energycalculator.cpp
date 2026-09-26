@@ -58,12 +58,6 @@ constexpr int kGridWindowsPerRegion = 4; // 64 beats per region
 // A band whose hits line up with the beat less than this is ignored
 // (0 = hits anywhere, 1 = every hit exactly on the same spot of the beat).
 constexpr double kGridMinClarity = 0.05;
-// Double kicks ("two ticks" close together): only the first tick counts.
-// A hit this strong starts a short quiet time in which later rises are
-// ignored; the block right after it still counts (the same attack can
-// straddle two blocks).
-constexpr double kGridHitDb = 3.0;
-constexpr int kGridDoubleHitBlocks = 5; // 100 ms
 
 double onePoleCoefficient(double cutoffHz, double sampleRate) {
     return 1.0 - std::exp(-2.0 * kPi * cutoffHz / sampleRate);
@@ -158,20 +152,12 @@ double EnergyCalculator::gridDriftBeats(double firstBeatSec,
             double weight = 0.0;
             const int from = std::max(1, static_cast<int>(std::ceil(fromSec / blockSec)));
             const int to = std::min(blockCount, static_cast<int>(std::ceil(toSec / blockSec)));
-            int lastHit = -kGridDoubleHitBlocks - 1;
             for (int b = from; b < to; ++b) {
                 const double hit = std::max(0.0,
                         std::max<double>(levels[b], kGridFloorDb) -
                                 std::max<double>(levels[b - 1], kGridFloorDb));
                 if (hit <= 0.0) {
                     continue;
-                }
-                const int sinceLastHit = b - lastHit;
-                if (sinceLastHit > 1 && sinceLastHit <= kGridDoubleHitBlocks) {
-                    continue; // the second tick of a double kick
-                }
-                if (hit >= kGridHitDb && sinceLastHit > 1) {
-                    lastHit = b;
                 }
                 const double angle = kTwoPi * (b * blockSec - firstBeatSec) / beatSec;
                 re += hit * std::cos(angle);

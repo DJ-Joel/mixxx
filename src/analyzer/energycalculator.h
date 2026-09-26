@@ -85,8 +85,10 @@ class EnergyCalculator {
     /// 0.15..0.33, bigger errors 0.2..0.5.
     static constexpr double kGridMaxDriftBeats = 0.15;
     /// Bump when gridDriftBeats() changes, so every track is checked again.
-    /// v2: only the first tick of a double kick counts.
-    static constexpr int kGridCheckVersion = 2;
+    /// v2: only the first tick of a double kick counted. Worse on the
+    ///     DJ's library (89 -> 99 flagged, steady tracks failed), so
+    /// v3: back to counting every hit.
+    static constexpr int kGridCheckVersion = 3;
 
     /// Maps the three 0..1 parts to the 1..10 score.
     static double combine(double loudness01, double brightness01, double busyness01);
