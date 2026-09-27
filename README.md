@@ -1,5 +1,13 @@
 # Mixxx
 
+> **This is the Auto DJ 2.0 fork of Mixxx** (branch `autodj-2`): a smarter Auto
+> DJ (harmonic and energy-aware set planning, beatmatched and phrase-aligned
+> mixes, beat maps, key morph) and music video mixing. See
+> **[AUTODJ2.md](AUTODJ2.md)** for what was changed and why. It is an
+> independent fork, not part of or endorsed by the Mixxx project, and is not
+> submitted to it; anyone may use the changes under Mixxx's license (GPL v2 or
+> later). The rest of this page is the original Mixxx README.
+
 [![GitHub latest tag](https://img.shields.io/github/tag/mixxxdj/mixxx.svg)](https://mixxx.org/download)
 [![Packaging status](https://repology.org/badge/tiny-repos/mixxx.svg)](https://repology.org/metapackage/mixxx/versions)
 [![Build status](https://github.com/mixxxdj/mixxx/actions/workflows/build.yml/badge.svg)](https://github.com/mixxxdj/mixxx/actions/workflows/build.yml)
