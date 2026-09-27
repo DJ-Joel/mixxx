@@ -38,6 +38,7 @@
 #include "mixer/playermanager.h"
 #ifdef __FFMPEG__
 #include "video/videomanager.h"
+#include "stems/stemsplitter.h"
 #endif
 #include "library/library.h"
 #include "library/playlisttablemodel.h"
@@ -480,6 +481,34 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
 #else
     pushButtonVideo->hide(); // needs FFmpeg
 #endif
+
+    // Auto DJ 2.0 plus Video Mixing: split songs into drums, bass, other
+    // and vocals in the background - the songs in the decks first, then
+    // the next songs of the queue - so the parts are ready when needed.
+    m_pStems = new StemSplitter(m_pConfig, this);
+    connect(&PlayerInfo::instance(),
+            &PlayerInfo::trackChanged,
+            this,
+            [this](const QString& group, TrackPointer pNewTrack, TrackPointer pOldTrack) {
+                Q_UNUSED(pOldTrack);
+                if (pNewTrack && group.startsWith(QStringLiteral("[Channel"))) {
+                    m_pStems->request(pNewTrack, true);
+                }
+            });
+    auto* pStemQueueTimer = new QTimer(this);
+    pStemQueueTimer->setSingleShot(true);
+    pStemQueueTimer->setInterval(3000); // after the queue settles
+    connect(pStemQueueTimer, &QTimer::timeout, this, [this]() {
+        requestQueueStems();
+    });
+    auto startStemQueueTimer = [pStemQueueTimer]() {
+        pStemQueueTimer->start();
+    };
+    connect(m_pAutoDJTableModel, &QAbstractItemModel::rowsInserted, this, startStemQueueTimer);
+    connect(m_pAutoDJTableModel, &QAbstractItemModel::rowsRemoved, this, startStemQueueTimer);
+    connect(m_pAutoDJTableModel, &QAbstractItemModel::rowsMoved, this, startStemQueueTimer);
+    connect(m_pAutoDJTableModel, &QAbstractItemModel::modelReset, this, startStemQueueTimer);
+    pStemQueueTimer->start();
 
     // Remember every song heard live this session, window open or not.
     connect(&PlayerInfo::instance(),
@@ -1457,6 +1486,15 @@ void DlgAutoDJ::updateVideoButton() {
             recording ? QStringLiteral("QPushButton { color: #ff4040; font-weight: bold; }")
                       : QString());
 #endif
+}
+
+void DlgAutoDJ::requestQueueStems() {
+    constexpr int kQueueSongsAhead = 3;
+    const int rows = std::min(kQueueSongsAhead, m_pAutoDJTableModel->rowCount());
+    for (int row = 0; row < rows; ++row) {
+        m_pStems->request(m_pAutoDJTableModel->getTrack(m_pAutoDJTableModel->index(row, 0)),
+                false);
+    }
 }
 
 void DlgAutoDJ::showVideoBrand() {

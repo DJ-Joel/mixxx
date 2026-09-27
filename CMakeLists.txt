@@ -1425,6 +1425,10 @@ add_library(
   src/library/autodj/smart/mixscorer.cpp
   src/library/autodj/smart/phrasealign.cpp
   src/video/videomix.cpp
+  src/stems/stemengine.cpp
+  src/stems/stemfilewriter.cpp
+  src/stems/stemmath.cpp
+  src/stems/stemsplitter.cpp
   src/library/autodj/smart/smartsequencer.cpp
   src/library/autodj/smart/trackfeatures.cpp
   src/library/banshee/bansheedbconnection.cpp
@@ -2967,6 +2971,7 @@ if(BUILD_TESTING)
     src/test/phrasealign_test.cpp
     src/test/genrescan_test.cpp
     src/test/videomix_test.cpp
+    src/test/stemmath_test.cpp
     src/test/beatstranslatetest.cpp
     src/test/borrowabletest.cpp
     src/test/bpmtest.cpp
@@ -3592,6 +3597,15 @@ else()
   )
 endif()
 target_include_directories(mixxx-lib SYSTEM PUBLIC lib/fidlib)
+# Auto DJ 2.0 plus Video Mixing stems: ONNX Runtime's C API header only
+# (onnxruntime.dll is loaded at run time from the stems-engine folder).
+target_include_directories(mixxx-lib SYSTEM PRIVATE lib/onnxruntime/include)
+# These include the Windows headers themselves (NOMINMAX).
+set_source_files_properties(
+  src/stems/stemengine.cpp
+  src/stems/stemfilewriter.cpp
+  PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+)
 target_link_libraries(mixxx-lib PRIVATE fidlib)
 
 # Create a list from CMAKE_PREFIX_PATH with an alternate separator

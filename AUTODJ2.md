@@ -36,6 +36,7 @@ All changes are on the branch **`autodj-2`**.
    - 4.14 [Genre Scan](#414-genre-scan)
    - 4.15 [Video mixing](#415-video-mixing)
    - 4.16 [The Windows installer](#416-the-windows-installer)
+   - 4.17 [Stems: splitting songs into parts](#417-stems-splitting-songs-into-parts)
 5. [Where the code is](#5-where-the-code-is)
 6. [Stored data](#6-stored-data)
 7. [Tests](#7-tests)
@@ -68,6 +69,7 @@ does not know where the beat is. Auto DJ 2.0 plus Video Mixing adds:
 | **Genre Scan** | Suggests genres for untagged songs from MusicBrainz; the DJ reviews them before anything is saved. |
 | **Video mixing** | Music videos play on a second screen or projector, follow each deck (tempo, loops, jumps) and are mixed like the sound, or cut on the beat. Song titles, the DJ's name or logo, and moving pictures for songs without video. The whole video set can be recorded as an MP4. |
 | **End of the queue** | Auto DJ stays on while the last song plays, so more songs can still be added; it switches off when that song ends. |
+| **Stems (in progress)** | Songs are split into drums, bass, other and vocals by an AI model on the graphics card, in the background, and kept as stem files that Mixxx's stem controls can mute and fade. (Stem mixing controls and stem transitions for Auto DJ are the next steps.) |
 | **Own installer** | A Windows installer that installs "Mixxx Auto DJ 2.0 plus Video Mixing" next to a normal Mixxx without touching it. |
 
 ---
@@ -484,6 +486,43 @@ installed next to a normal Mixxx:
 
 ---
 
+### 4.17 Stems: splitting songs into parts
+
+Work in progress (step 2 of 6: the splitting engine). Songs are split into
+four parts - drums, bass, other (synths, guitars, melody) and vocals - by
+Demucs v4 ("htdemucs", Meta, MIT license), the model the Mixxx project
+converted to ONNX (github.com/mixxxdj/demucs).
+
+- **When:** a song loaded into a deck is split at once, in the background;
+  the next 3 songs of the Auto DJ queue are split ahead of time. One song at
+  a time, on its own thread; the music is never held up.
+- **Where the parts go:** `<settings folder>/stems/Artist - Title
+  [code].stem.mp4`, the NI stem format Mixxx already plays (5 AAC tracks:
+  the mix, then the four parts, plus the stem manifest). The code changes
+  when the song file changes. Each song is split only once.
+- **How:** the song is read exactly as the deck plays it, converted to
+  44100 Hz if needed (windowed-sinc resampler), normalised, and cut into
+  7.8 s pieces that overlap by a quarter; the model's answers are blended
+  with a triangle weight (as Demucs does). Only one piece is kept in memory;
+  finished audio is written as it goes (`src/stems/stemmath.*`, unit
+  tested).
+- **The engine is not built into Mixxx.** `src/stems/stemengine.cpp` loads
+  Microsoft's ONNX Runtime (`onnxruntime.dll`) at run time from the
+  `stems-engine` folder next to `mixxx.exe`, with the model in
+  `stems-engine/model/htdemucs.onnx`. With NVIDIA's CUDA files in
+  `stems-engine/cuda/` it runs on the graphics card; otherwise on the
+  processor, using half the cores so the audio keeps running smoothly.
+  Without the folder, stems are simply off. Only ONNX Runtime's C header is
+  in the source (`lib/onnxruntime/include`, MIT license).
+- **Speed (RTX 5080 laptop):** a 4-5 minute song in 16-19 s including
+  reading and writing (about 15x faster than it plays); the engine starts in
+  about 5 s. On the processor about 4x faster than playing.
+- **Why CUDA and not DirectML:** DirectML (Windows' own AI layer) could not
+  run this model on the NVIDIA chip with any setting ("not enough memory"),
+  so CUDA is used.
+- The stem files are written with the AAC encoder built into Windows
+  (Media Foundation, `src/stems/stemfilewriter.*`).
+
 ## 5. Where the code is
 
 | Path | What |
@@ -502,6 +541,7 @@ installed next to a normal Mixxx:
 | `src/library/analysis/dlganalysis.*` | The Genre Scan button and review window on the Analyze page. |
 | `src/analyzer/energycalculator.*` | Energy score, song body, beat grid check (pure maths). |
 | `src/analyzer/analyzerenergy.*` | Runs the energy calculator during analysis, sets the automatic markers, reads beat grids and beat maps. |
+| `src/stems/` | Stems: splitting songs into drums, bass, other and vocals (maths, AI engine loader, stem file writer, background splitter). |
 | `src/video/` | Video decoding (Windows decoder, FFmpeg), video mixing, video windows. |
 | `src/library/playlisttablemodel.*` | Small additions for reordering the Auto DJ queue. |
 | `src/util/cmdlineargs.cpp` | The separate settings folder on Windows. |
@@ -535,10 +575,10 @@ card, the folder of the last video recording).
 Unit tests are in `src/test/` and run with the other Mixxx tests:
 
 ```
-mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*
+mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*
 ```
 
-140 tests. The energy and grid-check tests use synthetic drum loops (steady,
+146 tests. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -561,6 +601,7 @@ music, many of them music videos.
 - Video: the picture follows the deck, but the video is not time-stretched
   (at +5% the picture simply runs 5% faster, which is what you want).
 - Video recording is Windows only, and needs the sound at 44100 or 48000 Hz.
+- Stems: Windows only for now; the engine folder (about 1.8 GB with the NVIDIA files) is not part of the source and is not yet in the installer. Stem files are always 44100 Hz.
 - Tested mainly on Windows 11.
 
 ---
@@ -610,3 +651,7 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
 31. **Video recording**: "Record video..." saves the mixed picture and sound
     as one MP4 (Windows encoder), in step through the engine's frame count.
     Mixxx's REC button also records the video while it is showing.
+32. **Stems, step 2: the splitting engine.** Songs in the decks and the
+    next songs of the Auto DJ queue are split into drums, bass, other and
+    vocals on the graphics card (Demucs v4 via ONNX Runtime + CUDA, loaded
+    at run time) and kept as stem files.

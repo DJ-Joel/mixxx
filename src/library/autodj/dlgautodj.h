@@ -20,6 +20,7 @@ class QLabel;
 class QTableWidget;
 class QTimer;
 class VideoManager;
+class StemSplitter;
 
 class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     Q_OBJECT
@@ -121,4 +122,9 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     bool m_recHandled = false;      ///< this REC press was looked at
     bool m_recStartedVideo = false; ///< the video recording came from REC
     QPointer<QDialog> m_pPictureTiming;
+
+    // Auto DJ 2.0 plus Video Mixing: stems split in the background.
+    StemSplitter* m_pStems = nullptr;
+    /// Splits the next songs of the Auto DJ queue ahead of time.
+    void requestQueueStems();
 };
