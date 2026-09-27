@@ -46,7 +46,7 @@ constexpr double kKeepPosition = -1.0;
 // A track needs to be longer than two callbacks to not stop AutoDJ
 constexpr double kMinimumTrackDurationSec = 0.2;
 
-// Auto DJ 2.0 Phase 2 helpers. Controls may be missing (e.g. in tests or
+// Auto DJ 2.0 plus Video Mixing, phase 2 helpers. Controls may be missing (e.g. in tests or
 // when the EQ rack is not loaded), so every access checks first.
 const QString kBeatmatchPreference = QStringLiteral("SmartBeatmatch");
 const QString kKeyMorphPreference = QStringLiteral("SmartKeyMorph");
@@ -77,7 +77,7 @@ void writeControl(const ConfigKey& key, double value) {
     }
 }
 
-// Auto DJ 2.0: every library track with a known key and BPM whose file
+// Auto DJ 2.0 plus Video Mixing: every library track with a known key and BPM whose file
 // still exists, as bridge candidates. Read straight from the database so
 // no Track objects are loaded for the whole library.
 // The beat grid checks, for marking tracks Auto DJ cannot beatmatch.
@@ -1487,7 +1487,7 @@ void AutoDJProcessor::fadeNow() {
         // we cannot fade if AutoDj is disabled or already fading
         return;
     }
-    // Auto DJ 2.0: with beatmatch on, wait for the next phrase so the mix
+    // Auto DJ 2.0 plus Video Mixing: with beatmatch on, wait for the next phrase so the mix
     // stays on the beat. Falls back to fading right away if that fails.
     if (isBeatmatchEnabled() && tryPhraseFadeNow()) {
         return;
@@ -2352,7 +2352,7 @@ void AutoDJProcessor::maybeFillRandomTracks() {
 }
 
 void AutoDJProcessor::fillQueue(int tracksToAdd) {
-    // Auto DJ 2.0: top up with Smart Fill (the DJ's saved Smart Fill
+    // Auto DJ 2.0 plus Video Mixing: top up with Smart Fill (the DJ's saved Smart Fill
     // options), and only fall back to random tracks for whatever Smart Fill
     // could not find, so the music never stops.
     if (m_pConfig->getValue(ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillAuto")), true)) {
@@ -2895,7 +2895,7 @@ void AutoDJProcessor::calculateTransition(DeckAttributes* pFromDeck,
         }
     }
 
-    // Auto DJ 2.0 Phase 2: put a beatmatched fade on phrase boundaries.
+    // Auto DJ 2.0 plus Video Mixing, phase 2: put a beatmatched fade on phrase boundaries.
     alignTransitionToPhrases(pFromDeck, pToDeck, fromDeckPosition);
 
     // These are expected to be a fraction of the track length.

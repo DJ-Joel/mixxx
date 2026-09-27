@@ -46,7 +46,7 @@ class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual Libra
     void slotRecentDaysChanged(int days);
     void slotShowAllSongs();
     void installEventFilter(QObject* pFilter);
-    /// Auto DJ 2.0 Genre Scan: look up genres on MusicBrainz, then review.
+    /// Auto DJ 2.0 plus Video Mixing Genre Scan: look up genres on MusicBrainz, then review.
     void slotGenreScan();
     void slotGenreScanFinished(const QList<GenreScanner::Result>& results, bool cancelled);
 

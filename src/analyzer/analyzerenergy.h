@@ -8,7 +8,7 @@
 #include "library/autodj/smart/phrasealign.h"
 #include "track/trackid.h"
 
-/// Auto DJ 2.0: computes the energy score (1..10) of each track and saves
+/// Auto DJ 2.0 plus Video Mixing: computes the energy score (1..10) of each track and saves
 /// it with EnergyStore. Skips tracks that already have a score from the
 /// current formula version and a beat grid check for the grid it has now.
 class AnalyzerEnergy : public Analyzer {

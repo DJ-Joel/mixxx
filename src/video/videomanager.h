@@ -33,7 +33,7 @@ class VideoScreen : public QWidget {
     VideoManager* const m_pManager;
 };
 
-/// Auto DJ 2.0 video mixing: shows the music videos of the decks on a
+/// Auto DJ 2.0 plus Video Mixing: shows the music videos of the decks on a
 /// screen or projector, following the decks.
 ///
 /// Each deck's picture follows the deck's play position, so tempo changes,

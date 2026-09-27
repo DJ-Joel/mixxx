@@ -19,7 +19,7 @@ struct BridgeSuggestion {
     double cost = 0.0;
 };
 
-/// Auto DJ 2.0: finds "bridge" tracks. For a clashing pair A -> B it looks
+/// Auto DJ 2.0 plus Video Mixing: finds "bridge" tracks. For a clashing pair A -> B it looks
 /// for library tracks X where both A -> X and X -> B mix smoothly (no key or
 /// tempo clash), best first. Pure logic, safe on a worker thread.
 /// Live Assistant: one suggested next track.

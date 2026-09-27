@@ -1,8 +1,8 @@
-# Auto DJ 2.0: a smarter Auto DJ for Mixxx
+# Auto DJ 2.0 plus Video Mixing: a smarter Auto DJ and music video mixing for Mixxx
 
-This fork of [Mixxx](https://mixxx.org) adds **Auto DJ 2.0**: an Auto DJ that
-plans a set like a DJ does and mixes it so that **the dancers never lose the
-beat**. It also adds **music video mixing** for video DJ sets.
+This fork of [Mixxx](https://mixxx.org), **Auto DJ 2.0 plus Video Mixing**, adds an Auto DJ
+that plans a set like a DJ does and mixes it so that **the dancers never lose
+the beat**, and **music video mixing** for video DJ sets.
 
 All changes are on the branch **`autodj-2`**.
 
@@ -48,7 +48,7 @@ All changes are on the branch **`autodj-2`**.
 
 Plain Mixxx Auto DJ plays the queue in order and crossfades for a fixed time.
 It does not look at the key, the tempo or the energy of the songs, and it
-does not know where the beat is. Auto DJ 2.0 adds:
+does not know where the beat is. Auto DJ 2.0 plus Video Mixing adds:
 
 | Feature | What the DJ gets |
 |---|---|
@@ -67,7 +67,7 @@ does not know where the beat is. Auto DJ 2.0 adds:
 | **Key morph** | If two keys clash, the incoming song is pitched by a semitone (tempo unchanged) so the keys fit. |
 | **Genre Scan** | Suggests genres for untagged songs from MusicBrainz; the DJ reviews them before anything is saved. |
 | **Video mixing** | Music videos play on a second screen or projector, follow each deck (tempo, loops, jumps) and are mixed like the sound. |
-| **Own installer** | A Windows installer that installs "Mixxx Auto DJ 2.0" next to a normal Mixxx without touching it. |
+| **Own installer** | A Windows installer that installs "Mixxx Auto DJ 2.0 plus Video Mixing" next to a normal Mixxx without touching it. |
 
 ---
 
@@ -127,14 +127,14 @@ cd build
 cpack -G WIX
 ```
 
-The result is `build\mixxx-autodj2-<version>-amd64.msi`.
+The result is `build\mixxx-autodj2-video-mixing-<version>-amd64.msi`.
 
 ---
 
 ## 4. How it works
 
 The rule behind every design choice: **the dancers must never lose the
-beat.** When in doubt, Auto DJ 2.0 does the safe thing (a short, clean
+beat.** When in doubt, Auto DJ 2.0 plus Video Mixing does the safe thing (a short, clean
 change) rather than a risky one (a long mix that may drift).
 
 Most of the logic is written as small classes without Mixxx or database
@@ -345,7 +345,7 @@ worst case for dancers.
 
 Mixxx can make a **beat map** that follows a drifting tempo (preference
 "Assume constant tempo" off, or "Reanalyze (variable BPM)" on a song).
-Auto DJ 2.0 uses the real beat positions everywhere:
+Auto DJ 2.0 plus Video Mixing uses the real beat positions everywhere:
 
 - `phrasealign::Grid` holds either a steady grid or the time of every beat.
   All phrase maths counts **beats**, so phrases are found on the song's own
@@ -410,15 +410,19 @@ For video DJ sets (`src/video/`):
 
 ### 4.16 The Windows installer
 
-The installer is a separate product, **Mixxx Auto DJ 2.0**, so it can be
+The installer is a separate product, **Mixxx Auto DJ 2.0 plus Video Mixing**, so it can be
 installed next to a normal Mixxx:
 
 - its own install folder, shortcuts and installer ID (WiX upgrade code). The
   Mixxx installer contains an action that removes older Mixxx installations;
-  here it only looks for older Auto DJ 2.0 installations;
-- its own settings and library folder, `%LOCALAPPDATA%\Mixxx Auto DJ 2.0`
+  here it only looks for older installations of this fork;
+- its own settings and library folder, `%LOCALAPPDATA%\Mixxx Auto DJ 2.0 plus Video Mixing`
   (normal Mixxx uses `%LOCALAPPDATA%\Mixxx`), so it never changes a normal
-  Mixxx's settings or library.
+  Mixxx's settings or library. Installs made before the fork was renamed used
+  `%LOCALAPPDATA%\Mixxx Auto DJ 2.0`; that folder stays in use until the new
+  one exists, so nothing is lost.
+- the window title and the About box say "Mixxx - Auto DJ 2.0 plus Video
+  Mixing".
 
 ---
 
@@ -452,7 +456,7 @@ what the code does.
 
 ## 6. Stored data
 
-Auto DJ 2.0 adds its own tables to Mixxx's library database
+Auto DJ 2.0 plus Video Mixing adds its own tables to Mixxx's library database
 (`mixxxdb.sqlite`). It does not change Mixxx's own tables.
 
 | Table | What |
@@ -537,3 +541,5 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
 25. **Own Windows installer** next to a normal Mixxx.
 26. **Repeat button next to Shuffle.**
 27. **This documentation.**
+28. **Renamed to "Auto DJ 2.0 plus Video Mixing"** (installer, install
+    folder, settings folder, window title, About box, code comments, docs).

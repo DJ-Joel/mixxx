@@ -80,6 +80,11 @@ QString VersionStore::applicationName() {
     return kMixxx;
 }
 
+// static
+QString VersionStore::editionName() {
+    return QStringLiteral("Auto DJ 2.0 plus Video Mixing");
+}
+
 // MSVC doesn't properly evaluate #if in macro arguments (such as QStringLiteral)
 // So I work around that using these #defines.
 // static

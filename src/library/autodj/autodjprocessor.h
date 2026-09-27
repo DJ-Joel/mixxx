@@ -210,14 +210,14 @@ class AutoDJProcessor : public QObject {
     void setTransitionMode(TransitionMode newMode);
 
     AutoDJError shufflePlaylist(const QModelIndexList& selectedIndices);
-    /// Auto DJ 2.0: reorder the queue for smooth key/BPM/energy flow.
+    /// Auto DJ 2.0 plus Video Mixing: reorder the queue for smooth key/BPM/energy flow.
     /// Runs in the background; the result arrives as smartSortFinished()
     /// or smartSortFailed(). While Auto DJ runs, the first track stays first.
     AutoDJError smartSortPlaylist();
     bool isSmartSortRunning() const {
         return m_smartSortRunning;
     }
-    /// Auto DJ 2.0: the DJ's own energy rating, 1..10. 0 clears it.
+    /// Auto DJ 2.0 plus Video Mixing: the DJ's own energy rating, 1..10. 0 clears it.
     bool setEnergyRating(const QList<TrackId>& trackIds, int rating);
     /// Energy of one track: {value 1..10, rated by DJ?}. value 0 = unknown.
     std::pair<double, bool> energyOf(TrackId trackId) const;
@@ -225,15 +225,15 @@ class AutoDJProcessor : public QObject {
     int pendingBridgeCount() const {
         return static_cast<int>(m_pendingBridges.size());
     }
-    /// Auto DJ 2.0 Phase 2: beatmatched transitions with a bass swap.
+    /// Auto DJ 2.0 plus Video Mixing, phase 2: beatmatched transitions with a bass swap.
     bool isBeatmatchEnabled() const;
     void setBeatmatchEnabled(bool enabled);
-    // Auto DJ 2.0 key morph: pitch a beatmatched incoming track by up to this
+    // Auto DJ 2.0 plus Video Mixing key morph: pitch a beatmatched incoming track by up to this
     // many semitones (0 = off) when its key clashes with the outgoing one.
     int keyMorphLimit() const;
     void setKeyMorphLimit(int semitones);
 
-    // Auto DJ 2.0 Live Assistant: the best next tracks for the deck that is
+    // Auto DJ 2.0 plus Video Mixing Live Assistant: the best next tracks for the deck that is
     // playing live (the one heard most), from the whole library.
     struct LiveSuggestions {
         QString deckGroup; // empty = nothing is playing
@@ -427,13 +427,13 @@ class AutoDJProcessor : public QObject {
     FadeNowLimit m_fadeNowLimit;
     bool m_lastAlignApplied = false;
     bool tryPhraseFadeNow();
-    // Auto DJ 2.0: false if the beat grid check found that one of the two
+    // Auto DJ 2.0 plus Video Mixing: false if the beat grid check found that one of the two
     // tracks has a grid that drifts off the beat (then a plain fade).
     bool gridsAllowBeatmatch(const TrackPointer& pFromTrack,
             const TrackPointer& pToTrack,
             QString* pWhy) const;
 
-    // Auto DJ 2.0 Phase 2: beatmatch + bass swap during a fade.
+    // Auto DJ 2.0 plus Video Mixing, phase 2: beatmatch + bass swap during a fade.
     void beginSmartTransition(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
     void afterToDeckStarted();
     void updateSmartTransition(double progress);

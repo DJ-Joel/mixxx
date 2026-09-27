@@ -92,7 +92,7 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     QString m_enableBtnTooltip;
     QString m_disableBtnTooltip;
 
-    // Auto DJ 2.0 Live Assistant window.
+    // Auto DJ 2.0 plus Video Mixing Live Assistant window.
     void showLiveAssistant();
     // force = recompute even if the live deck, track, tempo and key are
     // unchanged since the last time.
@@ -104,7 +104,7 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     QTimer* m_pLiveTimer = nullptr;
     QString m_liveState;
 
-    // Auto DJ 2.0 video mixing (created when first used).
+    // Auto DJ 2.0 plus Video Mixing (created when first used).
     VideoManager* videoManager();
     QPointer<VideoManager> m_pVideo;
     /// Video: move the picture earlier or later than the sound.

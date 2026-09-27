@@ -11,7 +11,7 @@
 
 class QNetworkReply;
 
-/// Auto DJ 2.0 Genre Scan: looks up each song on MusicBrainz, one request
+/// Auto DJ 2.0 plus Video Mixing Genre Scan: looks up each song on MusicBrainz, one request
 /// per second as MusicBrainz asks, and reports a suggested genre per song.
 /// Nothing is changed here; the DJ reviews the results and applies them.
 class GenreScanner : public QObject {

@@ -6,7 +6,7 @@
 #include <QWaitCondition>
 #include <thread>
 
-/// Auto DJ 2.0 video: decodes the picture of one deck's music video.
+/// Auto DJ 2.0 plus Video Mixing: decodes the picture of one deck's music video.
 ///
 /// The deck's audio is played by Mixxx as always; this only shows the frame
 /// that belongs to the deck's current position. The owner tells it where the

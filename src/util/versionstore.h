@@ -20,6 +20,10 @@ QString versionSuffix();
 /// Returns the application name. (e.g. "Mixxx")
 QString applicationName();
 
+/// "Auto DJ 2.0 plus Video Mixing": the name of this fork of Mixxx, shown
+/// in the window title and the About box.
+QString editionName();
+
 /// Returns the last change date
 QDateTime date();
 

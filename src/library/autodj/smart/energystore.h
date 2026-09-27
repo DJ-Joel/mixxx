@@ -8,7 +8,7 @@
 #include "analyzer/energycalculator.h"
 #include "track/trackid.h"
 
-/// Auto DJ 2.0: saves and loads energy scores.
+/// Auto DJ 2.0 plus Video Mixing: saves and loads energy scores.
 ///
 /// Two tables, both created on demand with CREATE TABLE IF NOT EXISTS and
 /// not part of Mixxx's versioned schema (so official schema updates cannot

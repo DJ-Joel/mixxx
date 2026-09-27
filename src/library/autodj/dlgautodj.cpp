@@ -47,7 +47,7 @@ const char* kPreferenceGroupName = "[Auto DJ]";
 // Video settings (picture timing, graphics card).
 const char* kVideoGroup = "[Video]";
 const char* kRepeatPlaylistPreference = "Requeue";
-// Auto DJ 2.0 Smart Fill options: 0 = build up, 1 = keep level, 2 = up and down.
+// Auto DJ 2.0 plus Video Mixing Smart Fill options: 0 = build up, 1 = keep level, 2 = up and down.
 const char* kSmartFillEnergyPreference = "SmartFillEnergy";
 const char* kSmartFillAvoidArtistPreference = "SmartFillAvoidSameArtist";
 // "" = whole library, "crate:<id>" or "playlist:<id>".
@@ -128,7 +128,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     setupActionButton(pushButtonShuffle, &DlgAutoDJ::shufflePlaylistButton, tr("Shuffle"));
     setupActionButton(pushButtonAddRandomTrack, &DlgAutoDJ::addRandomTrackButton, tr("Random"));
 
-    // Auto DJ 2.0 Smart Sort. Always shows text: skins have no icon for it.
+    // Auto DJ 2.0 plus Video Mixing Smart Sort. Always shows text: skins have no icon for it.
     pushButtonSmartSort->setText(tr("Smart Sort"));
     pushButtonSmartSort->setToolTip(tr(
             "Sort the Auto DJ queue for smooth mixing (key, BPM and energy).\n"
@@ -147,7 +147,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             this,
             &DlgAutoDJ::slotSmartSortFailed);
 
-    // Auto DJ 2.0 Phase 2: beatmatched mixes with a bass swap.
+    // Auto DJ 2.0 plus Video Mixing, phase 2: beatmatched mixes with a bass swap.
     // The skins do not style this new button, so on/off is shown in its
     // text instead of its colour.
     const auto showBeatmatchState = [this](bool on) {
@@ -199,7 +199,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
                 menu.exec(pushButtonBeatmatch->mapToGlobal(pos));
             });
 
-    // Auto DJ 2.0: skip most of the playing track to hear the next mix now.
+    // Auto DJ 2.0 plus Video Mixing: skip most of the playing track to hear the next mix now.
     pushButtonSkipToMix->setText(tr("Skip to Mix"));
     pushButtonSkipToMix->setToolTip(tr(
             "Jump the playing track to 10 seconds before the next mix,\n"
@@ -212,7 +212,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
                 m_pAutoDJProcessor->skipToMix();
             });
 
-    // Auto DJ 2.0 Smart Fill: add tracks that mix well after the last one.
+    // Auto DJ 2.0 plus Video Mixing Smart Fill: add tracks that mix well after the last one.
     pushButtonSmartFill->setText(tr("Smart Fill"));
     pushButtonSmartFill->setToolTip(tr(
             "Add tracks from your library to the end of the queue, each one\n"
@@ -311,7 +311,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     });
     pushButtonSmartFill->setMenu(pFillMenu);
 
-    // Auto DJ 2.0 Live Assistant: a small window that follows the deck
+    // Auto DJ 2.0 plus Video Mixing Live Assistant: a small window that follows the deck
     // playing live and lists the best next songs from the library.
     pushButtonLiveAssistant->setText(tr("Live Assistant"));
     pushButtonLiveAssistant->setToolTip(tr(
@@ -321,7 +321,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     connect(pushButtonLiveAssistant, &QPushButton::clicked, this, [this]() {
         showLiveAssistant();
     });
-    // Auto DJ 2.0 video mixing: the music videos of the decks on a screen
+    // Auto DJ 2.0 plus Video Mixing: the music videos of the decks on a screen
     // or projector, mixed like the sound.
 #ifdef __FFMPEG__
     pushButtonVideo->setText(tr("Video"));
@@ -402,7 +402,7 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             });
     m_pAutoDJProcessor->notePlayedLive(PlayerInfo::instance().getCurrentPlayingTrack());
 
-    // Auto DJ 2.0 energy rating: the DJ's own 1..10 score for the selected
+    // Auto DJ 2.0 plus Video Mixing energy rating: the DJ's own 1..10 score for the selected
     // tracks. It always wins over the measured energy.
     pushButtonEnergy->setText(tr("Energy"));
     pushButtonEnergy->setToolTip(tr(
@@ -630,7 +630,7 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
     pLayout->addWidget(pDetails);
     auto* pButtons = new QDialogButtonBox(QDialogButtonBox::Ok, &dialog);
     connect(pButtons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-    // Auto DJ 2.0 bridge tracks, chosen per gap: a gap with only one track
+    // Auto DJ 2.0 plus Video Mixing bridge tracks, chosen per gap: a gap with only one track
     // that bridges it gets that track; with several, the DJ picks one (the
     // best match is preselected); "no bridge" leaves the gap as it is.
     QList<std::pair<int, QComboBox*>> choices; // gap position, its choice box
@@ -978,7 +978,7 @@ void DlgAutoDJ::updateSelectionInfo() {
     if (!indices.isEmpty()) {
         label.append(mixxx::DurationBase::formatTime(duration.toDoubleSeconds()));
         label.append(QString(" (%1)").arg(indices.size()));
-        // Auto DJ 2.0: show the energy when exactly one track is selected.
+        // Auto DJ 2.0 plus Video Mixing: show the energy when exactly one track is selected.
         if (indices.size() == 1) {
             const auto [energy, manual] = m_pAutoDJProcessor->energyOf(
                     m_pAutoDJTableModel->getTrackId(indices.first()));

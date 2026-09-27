@@ -1,6 +1,6 @@
 # Mixxx
 
-> **This is the Auto DJ 2.0 fork of Mixxx** (branch `autodj-2`): a smarter Auto
+> **This is the Auto DJ 2.0 plus Video Mixing fork of Mixxx** (branch `autodj-2`): a smarter Auto
 > DJ (harmonic and energy-aware set planning, beatmatched and phrase-aligned
 > mixes, beat maps, key morph) and music video mixing. See
 > **[AUTODJ2.md](AUTODJ2.md)** for what was changed and why. It is an

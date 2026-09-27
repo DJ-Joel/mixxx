@@ -2828,7 +2828,7 @@ endif()
 
 # FFmpeg support
 # FFmpeg is multimedia library that can be found http://ffmpeg.org/
-# SWSCALE: Auto DJ 2.0 video mixing (scales the video pictures).
+# SWSCALE: Auto DJ 2.0 plus Video Mixing (scales the video pictures).
 find_package(FFmpeg COMPONENTS AVCODEC AVFORMAT AVUTIL SWRESAMPLE SWSCALE)
 default_option(FFMPEG "FFmpeg support (version 4.1.9 or later)" "FFmpeg_FOUND")
 if(FFMPEG)
@@ -2895,7 +2895,7 @@ if(FFMPEG)
   endif()
 
   target_sources(mixxx-lib PRIVATE src/sources/soundsourceffmpeg.cpp)
-  # Auto DJ 2.0 video mixing (music videos on a screen or projector).
+  # Auto DJ 2.0 plus Video Mixing (music videos on a screen or projector).
   target_sources(
     mixxx-lib
     PRIVATE
@@ -5574,8 +5574,8 @@ configure_file(
 )
 
 # Packaging
-# Auto DJ 2.0 fork: its own product, installed next to a normal Mixxx.
-set(CPACK_PACKAGE_NAME "Mixxx Auto DJ 2.0")
+# Auto DJ 2.0 plus Video Mixing fork: its own product, installed next to a normal Mixxx.
+set(CPACK_PACKAGE_NAME "Mixxx Auto DJ 2.0 plus Video Mixing")
 set(CPACK_PACKAGE_VENDOR "Mixxx Project")
 set(CPACK_PACKAGE_CONTACT "RJ Skerry-Ryan <rryan@mixxx.org>")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Digital DJ Application")
@@ -5583,8 +5583,8 @@ set(
   CPACK_PACKAGE_DESCRIPTION_FILE
   "${CMAKE_CURRENT_SOURCE_DIR}/packaging/CPackPackageDescription.txt"
 )
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Mixxx Auto DJ 2.0")
-set(CPACK_PACKAGE_EXECUTABLES "mixxx;Mixxx Auto DJ 2.0")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Mixxx Auto DJ 2.0 plus Video Mixing")
+set(CPACK_PACKAGE_EXECUTABLES "mixxx;Mixxx Auto DJ 2.0 plus Video Mixing")
 set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/res/images/mixxx_install_logo.bmp")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://www.mixxx.org/")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")

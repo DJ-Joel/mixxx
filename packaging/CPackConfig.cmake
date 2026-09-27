@@ -13,7 +13,7 @@ else()
 endif()
 set(
   CPACK_PACKAGE_FILE_NAME
-  "mixxx-autodj2-${PACKAGE_VERSION}-${CPACK_SYSTEM_PROCESSOR}"
+  "mixxx-autodj2-video-mixing-${PACKAGE_VERSION}-${CPACK_SYSTEM_PROCESSOR}"
 )
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "${CPACK_PACKAGE_FILE_NAME}-source")
 

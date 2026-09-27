@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-/// Auto DJ 2.0 video: one way of decoding a video file (Windows Media
+/// Auto DJ 2.0 plus Video Mixing: one way of decoding a video file (Windows Media
 /// Foundation, or FFmpeg). VideoDecoder drives it: open, read frames in
 /// order, seek, and turn a frame into a picture. Plain C++ (no Qt) so the
 /// Windows part can be checked on its own.

@@ -6,7 +6,7 @@
 #include <optional>
 #include <utility>
 
-/// Auto DJ 2.0 Genre Scan: the pure part (no network, no Mixxx types), so
+/// Auto DJ 2.0 plus Video Mixing Genre Scan: the pure part (no network, no Mixxx types), so
 /// it can be unit-tested. GenreScanner does the web requests.
 ///
 /// For each song: search MusicBrainz for the recording by artist + title,

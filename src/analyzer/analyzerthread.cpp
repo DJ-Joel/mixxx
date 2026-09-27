@@ -92,7 +92,7 @@ void AnalyzerThread::doRun() {
     std::unique_ptr<AnalysisDao> pAnalysisDao;
     // The thread-local database connection  must not be closed
     // before returning from this function.
-    // Auto DJ 2.0: always get a connection, because AnalyzerEnergy stores
+    // Auto DJ 2.0 plus Video Mixing: always get a connection, because AnalyzerEnergy stores
     // its results in the database too (not only the waveform analyzer).
     mixxx::DbConnectionPooler dbConnectionPooler(m_dbConnectionPool);
 

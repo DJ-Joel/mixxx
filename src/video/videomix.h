@@ -4,7 +4,7 @@
 #include <QSize>
 #include <QVector>
 
-/// Auto DJ 2.0 video: how the decks' pictures are mixed. Pure logic, so it
+/// Auto DJ 2.0 plus Video Mixing: how the decks' pictures are mixed. Pure logic, so it
 /// can be unit-tested.
 namespace videomix {
 

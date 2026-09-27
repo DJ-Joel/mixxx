@@ -3,7 +3,7 @@
 #include <optional>
 #include <vector>
 
-/// Auto DJ 2.0 Phase 2: line a transition up with musical phrases.
+/// Auto DJ 2.0 plus Video Mixing, phase 2: line a transition up with musical phrases.
 ///
 /// Assumes 4/4 time and that the first beat of the beat grid is a downbeat
 /// (bar 1). The tempo may bend (a beat map): all the maths counts beats. Phrases are counted in 8-bar blocks from

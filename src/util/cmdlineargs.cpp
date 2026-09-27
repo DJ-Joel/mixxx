@@ -10,6 +10,7 @@
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDir>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
 #include <QStyleFactory>
@@ -45,6 +46,23 @@ bool calcUseColorsAuto() {
             term.startsWith("vt100") || term.startsWith("rxvt") ||
             term.endsWith("color");
 }
+
+#if defined(Q_OS_WIN)
+// Auto DJ 2.0 plus Video Mixing: its own settings and library folder
+// (%LOCALAPPDATA%\Mixxx Auto DJ 2.0 plus Video Mixing), so it never touches
+// the settings and library of a normal Mixxx on the same PC. Installs made
+// before the rename used "Mixxx Auto DJ 2.0": that folder is kept in use
+// until the new one exists, so nothing is lost.
+QString autoDjSettingsPath() {
+    const QString base = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
+    const QString current = base + QStringLiteral("/Mixxx Auto DJ 2.0 plus Video Mixing/");
+    const QString earlier = base + QStringLiteral("/Mixxx Auto DJ 2.0/");
+    if (!QDir(current).exists() && QDir(earlier).exists()) {
+        return earlier;
+    }
+    return current;
+}
+#endif
 
 } // namespace
 
@@ -94,12 +112,8 @@ CmdlineArgs::CmdlineArgs()
                   QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
                           .append("/Library/Application Support/Mixxx"))
 #elif defined(Q_OS_WIN)
-          // Auto DJ 2.0 fork: its own settings and library folder
-          // (%LOCALAPPDATA%\Mixxx Auto DJ 2.0), so it never touches the
-          // settings and library of a normal Mixxx on the same PC.
-          m_settingsPath(
-                  QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
-                          .append("/Mixxx Auto DJ 2.0/"))
+          // Auto DJ 2.0 plus Video Mixing: see autoDjSettingsPath().
+          m_settingsPath(autoDjSettingsPath())
 #else
 
           // TODO(XXX) Trailing slash not needed anymore as we switches from String::append

@@ -118,7 +118,7 @@ DlgAnalysis::DlgAnalysis(WLibrary* parent,
             this,
             &DlgAnalysis::selectAll);
 
-    // Auto DJ 2.0 Genre Scan.
+    // Auto DJ 2.0 plus Video Mixing Genre Scan.
     pushButtonGenreScan->setToolTip(tr(
             "Look up genres on MusicBrainz (an online music database) for the\n"
             "selected songs, or for all songs in the list if none are selected.\n"

@@ -5,7 +5,7 @@
 
 #include "library/autodj/smart/phrasealign.h"
 
-/// Auto DJ 2.0: computes a 1..10 "energy" score for a whole track.
+/// Auto DJ 2.0 plus Video Mixing: computes a 1..10 "energy" score for a whole track.
 ///
 /// Pure C++ with no Mixxx or Qt dependencies, so it can be unit-tested with
 /// synthetic audio. AnalyzerEnergy feeds it the decoded samples.

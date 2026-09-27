@@ -2,7 +2,7 @@
 
 #include <optional>
 
-/// Auto DJ 2.0 Phase 2: the maths of a beatmatched transition.
+/// Auto DJ 2.0 plus Video Mixing, phase 2: the maths of a beatmatched transition.
 /// Pure functions, no Mixxx controls, so they can be unit-tested.
 namespace beatmatch {
 

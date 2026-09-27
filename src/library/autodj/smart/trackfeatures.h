@@ -5,7 +5,7 @@
 #include "track/track_decl.h"
 #include "track/trackid.h"
 
-/// A small, thread-safe snapshot of the track data that Auto DJ 2.0 needs
+/// A small, thread-safe snapshot of the track data that Auto DJ 2.0 plus Video Mixing needs
 /// for mixing decisions. It is copied out of `Track` on the GUI thread so
 /// that the scorer and sequencer can run on a worker thread without ever
 /// touching `Track` objects or the database.
