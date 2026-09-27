@@ -15,7 +15,9 @@ struct BridgeGap {
     int k = 0;              ///< the bridge goes right after the k-th track (from 1)
     QString fromText;       ///< the two tracks either side, for the DJ
     QString toText;
-    QList<TrackId> options; ///< best first; empty = nothing bridges this gap
+    /// Best first; empty = nothing bridges this gap. Each option is one
+    /// track, or two (played in that order) when no single track bridges.
+    QList<QList<TrackId>> options;
     QStringList optionTexts;
 };
 
@@ -31,9 +33,10 @@ struct SequenceResult {
     /// The whole running order, one entry per track, with clash notes and
     /// bridge-track suggestions.
     QStringList orderLines;
-    /// Best bridge per clash, as (k, track): play `track` right after the
-    /// k-th track of `order` (k counted from 1). Each track used once.
-    QList<std::pair<int, TrackId>> bestBridges;
+    /// Best bridge per clash, as (k, tracks): play `tracks` (one or two)
+    /// right after the k-th track of `order` (k counted from 1). Each track
+    /// used once.
+    QList<std::pair<int, QList<TrackId>>> bestBridges;
     /// Every clash with ALL its bridge options (up to kMaxBridgeOptions),
     /// so the DJ can choose. Options only exclude tracks already queued, so
     /// one track may be offered for two gaps (the DJ picks where it goes).

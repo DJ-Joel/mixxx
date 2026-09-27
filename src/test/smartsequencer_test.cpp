@@ -477,7 +477,8 @@ TEST(SmartSequencerTest, SuggestsBridgesForRemainingClashes) {
     ASSERT_EQ(1, r.clashCount);
     ASSERT_EQ(1, r.bestBridges.size());
     EXPECT_EQ(1, r.bestBridges[0].first);
-    EXPECT_EQ(TrackId(QVariant(10)), r.bestBridges[0].second);
+    ASSERT_EQ(1, r.bestBridges[0].second.size());
+    EXPECT_EQ(TrackId(QVariant(10)), r.bestBridges[0].second.first());
     EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("add:")));
 }
 
@@ -490,7 +491,7 @@ TEST(SmartSequencerTest, SaysSoWhenNoBridgeExists) {
     SmartSequencer seq{MixScorer()};
     const auto r = seq.solve(tracks, std::nullopt, 2000, library);
     EXPECT_TRUE(r.bestBridges.isEmpty());
-    EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("no single track")));
+    EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("no track (or pair of tracks)")));
 }
 
 TEST(SmartSequencerTest, ListsEveryBridgeOptionPerGap) {
@@ -788,4 +789,96 @@ TEST(BridgeFinderTest, LiveAssistantSkipsUsedSongsAndSameArtist) {
     list = finder.suggestNext(now, library, {played.id}, {}, 10, true);
     ASSERT_EQ(1, list.size());
     EXPECT_TRUE(list[0].track.id == fine.id);
+}
+
+TEST(SmartSequencerTest, TwoTrackBridgeForABigTempoJump) {
+    // 111.8 -> 125.0 BPM is 12% apart: no single track is within 5% of
+    // both, but 117 then 121.5 closes the gap in three smooth steps.
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 111.8),
+            makeTrack(2, 8, true, 125.0),
+    };
+    QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 117.0),
+            makeTrack(11, 8, true, 121.5),
+            makeTrack(12, 2, true, 118.0), // wrong key
+    };
+    library[0].displayName = QStringLiteral("A - First Step");
+    library[1].displayName = QStringLiteral("B - Second Step");
+    library[2].displayName = QStringLiteral("C - Clash");
+    SmartSequencer seq{MixScorer()};
+    // Keep the slow track first, so the jump is upwards.
+    const auto r = seq.solve(tracks, TrackId(QVariant(1)), 2000, library);
+    ASSERT_EQ(1, r.gaps.size());
+    ASSERT_FALSE(r.gaps[0].options.isEmpty());
+    const QList<TrackId> best = r.gaps[0].options[0];
+    ASSERT_EQ(2, best.size());
+    EXPECT_TRUE(best[0] == TrackId(QVariant(10)));
+    EXPECT_TRUE(best[1] == TrackId(QVariant(11)));
+    EXPECT_TRUE(r.gaps[0].optionTexts[0].contains(QStringLiteral("then")));
+    ASSERT_EQ(1, r.bestBridges.size());
+    EXPECT_EQ(2, r.bestBridges[0].second.size());
+}
+
+TEST(BridgeFinderTest, SingleBridgesComeBeforePairs) {
+    // A gap one track can bridge never gets a two-track bridge.
+    const TrackFeatures from = makeTrack(1, 8, false, 118.1);
+    const TrackFeatures to = makeTrack(2, 8, true, 129.5);
+    QVector<TrackFeatures> tracks = {from, to};
+    QVector<TrackFeatures> library = {
+            makeTrack(10, 8, false, 123.5),
+            makeTrack(11, 8, false, 121.0),
+            makeTrack(12, 8, true, 126.0),
+    };
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks, std::nullopt, 2000, library);
+    ASSERT_EQ(1, r.gaps.size());
+    for (const auto& option : r.gaps[0].options) {
+        EXPECT_EQ(1, option.size());
+    }
+}
+
+TEST(BridgeFinderTest, VideoBridgesBetweenVideos) {
+    TrackFeatures from = makeTrack(1, 8, false, 118.1);
+    TrackFeatures to = makeTrack(2, 8, true, 129.5);
+    from.isVideo = true;
+    to.isVideo = true;
+    TrackFeatures audio = makeTrack(10, 8, false, 123.5); // the smoother mix
+    TrackFeatures video = makeTrack(11, 8, true, 124.0);
+    video.isVideo = true;
+    const BridgeFinder finder{MixScorer()};
+    auto found = finder.find(from, to, {audio, video}, {}, {});
+    ASSERT_EQ(2, found.size());
+    EXPECT_TRUE(found[0].track.id == video.id);
+    // Between audio tracks the smoother mix wins as before.
+    from.isVideo = false;
+    to.isVideo = false;
+    found = finder.find(from, to, {audio, video}, {}, {});
+    ASSERT_EQ(2, found.size());
+    EXPECT_TRUE(found[0].track.id == audio.id);
+}
+
+TEST(BridgeFinderTest, DriftingGridIsNeverABridge) {
+    const TrackFeatures from = makeTrack(1, 8, false, 118.1);
+    const TrackFeatures to = makeTrack(2, 8, true, 129.5);
+    TrackFeatures drifting = makeTrack(10, 8, false, 123.5);
+    drifting.gridUnsteady = true;
+    const BridgeFinder finder{MixScorer()};
+    EXPECT_TRUE(finder.find(from, to, {drifting}, {}, {}).isEmpty());
+    EXPECT_TRUE(finder.findPairs(from, to, {drifting}, {}, {}).isEmpty());
+}
+
+TEST(SmartSequencerTest, ReportsTracksThatCannotBeBeatmatched) {
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 124.0),
+            makeTrack(2, 8, true, 124.5),
+    };
+    tracks[1].gridUnsteady = true;
+    tracks[1].displayName = QStringLiteral("Erasure - Chains of Love");
+    SmartSequencer seq{MixScorer()};
+    const auto r = seq.solve(tracks, std::nullopt, 2000, {});
+    EXPECT_EQ(0, r.clashCount); // key and tempo are fine
+    ASSERT_EQ(1, r.warnings.size());
+    EXPECT_TRUE(r.warnings[0].contains(QStringLiteral("no beatmatch")));
+    EXPECT_TRUE(r.warnings[0].contains(QStringLiteral("Erasure")));
 }

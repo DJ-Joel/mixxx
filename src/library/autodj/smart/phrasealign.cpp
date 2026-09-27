@@ -10,6 +10,80 @@ namespace {
 constexpr double kEpsSec = 0.005;
 } // namespace
 
+double Grid::beatTime(double n) const {
+    if (!isMap()) {
+        return firstBeatSec + n * beatSec;
+    }
+    const int last = static_cast<int>(beats.size()) - 1;
+    if (n <= 0.0) {
+        return beats[0] + n * (beats[1] - beats[0]);
+    }
+    if (n >= last) {
+        return beats[last] + (n - last) * (beats[last] - beats[last - 1]);
+    }
+    const int i = static_cast<int>(std::floor(n));
+    return beats[i] + (n - i) * (beats[i + 1] - beats[i]);
+}
+
+double Grid::beatAt(double sec) const {
+    if (!isMap()) {
+        return (sec - firstBeatSec) / beatSec;
+    }
+    const int last = static_cast<int>(beats.size()) - 1;
+    if (sec <= beats[0]) {
+        return (sec - beats[0]) / (beats[1] - beats[0]);
+    }
+    if (sec >= beats[last]) {
+        return last + (sec - beats[last]) / (beats[last] - beats[last - 1]);
+    }
+    const int i = static_cast<int>(
+                          std::upper_bound(beats.begin(), beats.end(), sec) - beats.begin()) -
+            1;
+    return i + (sec - beats[i]) / (beats[i + 1] - beats[i]);
+}
+
+double Grid::beatSecAt(double sec, int span) const {
+    if (!isMap()) {
+        return beatSec;
+    }
+    const int last = static_cast<int>(beats.size()) - 1;
+    span = std::max(1, span);
+    const int centre = static_cast<int>(std::lround(std::clamp(beatAt(sec), 0.0, 1.0 * last)));
+    const int to = std::min(last, std::max(centre + span, 2 * span));
+    const int from = std::max(0, to - 2 * span);
+    return (beats[to] - beats[from]) / (to - from);
+}
+
+Grid Grid::atSpeed(double rateRatio) const {
+    Grid g = *this;
+    if (!(rateRatio > 0.0)) {
+        return g;
+    }
+    g.firstBeatSec /= rateRatio;
+    g.beatSec /= rateRatio;
+    for (double& t : g.beats) {
+        t /= rateRatio;
+    }
+    return g;
+}
+
+Grid Grid::fromBeats(std::vector<double> beatTimes) {
+    std::sort(beatTimes.begin(), beatTimes.end());
+    // Two beats at the same moment would divide by zero.
+    beatTimes.erase(std::unique(beatTimes.begin(),
+                            beatTimes.end(),
+                            [](double a, double b) { return b - a < 1e-4; }),
+            beatTimes.end());
+    Grid g;
+    if (beatTimes.size() < 2) {
+        return g; // not valid
+    }
+    g.firstBeatSec = beatTimes.front();
+    g.beatSec = (beatTimes.back() - beatTimes.front()) / (beatTimes.size() - 1);
+    g.beats = std::move(beatTimes);
+    return g;
+}
+
 int barsForSeconds(double wantedSec, double beatSec) {
     if (!(beatSec > 0.0) || !(wantedSec > 0.0)) {
         return kBarsPerPhrase;
@@ -20,7 +94,7 @@ int barsForSeconds(double wantedSec, double beatSec) {
 }
 
 double entryBeat(const Grid& grid, double bodyStartSec, bool marked) {
-    const double bodyBeat = (bodyStartSec - grid.firstBeatSec) / grid.beatSec;
+    const double bodyBeat = grid.beatAt(bodyStartSec);
     if (marked) {
         // The DJ marked it by ear: trust it, just land on a beat.
         return std::max(0.0, std::round(bodyBeat));
@@ -40,8 +114,9 @@ double entryBeat(const Grid& grid, double bodyStartSec, bool marked) {
 }
 
 double bodyEndBarSec(const Grid& grid, double bodyEndSec) {
-    const double beat = (bodyEndSec - grid.firstBeatSec) / grid.beatSec;
-    const double bar = std::floor((beat + kEpsSec / grid.beatSec) / kBeatsPerBar) * kBeatsPerBar;
+    const double beat = grid.beatAt(bodyEndSec);
+    const double bar = std::floor((beat + kEpsSec / grid.beatSecAt(bodyEndSec)) / kBeatsPerBar) *
+            kBeatsPerBar;
     return grid.beatTime(std::max(0.0, bar));
 }
 
@@ -60,12 +135,13 @@ std::optional<Plan> plan(const Grid& from,
 
     // Outgoing track: the LAST phrase start from which a whole fade still
     // ends before the limit, so as much of the track as possible plays.
-    const double lastStartBeat = (fromLimitSec - from.firstBeatSec) / from.beatSec - fadeBeats;
+    const double lastStartBeat = from.beatAt(fromLimitSec) - fadeBeats;
     if (lastStartBeat < 0.0) {
         return std::nullopt;
     }
     const double phraseStartBeat =
-            std::floor((lastStartBeat + kEpsSec / from.beatSec) / kBeatsPerPhrase) *
+            std::floor((lastStartBeat + kEpsSec / from.beatSecAt(fromLimitSec)) /
+                               kBeatsPerPhrase) *
             kBeatsPerPhrase;
     const double fadeBegin = from.beatTime(phraseStartBeat);
     // Auto DJ re-plans on every tempo step (e.g. while a track glides back
@@ -74,7 +150,7 @@ std::optional<Plan> plan(const Grid& from,
     // the incoming track starts further in by the same time, so beats and
     // phrases still line up. More than that (the DJ jumped ahead): give up.
     const double lateSec = std::max(0.0, fromNowSec - fadeBegin);
-    if (lateSec > kLateStartBeats * from.beatSec + kEpsSec) {
+    if (lateSec > kLateStartBeats * from.beatSecAt(fadeBegin) + kEpsSec) {
         return std::nullopt; // that phrase has already passed
     }
 
@@ -82,7 +158,7 @@ std::optional<Plan> plan(const Grid& from,
     // Up to one beat early is fine: the first sound is often a few
     // milliseconds after the grid's first beat.
     double toPhraseBeat = std::ceil(
-            ((toEarliestSec - to.firstBeatSec) / to.beatSec - 1.0) / kBeatsPerPhrase);
+            (to.beatAt(toEarliestSec) - 1.0) / kBeatsPerPhrase);
     toPhraseBeat = std::max(0.0, toPhraseBeat) * kBeatsPerPhrase;
 
     if (toBodyStartSec >= 0.0) {
@@ -105,7 +181,7 @@ double fadeNowLimitSec(const Grid& from, double nowSec, int bars, double minLead
     if (!from.isValid()) {
         return -1.0;
     }
-    const double beat = (nowSec + minLeadSec - from.firstBeatSec) / from.beatSec;
+    const double beat = from.beatAt(nowSec + minLeadSec);
     const double phrase = std::max(0.0, std::ceil(beat / kBeatsPerPhrase)) * kBeatsPerPhrase;
     return from.beatTime(phrase + static_cast<double>(bars) * kBeatsPerBar);
 }
@@ -124,19 +200,38 @@ std::optional<Plan> planUnmatched(const Grid& from,
     if (!outgoing) {
         return std::nullopt;
     }
-    const double lateSec = std::max(0.0, fromNowSec - outgoing->fromFadeBeginSec);
-    const double fadeSec = outgoing->fromFadeEndSec - outgoing->fromFadeBeginSec;
+    Plan p = *outgoing;
     double toStart = toEarliestSec;
     if (toBodyStartSec >= 0.0) {
         const double entrySec = to.isValid()
                 ? to.beatTime(entryBeat(to, toBodyStartSec, toBodyMarked))
                 : toBodyStartSec;
         // The tempos differ, so the two beats must not play together: the
-        // new beat kicks in as the fade ENDS. During the fade the outgoing
-        // beat carries on under the end of the incoming intro.
-        toStart = std::max(toEarliestSec, entrySec - fadeSec);
+        // new beat kicks in as the fade ENDS, and during the fade only the
+        // incoming intro plays under the outgoing beat. If the intro is
+        // shorter than the fade (or there is none), the fade is shortened
+        // to fit it - down to a quick switch of kQuickSwitchBars - and still
+        // ends on the outgoing phrase ending.
+        // Counted in the outgoing track's own bars (they may bend).
+        const double introSec = entrySec - toEarliestSec;
+        const double fadeSec = p.fromFadeEndSec - p.fromFadeBeginSec;
+        if (introSec < fadeSec) {
+            const double endBeat = std::round(from.beatAt(p.fromFadeEndSec));
+            int fitBars = 0;
+            while (fitBars < p.bars &&
+                    p.fromFadeEndSec - from.beatTime(endBeat - (fitBars + 1) * kBeatsPerBar) <=
+                            introSec + 1e-6) {
+                ++fitBars;
+            }
+            const int bars = std::clamp(fitBars, kQuickSwitchBars, p.bars);
+            p.fromFadeBeginSec = from.beatTime(endBeat - bars * kBeatsPerBar);
+            p.bars = bars;
+        }
+        toStart = std::max(toEarliestSec, entrySec - (p.fromFadeEndSec - p.fromFadeBeginSec));
     }
-    Plan p = *outgoing;
+    // A fade that should have started a moment ago: the incoming track
+    // starts that much further in, so its beat still arrives on time.
+    const double lateSec = std::max(0.0, fromNowSec - p.fromFadeBeginSec);
     p.toStartSec = toStart + lateSec;
     return p;
 }

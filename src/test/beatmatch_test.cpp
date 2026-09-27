@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
 
 #include "library/autodj/smart/beatmatch.h"
@@ -83,4 +84,52 @@ TEST(BeatmatchTest, EqBlendsMidsAndHighsGradually) {
     // Out-of-range progress is clamped.
     EXPECT_DOUBLE_EQ(kEqBlendFloor, eqBlend(-1.0).toMidHigh);
     EXPECT_DOUBLE_EQ(kEqBlendFloor, eqBlend(2.0).fromMidHigh);
+}
+
+TEST(BeatmatchTest, BeatLockKeepsTheSameBeatLength) {
+    // Outgoing beat 0.48 s long right now, incoming beat 0.5 s at its own
+    // speed: play the incoming 0.5 / 0.48 faster. In line: no nudge.
+    double slip = 1.0;
+    EXPECT_NEAR(0.5 / 0.48, beatmatch::followRatio(100.25, 0.48, 7.25, 0.5, &slip), 1e-9);
+    EXPECT_NEAR(0.0, slip, 1e-9);
+    // A tiny slip is left alone.
+    EXPECT_NEAR(0.5 / 0.48, beatmatch::followRatio(100.255, 0.48, 7.25, 0.5), 1e-9);
+}
+
+TEST(BeatmatchTest, BeatLockPullsASlippedBeatBack) {
+    // The incoming beat is 0.1 beat late: a bit faster (2.5 %, capped at 2 %).
+    double slip = 0.0;
+    const double faster = beatmatch::followRatio(100.1, 0.5, 7.0, 0.5, &slip);
+    EXPECT_NEAR(0.1, slip, 1e-9);
+    EXPECT_NEAR(1.0 + beatmatch::kMaxLockNudge, faster, 1e-9);
+    // 0.04 beat early: 1 % slower.
+    EXPECT_NEAR(0.99, beatmatch::followRatio(100.96, 0.5, 8.0, 0.5), 1e-9);
+    // Beat numbers far apart do not matter, only where in the beat.
+    EXPECT_NEAR(0.99, beatmatch::followRatio(5.96, 0.5, 300.0, 0.5), 1e-9);
+    // Unknown beat lengths: leave the speed alone.
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::followRatio(1.0, 0.0, 1.0, 0.5));
+}
+
+TEST(BeatmatchTest, BeatLockFollowsADrummerWhoSpeedsUp) {
+    // Simulate 60 s of a mix, in 20 ms steps (how often Auto DJ updates).
+    // Outgoing: a live drummer, 120 BPM speeding up to about 126 BPM.
+    // Incoming: steady 122 BPM. Starts in line.
+    const auto fromBeatLen = [](double t) { return 0.5 / (1.0 + 0.0008 * t); };
+    double fromBeat = 0.0;
+    double toBeat = 0.0;
+    const double toLen = 60.0 / 122.0;
+    double worst = 0.0;
+    for (double t = 0.0; t < 60.0; t += 0.02) {
+        // The beat length Auto DJ measures is an average over a few beats,
+        // so it lags about 2 s behind.
+        const double measured = fromBeatLen(std::max(0.0, t - 2.0));
+        const double ratio = beatmatch::followRatio(fromBeat, measured, toBeat, toLen);
+        fromBeat += 0.02 / fromBeatLen(t);
+        toBeat += 0.02 * ratio / toLen;
+        double slip = fromBeat - toBeat;
+        slip -= std::round(slip);
+        worst = std::max(worst, std::fabs(slip));
+    }
+    // Never more than 2% of a beat apart (10 ms): nobody hears that.
+    EXPECT_LT(worst, 0.02);
 }

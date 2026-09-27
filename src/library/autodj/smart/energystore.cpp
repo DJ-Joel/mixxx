@@ -229,9 +229,12 @@ bool EnergyStore::saveAutoMarkers(
     return true;
 }
 
-bool EnergyStore::GridCheck::isFor(double gridBpm, double gridFirstBeatSec) const {
+bool EnergyStore::GridCheck::isFor(
+        double gridBpm, double gridFirstBeatSec, bool beatMap) const {
     // Tiny differences are rounding in the database, not a new grid.
-    return version == EnergyCalculator::kGridCheckVersion &&
+    return version ==
+            (beatMap ? EnergyCalculator::kGridCheckMapVersion
+                     : EnergyCalculator::kGridCheckVersion) &&
             std::fabs(bpm - gridBpm) < 0.001 &&
             std::fabs(firstBeatSec - gridFirstBeatSec) < 0.002;
 }

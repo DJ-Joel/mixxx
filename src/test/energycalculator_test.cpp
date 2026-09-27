@@ -232,14 +232,18 @@ std::vector<float> drumLoop(double seconds,
     return out;
 }
 
-double gridDrift(const std::vector<float>& mono, double firstBeatSec, double beatSec) {
+double gridDrift(const std::vector<float>& mono, const phrasealign::Grid& grid) {
     EnergyCalculator calc(kRate, 1);
     calc.process(mono.data(), static_cast<std::int64_t>(mono.size()));
     EnergyCalculator::Result r;
     if (!calc.finish(&r)) {
         return -2.0;
     }
-    return calc.gridDriftBeats(firstBeatSec, beatSec, r.bodyStartSec, r.bodyEndSec);
+    return calc.gridDriftBeats(grid, r.bodyStartSec, r.bodyEndSec);
+}
+
+double gridDrift(const std::vector<float>& mono, double firstBeatSec, double beatSec) {
+    return gridDrift(mono, phrasealign::Grid{firstBeatSec, beatSec});
 }
 
 } // namespace
@@ -286,6 +290,24 @@ TEST(EnergyCalculatorTest, DrummerWhoSlowsDownDrifts) {
             [](int n) { return n < 200 ? 0.3 + 0.5 * n : 100.3 + 0.505 * (n - 200); },
             false);
     EXPECT_GT(gridDrift(loop, 0.3, 0.5), EnergyCalculator::kGridMaxDriftBeats);
+}
+
+TEST(EnergyCalculatorTest, BeatMapThatBendsWithTheDrummerDoesNotDrift) {
+    // A live drummer: the tempo wanders slowly up and down by about 2%.
+    const auto beatAt = [](int n) {
+        return 0.3 + 0.5 * n + 1.6 * std::sin(n / 40.0);
+    };
+    const auto loop = drumLoop(200, beatAt, false);
+    // No steady grid fits...
+    EXPECT_GT(gridDrift(loop, 0.3, 0.5), EnergyCalculator::kGridMaxDriftBeats);
+    // ...but Mixxx's beat map, which follows every beat, does.
+    std::vector<double> beats;
+    for (int n = 0; beatAt(n) < 200.0; ++n) {
+        beats.push_back(beatAt(n));
+    }
+    const double drift = gridDrift(loop, phrasealign::Grid::fromBeats(beats));
+    EXPECT_GE(drift, 0.0);
+    EXPECT_LT(drift, EnergyCalculator::kGridMaxDriftBeats);
 }
 
 TEST(EnergyCalculatorTest, NoBeatMeansCannotTell) {

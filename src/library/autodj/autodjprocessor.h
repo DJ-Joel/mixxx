@@ -16,6 +16,7 @@
 #include "engine/channels/enginechannel.h"
 #include "library/playlisttablemodel.h"
 #include "library/autodj/smart/bridgefinder.h"
+#include "library/autodj/smart/phrasealign.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "preferences/usersettings.h"
 #include "track/track_decl.h"
@@ -261,7 +262,7 @@ class AutoDJProcessor : public QObject {
     }
     /// The DJ's choice of bridges, as (k, track): insert after the k-th
     /// track (from 1). Replaces the automatic best picks.
-    void choosePendingBridges(const QList<std::pair<int, TrackId>>& picks) {
+    void choosePendingBridges(const QList<std::pair<int, QList<TrackId>>>& picks) {
         m_pendingBridges = picks;
     }
     /// Smart Fill: appends up to `count` library tracks that each mix
@@ -414,7 +415,7 @@ class AutoDJProcessor : public QObject {
     bool m_smartSortRunning = false;
     // Best bridge per clash from the last Smart Sort: (k, track) = insert
     // after the k-th track of m_pendingBridgeOrder (counted from 1).
-    QList<std::pair<int, TrackId>> m_pendingBridges;
+    QList<std::pair<int, QList<TrackId>>> m_pendingBridges; // one or two tracks each
     QList<TrackId> m_pendingBridgeOrder;
     QList<BridgeGap> m_bridgeGaps;
     // Fade Now with beatmatch on: the mix waits for the next phrase of this
@@ -436,6 +437,7 @@ class AutoDJProcessor : public QObject {
     void beginSmartTransition(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
     void afterToDeckStarted();
     void updateSmartTransition(double progress);
+    void followBeats();
     void endSmartTransition(bool completed);
     void updateGlide(DeckAttributes* pDeck);
     struct SmartTransition {
@@ -455,6 +457,13 @@ class AutoDJProcessor : public QObject {
         double toQuantize = 0.0;
         double toKeylock = 0.0;
         int toKeyShift = 0; // key morph, semitones (0 = none)
+        // Beat lock: when a beat map bends the tempo, the incoming speed
+        // follows the outgoing beats all through the mix.
+        bool beatLock = false;
+        phrasealign::Grid fromGrid; // seconds at each track's own speed
+        phrasealign::Grid toGrid;
+        int lockUpdates = 0;
+        double worstSlipBeats = 0.0;
     };
     SmartTransition m_smart;
     struct Glide {

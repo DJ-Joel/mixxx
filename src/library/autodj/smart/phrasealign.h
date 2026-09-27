@@ -1,11 +1,12 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
 /// Auto DJ 2.0 Phase 2: line a transition up with musical phrases.
 ///
-/// Assumes 4/4 time, a constant tempo, and that the first beat of the beat
-/// grid is a downbeat (bar 1). Phrases are counted in 8-bar blocks from
+/// Assumes 4/4 time and that the first beat of the beat grid is a downbeat
+/// (bar 1). The tempo may bend (a beat map): all the maths counts beats. Phrases are counted in 8-bar blocks from
 /// there. If Mixxx's beat grid does not start on a real downbeat, phrases
 /// will be off by a whole number of beats; the DJ can move the grid.
 /// Pure maths, no Mixxx types, so it can be unit-tested.
@@ -16,19 +17,41 @@ constexpr int kBarsPerPhrase = 8;
 constexpr int kBeatsPerPhrase = kBeatsPerBar * kBarsPerPhrase; // 32
 /// How late a fade may still start (see plan()).
 constexpr int kLateStartBeats = kBeatsPerBar;
+/// Shortest fade of a mix that is not beatmatched: 1 bar (2 s at 120 BPM).
+constexpr int kQuickSwitchBars = 1;
 
-/// A constant-tempo beat grid, in seconds of the track (at its own speed).
+/// A beat grid, in seconds of the track (at its own speed, or real time at
+/// a deck's speed: see atSpeed()). Either steady (first beat + beat length)
+/// or a beat map that bends with the music (Mixxx's beat map, made when
+/// "Assume constant tempo" is off): the time of every beat. Beats are
+/// numbered from 0 (the first beat = start of bar 1); a fractional beat
+/// number is a point between two beats. Before the first and after the last
+/// beat of a map, the nearest beat length carries on.
 struct Grid {
     double firstBeatSec = 0.0; ///< first beat of the grid = start of bar 1
-    double beatSec = 0.0;      ///< length of one beat; 0 = no grid
+    double beatSec = 0.0;      ///< length of one beat (a map: the average); 0 = no grid
+    std::vector<double> beats; ///< a beat map: every beat (empty = steady grid)
 
     bool isValid() const {
         return beatSec > 0.0;
     }
-    /// Time of beat number `n` (0 = the first beat).
-    double beatTime(double n) const {
-        return firstBeatSec + n * beatSec;
+    /// True for a beat map (the tempo may bend).
+    bool isMap() const {
+        return beats.size() >= 2;
     }
+    /// Time of beat number `n` (0 = the first beat).
+    double beatTime(double n) const;
+    /// Beat number at time `sec` (fractional): the inverse of beatTime().
+    double beatAt(double sec) const;
+    /// Length of a beat around time `sec` (the average of the `span` beats
+    /// before and after it). For a steady grid simply beatSec.
+    double beatSecAt(double sec, int span = 4) const;
+    /// The same grid for a deck playing at `rateRatio` (1 = own speed),
+    /// in real seconds.
+    Grid atSpeed(double rateRatio) const;
+
+    /// A beat map from the time of every beat (sorted; at least 2).
+    static Grid fromBeats(std::vector<double> beatTimes);
 };
 
 /// What the transition should be.
@@ -92,8 +115,11 @@ double fadeNowLimitSec(const Grid& from, double nowSec, int bars, double minLead
 /// The outgoing fade is placed on its phrases the same way, but the
 /// incoming beat kicks in as the fade ends instead of at its middle, so the
 /// two different tempos never play their beats together. Its intro plays
-/// under the end of the outgoing track. `to` may have no grid (then the
-/// body start is used as it is).
+/// under the end of the outgoing track. When the intro is shorter than the
+/// fade, the fade is shortened to fit it (whole bars, at least
+/// kQuickSwitchBars): a quick switch on the outgoing phrase ending instead
+/// of two beats at different tempos on top of each other. `to` may have no
+/// grid (then the body start is used as it is).
 std::optional<Plan> planUnmatched(const Grid& from,
         const Grid& to,
         double fromNowSec,

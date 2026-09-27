@@ -32,6 +32,7 @@ TrackFeatures TrackFeatures::fromTrack(const TrackPointer& pTrack) {
     f.artist = pTrack->getArtist();
     f.title = pTrack->getTitle();
     f.genre = pTrack->getGenre();
+    f.isVideo = isVideoFile(pTrack->getLocation());
 
     const auto key = pTrack->getKey();
     if (key != mixxx::track::io::key::INVALID &&

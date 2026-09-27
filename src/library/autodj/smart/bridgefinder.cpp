@@ -288,7 +288,8 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
             if (!MixScorer::clashLabel(s).isEmpty()) {
                 continue;
             }
-            double cost = s.total + genreCost(current.genre, x.genre);
+            double cost = s.total + genreCost(current.genre, x.genre) +
+                    (x.gridUnsteady ? kUnsteadyGridCost : 0.0);
             if (sameKeyRun >= 2 && sameKey(current, x)) {
                 cost += kSameKeyRunCost;
             }
@@ -352,7 +353,8 @@ QList<NextSuggestion> BridgeFinder::suggestNext(const TrackFeatures& now,
             continue;
         }
         s.track = x;
-        s.cost = s.score.total + genreCost(now.genre, x.genre);
+        s.cost = s.score.total + genreCost(now.genre, x.genre) +
+                (x.gridUnsteady ? kUnsteadyGridCost : 0.0);
         found.append(s);
     }
     std::sort(found.begin(), found.end(), [](const NextSuggestion& a, const NextSuggestion& b) {
@@ -364,6 +366,36 @@ QList<NextSuggestion> BridgeFinder::suggestNext(const TrackFeatures& now,
     return found;
 }
 
+namespace {
+
+/// Can this library track be a bridge at all?
+bool usableBridge(const TrackFeatures& x,
+        const TrackFeatures& from,
+        const TrackFeatures& to,
+        const QSet<TrackId>& excludeIds,
+        const QSet<QString>& excludeNames) {
+    // Only tracks we can judge (key and BPM known) and beatmatch (a bridge
+    // with a drifting grid would not mix either).
+    return x.hasKey() && x.hasBpm() && !x.gridUnsteady && !excludeIds.contains(x.id) &&
+            !(x.id == from.id) && !(x.id == to.id) &&
+            (x.displayName.isEmpty() || !excludeNames.contains(BridgeFinder::nameKey(x)));
+}
+
+double videoCost(const TrackFeatures& x, const TrackFeatures& from, const TrackFeatures& to) {
+    return (from.isVideo || to.isVideo) && !x.isVideo ? BridgeFinder::kNoVideoBridgeCost : 0.0;
+}
+
+void sortAndCut(QList<BridgeSuggestion>* pFound, int maxResults) {
+    std::sort(pFound->begin(), pFound->end(), [](const BridgeSuggestion& a, const BridgeSuggestion& b) {
+        return a.cost < b.cost;
+    });
+    if (pFound->size() > maxResults) {
+        *pFound = pFound->mid(0, maxResults);
+    }
+}
+
+} // namespace
+
 QList<BridgeSuggestion> BridgeFinder::find(const TrackFeatures& from,
         const TrackFeatures& to,
         const QVector<TrackFeatures>& candidates,
@@ -372,10 +404,7 @@ QList<BridgeSuggestion> BridgeFinder::find(const TrackFeatures& from,
         int maxResults) const {
     QList<BridgeSuggestion> found;
     for (const TrackFeatures& x : candidates) {
-        // Only tracks we can judge: key and BPM must be known.
-        if (!x.hasKey() || !x.hasBpm() || excludeIds.contains(x.id) ||
-                x.id == from.id || x.id == to.id ||
-                (!x.displayName.isEmpty() && excludeNames.contains(nameKey(x)))) {
+        if (!usableBridge(x, from, to, excludeIds, excludeNames)) {
             continue;
         }
         BridgeSuggestion s;
@@ -387,14 +416,70 @@ QList<BridgeSuggestion> BridgeFinder::find(const TrackFeatures& from,
             continue;
         }
         s.track = x;
-        s.cost = s.in.total + s.out.total;
+        s.cost = s.in.total + s.out.total + videoCost(x, from, to);
         found.append(s);
     }
-    std::sort(found.begin(), found.end(), [](const BridgeSuggestion& a, const BridgeSuggestion& b) {
-        return a.cost < b.cost;
-    });
-    if (found.size() > maxResults) {
-        found = found.mid(0, maxResults);
+    sortAndCut(&found, maxResults);
+    return found;
+}
+
+QList<BridgeSuggestion> BridgeFinder::findPairs(const TrackFeatures& from,
+        const TrackFeatures& to,
+        const QVector<TrackFeatures>& candidates,
+        const QSet<TrackId>& excludeIds,
+        const QSet<QString>& excludeNames,
+        int maxResults) const {
+    // First steps (from -> x) and last steps (y -> to) that are smooth, the
+    // cheapest few of each; then the pairs whose middle step is smooth too.
+    constexpr int kMaxPerSide = 80;
+    QList<std::pair<double, const TrackFeatures*>> firsts;
+    QList<std::pair<double, const TrackFeatures*>> lasts;
+    for (const TrackFeatures& x : candidates) {
+        if (!usableBridge(x, from, to, excludeIds, excludeNames)) {
+            continue;
+        }
+        const MixScore in = m_scorer.score(from, x);
+        if (MixScorer::clashLabel(in).isEmpty()) {
+            firsts.append(std::make_pair(in.total + videoCost(x, from, to), &x));
+        }
+        const MixScore out = m_scorer.score(x, to);
+        if (MixScorer::clashLabel(out).isEmpty()) {
+            lasts.append(std::make_pair(out.total + videoCost(x, from, to), &x));
+        }
     }
+    const auto byCost = [](const auto& a, const auto& b) {
+        return a.first < b.first;
+    };
+    std::sort(firsts.begin(), firsts.end(), byCost);
+    std::sort(lasts.begin(), lasts.end(), byCost);
+    if (firsts.size() > kMaxPerSide) {
+        firsts = firsts.mid(0, kMaxPerSide);
+    }
+    if (lasts.size() > kMaxPerSide) {
+        lasts = lasts.mid(0, kMaxPerSide);
+    }
+    QList<BridgeSuggestion> found;
+    for (const auto& [firstCost, pFirst] : firsts) {
+        for (const auto& [lastCost, pSecond] : lasts) {
+            if (pFirst->id == pSecond->id ||
+                    (!pFirst->displayName.isEmpty() && !pSecond->displayName.isEmpty() &&
+                            nameKey(*pFirst) == nameKey(*pSecond))) {
+                continue; // not the same song twice
+            }
+            const MixScore mid = m_scorer.score(*pFirst, *pSecond);
+            if (!MixScorer::clashLabel(mid).isEmpty()) {
+                continue;
+            }
+            BridgeSuggestion s;
+            s.track = *pFirst;
+            s.second = *pSecond;
+            s.isPair = true;
+            s.in = m_scorer.score(from, *pFirst);
+            s.out = m_scorer.score(*pSecond, to);
+            s.cost = firstCost + mid.total + lastCost;
+            found.append(s);
+        }
+    }
+    sortAndCut(&found, maxResults);
     return found;
 }

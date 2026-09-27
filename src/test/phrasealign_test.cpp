@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cmath>
+#include <vector>
 
 #include "library/autodj/smart/phrasealign.h"
 
@@ -191,10 +192,42 @@ TEST(PhraseAlignTest, UnmatchedMixBringsTheBeatInAsTheFadeEnds) {
     const auto q = phrasealign::planUnmatched(k120, ns, 0.0, 200.0, 0.28, 8, -1.0);
     ASSERT_TRUE(q.has_value());
     EXPECT_DOUBLE_EQ(0.28, q->toStartSec);
-    // Short intro: never before the first sound.
+}
+
+TEST(PhraseAlignTest, UnmatchedMixWithAShortIntroIsAQuickSwitch) {
+    phrasealign::Grid ns;
+    ns.firstBeatSec = 0.272;
+    ns.beatSec = 60.0 / 111.68;
+    // Beat at about 6 s (a measured time, snapped to a bar), 0.28 s of
+    // silence first: the intro holds a few whole bars. The fade shrinks to
+    // that many bars, still ending on the outgoing phrase ending (192 s),
+    // and the new beat comes in as it ends.
     const auto r = phrasealign::planUnmatched(k120, ns, 0.0, 200.0, 0.28, 8, 6.0);
     ASSERT_TRUE(r.has_value());
-    EXPECT_DOUBLE_EQ(0.28, r->toStartSec);
+    const double entry = ns.beatTime(phrasealign::entryBeat(ns, 6.0, false));
+    const int introBars = static_cast<int>(std::floor((entry - 0.28) / 2.0));
+    EXPECT_GE(introBars, 2);
+    EXPECT_LT(introBars, 8);
+    EXPECT_EQ(introBars, r->bars);
+    EXPECT_DOUBLE_EQ(192.0 - 2.0 * introBars, r->fromFadeBeginSec);
+    EXPECT_DOUBLE_EQ(192.0, r->fromFadeEndSec);
+    EXPECT_NEAR(entry - 2.0 * introBars, r->toStartSec, 1e-9);
+    EXPECT_GE(r->toStartSec, 0.28);
+
+    // The beat starts at once (like the Depeche Mode edit): a quick switch
+    // of one bar at the phrase ending.
+    const auto s = phrasealign::planUnmatched(k120, ns, 0.0, 200.0, 0.1, 8, 0.14, true);
+    ASSERT_TRUE(s.has_value());
+    EXPECT_EQ(phrasealign::kQuickSwitchBars, s->bars);
+    EXPECT_DOUBLE_EQ(190.0, s->fromFadeBeginSec);
+    EXPECT_DOUBLE_EQ(192.0, s->fromFadeEndSec);
+    EXPECT_DOUBLE_EQ(0.1, s->toStartSec);
+
+    // A long intro still gets the whole fade.
+    const auto t = phrasealign::planUnmatched(k120, ns, 0.0, 200.0, 0.28, 8, 34.0);
+    ASSERT_TRUE(t.has_value());
+    EXPECT_EQ(8, t->bars);
+    EXPECT_DOUBLE_EQ(176.0, t->fromFadeBeginSec);
 }
 
 TEST(PhraseAlignTest, FadeNowWaitsForTheNextPhrase) {
@@ -207,4 +240,95 @@ TEST(PhraseAlignTest, FadeNowWaitsForTheNextPhrase) {
     EXPECT_DOUBLE_EQ(64.0, p->fromFadeBeginSec);
     // Pressed 1 s before a phrase: too close to cue, so the one after.
     EXPECT_DOUBLE_EQ(96.0, phrasealign::fadeNowLimitSec(k120, 63.0, 8));
+}
+
+namespace {
+// A drummer who speeds up: beat n is 0.5 s long at the start and gets
+// 0.1 ms shorter every beat (120 -> about 133 BPM over 200 beats).
+std::vector<double> bendingBeats(int count, double firstSec = 0.2) {
+    std::vector<double> t;
+    double now = firstSec;
+    for (int n = 0; n < count; ++n) {
+        t.push_back(now);
+        now += 0.5 - 0.0001 * n;
+    }
+    return t;
+}
+} // namespace
+
+TEST(PhraseAlignTest, BeatMapFindsItsBeats) {
+    const auto times = bendingBeats(400);
+    const Grid map = Grid::fromBeats(times);
+    ASSERT_TRUE(map.isValid());
+    ASSERT_TRUE(map.isMap());
+    EXPECT_DOUBLE_EQ(times[0], map.firstBeatSec);
+    for (int n : {0, 1, 32, 199, 399}) {
+        EXPECT_NEAR(times[n], map.beatTime(n), 1e-9);
+        EXPECT_NEAR(n, map.beatAt(times[n]), 1e-9);
+    }
+    // Half way between two beats, and past both ends (the nearest beat
+    // length carries on).
+    EXPECT_NEAR(100.5, map.beatAt(0.5 * (times[100] + times[101])), 1e-9);
+    EXPECT_NEAR(times[399] + (times[399] - times[398]), map.beatTime(400), 1e-9);
+    EXPECT_NEAR(-1.0, map.beatAt(times[0] - 0.5), 1e-9);
+    // The local beat length follows the drummer.
+    EXPECT_NEAR(0.5, map.beatSecAt(times[0]), 0.001);
+    EXPECT_NEAR(0.5 - 0.0001 * 300, map.beatSecAt(times[300]), 0.001);
+    // At another speed, everything is scaled in time.
+    const Grid fast = map.atSpeed(1.25);
+    EXPECT_NEAR(times[64] / 1.25, fast.beatTime(64), 1e-9);
+}
+
+TEST(PhraseAlignTest, SteadyBeatMapPlansLikeASteadyGrid) {
+    std::vector<double> times;
+    for (int n = 0; n < 600; ++n) {
+        times.push_back(0.3 + 0.5 * n);
+    }
+    const Grid map = Grid::fromBeats(times);
+    const Grid steady{0.3, 0.5};
+    const auto a = phrasealign::plan(steady, steady, 10.0, 200.0, 0.4, 8, 30.0, true);
+    const auto b = phrasealign::plan(map, map, 10.0, 200.0, 0.4, 8, 30.0, true);
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    EXPECT_NEAR(a->fromFadeBeginSec, b->fromFadeBeginSec, 1e-9);
+    EXPECT_NEAR(a->fromFadeEndSec, b->fromFadeEndSec, 1e-9);
+    EXPECT_NEAR(a->toStartSec, b->toStartSec, 1e-9);
+}
+
+TEST(PhraseAlignTest, BendingTrackFadesOnItsOwnPhrases) {
+    const auto times = bendingBeats(400);
+    const Grid from = Grid::fromBeats(times);
+    // Must be over by beat 300: the last whole 8-bar fade starts on beat
+    // 256 (a phrase start) and ends on beat 288 - exactly on the beats of
+    // the map, not where a steady grid would put them.
+    const auto p = phrasealign::plan(from, k120, 0.0, times[300], 0.0, 8);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_NEAR(times[256], p->fromFadeBeginSec, 1e-9);
+    EXPECT_NEAR(times[288], p->fromFadeEndSec, 1e-9);
+    // The incoming track's intro is counted in its own bending beats too.
+    const auto q = phrasealign::plan(k120, from, 0.0, 200.0, times[40], 8);
+    ASSERT_TRUE(q.has_value());
+    EXPECT_NEAR(times[64], q->toStartSec, 1e-9);
+    // Fade Now: the next phrase start of the map.
+    const double limit = phrasealign::fadeNowLimitSec(from, times[70], 8);
+    EXPECT_NEAR(times[96 + 32], limit, 1e-9);
+    // A marker between beats snaps to the nearest beat of the map.
+    EXPECT_NEAR(150.0, phrasealign::entryBeat(from, times[150] + 0.1, true), 1e-9);
+}
+
+TEST(PhraseAlignTest, QuickSwitchCountsBendingBars) {
+    const auto times = bendingBeats(400);
+    const Grid from = Grid::fromBeats(times);
+    const Grid to{0.0, 0.4};
+    // The incoming beat starts after an intro of just over 2 bars of the
+    // outgoing track: a 2-bar switch, on the outgoing beats.
+    const auto p = phrasealign::plan(from, from, 0.0, times[300], 0.0, 8);
+    ASSERT_TRUE(p.has_value());
+    const double twoBars = times[288] - times[280];
+    const auto s = phrasealign::planUnmatched(
+            from, to, 0.0, times[300], 0.0, 8, twoBars + 0.05, true);
+    ASSERT_TRUE(s.has_value());
+    EXPECT_EQ(2, s->bars);
+    EXPECT_NEAR(times[280], s->fromFadeBeginSec, 1e-9);
+    EXPECT_NEAR(times[288], s->fromFadeEndSec, 1e-9);
 }

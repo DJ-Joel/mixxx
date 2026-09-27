@@ -8,11 +8,14 @@
 
 #include "library/autodj/smart/mixscorer.h"
 
-/// A library track that could be played between two tracks that clash.
+/// A library track (or two) that could be played between two tracks that
+/// clash.
 struct BridgeSuggestion {
-    TrackFeatures track;
+    TrackFeatures track;  ///< the bridge (the first of two for a pair)
+    TrackFeatures second; ///< the second track of a two-track bridge
+    bool isPair = false;
     MixScore in;  ///< from -> bridge
-    MixScore out; ///< bridge -> to
+    MixScore out; ///< bridge -> to (for a pair: second -> to)
     double cost = 0.0;
 };
 
@@ -39,6 +42,24 @@ class BridgeFinder {
             const QSet<TrackId>& excludeIds,
             const QSet<QString>& excludeNames,
             int maxResults = 3) const;
+
+    /// Two-track bridges, for gaps no single track can bridge (e.g. a tempo
+    /// jump of more than about 10%: each step may be at most 5%). Every one
+    /// of the three mixes (from -> first -> second -> to) must be smooth.
+    QList<BridgeSuggestion> findPairs(const TrackFeatures& from,
+            const TrackFeatures& to,
+            const QVector<TrackFeatures>& candidates,
+            const QSet<TrackId>& excludeIds,
+            const QSet<QString>& excludeNames,
+            int maxResults = 3) const;
+
+    /// Extra cost for a bridge that is not a music video next to one that
+    /// is (in a video set the screen would show cover art instead).
+    static constexpr double kNoVideoBridgeCost = 2.0;
+    /// Extra cost for a track whose beat grid drifts (cannot be beatmatched:
+    /// a quick switch instead of a mix) in Smart Fill and the Live
+    /// Assistant. Such tracks are never suggested as bridges.
+    static constexpr double kUnsteadyGridCost = 1.5;
 
     /// Smart Fill: a chain of up to `count` library tracks to play after
     /// `last`, each the smoothest next mix from the one before (no key or

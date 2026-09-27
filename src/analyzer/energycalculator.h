@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "library/autodj/smart/phrasealign.h"
+
 /// Auto DJ 2.0: computes a 1..10 "energy" score for a whole track.
 ///
 /// Pure C++ with no Mixxx or Qt dependencies, so it can be unit-tested with
@@ -60,8 +62,9 @@ class EnergyCalculator {
     /// Returns false if there was too little non-silent audio (< 5 s).
     bool finish(Result* pResult) const;
 
-    /// Beat grid check: does a steady beat grid (first beat + beat length,
-    /// seconds) stay on the music from the start of the body to its end?
+    /// Beat grid check: does the beat grid (steady, or a beat map that
+    /// bends with the music; seconds of the track) stay on the music from
+    /// the start of the body to its end?
     ///
     /// For the bass hits and for the treble hits (hats, snares) separately,
     /// it finds where in the beat the hits fall (the "phase") in 16-beat
@@ -74,8 +77,7 @@ class EnergyCalculator {
     /// beat off somewhere), using whichever band shows the beat most
     /// clearly. -1 = cannot tell (body too short or no clear beat), which
     /// counts as OK. Call after process().
-    double gridDriftBeats(double firstBeatSec,
-            double beatSec,
+    double gridDriftBeats(const phrasealign::Grid& grid,
             double bodyStartSec,
             double bodyEndSec) const;
 
@@ -89,6 +91,11 @@ class EnergyCalculator {
     ///     DJ's library (89 -> 99 flagged, steady tracks failed), so
     /// v3: back to counting every hit.
     static constexpr int kGridCheckVersion = 3;
+    /// The same check made on a beat map (a tempo that bends, followed beat
+    /// by beat). Its own number, so a track that gets a beat map is checked
+    /// again even if its BPM and first beat stay the same, while the checks
+    /// of steady grids stay valid.
+    static constexpr int kGridCheckMapVersion = 4;
 
     /// Maps the three 0..1 parts to the 1..10 score.
     static double combine(double loudness01, double brightness01, double busyness01);

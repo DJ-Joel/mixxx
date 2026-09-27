@@ -80,12 +80,44 @@ void writeControl(const ConfigKey& key, double value) {
 // Auto DJ 2.0: every library track with a known key and BPM whose file
 // still exists, as bridge candidates. Read straight from the database so
 // no Track objects are loaded for the whole library.
+// The beat grid checks, for marking tracks Auto DJ cannot beatmatch.
+struct GridCheckRow {
+    double bpm = 0.0;
+    double driftBeats = -1.0;
+};
+QHash<TrackId, GridCheckRow> loadGridChecks(const QSqlDatabase& db) {
+    QHash<TrackId, GridCheckRow> rows;
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "SELECT track_id, bpm, drift_beats FROM autodj_grid_check "
+            "WHERE version = :version OR version = :mapVersion"));
+    query.bindValue(QStringLiteral(":version"), EnergyCalculator::kGridCheckVersion);
+    query.bindValue(QStringLiteral(":mapVersion"), EnergyCalculator::kGridCheckMapVersion);
+    if (query.exec()) {
+        while (query.next()) {
+            GridCheckRow row;
+            row.bpm = query.value(1).toDouble();
+            row.driftBeats = query.value(2).isNull() ? -1.0 : query.value(2).toDouble();
+            rows.insert(TrackId(query.value(0)), row);
+        }
+    }
+    return rows;
+}
+
+// A grid check only counts for the grid it was made on (same tempo).
+void markGrid(TrackFeatures* pTrack, const QHash<TrackId, GridCheckRow>& checks) {
+    const auto it = checks.constFind(pTrack->id);
+    pTrack->gridUnsteady = it != checks.constEnd() &&
+            std::fabs(it->bpm - pTrack->bpm) < 0.01 &&
+            it->driftBeats > EnergyCalculator::kGridMaxDriftBeats;
+}
+
 QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
     QVector<TrackFeatures> candidates;
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral(
                 "SELECT library.id, library.bpm, library.key_id, "
-                "library.artist, library.title, library.genre "
+                "library.artist, library.title, library.genre, track_locations.location "
                 "FROM library JOIN track_locations "
                 "ON track_locations.id = library.location "
                 "WHERE library.mixxx_deleted = 0 "
@@ -115,14 +147,17 @@ QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
         f.artist = artist;
         f.title = title;
         f.genre = query.value(5).toString().trimmed();
+        f.isVideo = TrackFeatures::isVideoFile(query.value(6).toString());
         candidates.append(f);
         ids.append(f.id);
     }
     const QHash<TrackId, EnergyStore::Value> energies = EnergyStore::loadEnergies(db, ids);
+    const QHash<TrackId, GridCheckRow> gridChecks = loadGridChecks(db);
     for (TrackFeatures& f : candidates) {
         const EnergyStore::Value value = energies.value(f.id);
         f.energy = value.energy;
         f.energyIsManual = value.manual;
+        markGrid(&f, gridChecks);
     }
     return candidates;
 }
@@ -391,10 +426,14 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
         }
         const QHash<TrackId, EnergyStore::Value> energies = EnergyStore::loadEnergies(
                 m_pTrackCollectionManager->internalCollection()->database(), ids);
+        // And which tracks cannot be beatmatched (beat grid check).
+        const QHash<TrackId, GridCheckRow> gridChecks =
+                loadGridChecks(m_pTrackCollectionManager->internalCollection()->database());
         for (Row& row : rows) {
             const EnergyStore::Value value = energies.value(row.id);
             row.features.energy = value.energy;
             row.features.energyIsManual = value.manual;
+            markGrid(&row.features, gridChecks);
         }
     }
 
@@ -588,6 +627,18 @@ int AutoDJProcessor::currentKeyShift(DeckAttributes* pDeck) const {
     return pTrack && pTrack->getId() == shift.trackId ? shift.semitones : 0;
 }
 
+namespace {
+// Where a deck is, in seconds of its track at its own speed (-1 = unknown).
+double trackSecond(const DeckAttributes* pDeck) {
+    const mixxx::audio::SampleRate sampleRate = pDeck->sampleRate();
+    const mixxx::audio::FramePos end = pDeck->trackEndPosition();
+    if (!sampleRate.isValid() || !end.isValid()) {
+        return -1.0;
+    }
+    return pDeck->playPosition() * end.value() / sampleRate;
+}
+} // namespace
+
 void AutoDJProcessor::beginSmartTransition(
         DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
     m_fadeNowLimit = FadeNowLimit(); // the mix has started
@@ -614,7 +665,13 @@ void AutoDJProcessor::beginSmartTransition(
     const TrackPointer pToTrack = pToDeck->getLoadedTrack();
     const ConfigKey fromBpmKey(pFromDeck->group, QStringLiteral("bpm"));
     const double fromBpm = readControl(fromBpmKey); // includes its tempo change
-    const double toTrackBpm = pToTrack ? pToTrack->getBpm() : 0.0;
+    // The incoming tempo where it starts: with a beat map that bends, this
+    // is not the same as its average BPM.
+    const phrasealign::Grid toGrid = AnalyzerEnergy::beatGrid(pToTrack);
+    const double toStartSec = trackSecond(pToDeck);
+    const double toTrackBpm = toGrid.isValid() && toStartSec >= 0.0
+            ? 60.0 / toGrid.beatSecAt(toStartSec)
+            : (pToTrack ? pToTrack->getBpm() : 0.0);
     std::optional<double> ratio;
     if (!std::isnan(fromBpm)) {
         ratio = beatmatch::matchRatio(fromBpm, toTrackBpm, kBeatmatchTolerancePct);
@@ -642,6 +699,22 @@ void AutoDJProcessor::beginSmartTransition(
         m_smart.toRatio = *ratio;
         kLogger.info() << "Beatmatch" << pToDeck->group << "at ratio" << *ratio
                        << "(" << toTrackBpm << "->" << fromBpm << "BPM)";
+        // Beat lock: a beat map means the tempo bends (a live drummer), so
+        // one fixed speed would slowly drift off the beat. Only 1:1 (not
+        // half or double time).
+        m_smart.fromGrid = AnalyzerEnergy::beatGrid(pFromDeck->getLoadedTrack());
+        m_smart.toGrid = toGrid;
+        const bool oneToOne = fromBpm > 0.0 &&
+                std::fabs(*ratio * toTrackBpm / fromBpm - 1.0) < 0.1;
+        m_smart.beatLock = oneToOne && m_smart.fromGrid.isValid() && m_smart.toGrid.isValid() &&
+                (m_smart.fromGrid.isMap() || m_smart.toGrid.isMap());
+        if (m_smart.beatLock) {
+            kLogger.info() << "Beat lock" << pToDeck->group
+                           << ": a beat map bends the tempo"
+                           << (m_smart.fromGrid.isMap() ? "(outgoing)" : "")
+                           << (m_smart.toGrid.isMap() ? "(incoming)" : "")
+                           << ", the incoming speed follows the outgoing beats";
+        }
         // Key morph: if the keys clash, pitch the incoming track a little
         // (key lock is on, so its tempo is not touched) so the two fit. It
         // keeps that key to the end of the track: gliding the pitch back
@@ -693,6 +766,7 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     if (!m_smart.active) {
         return;
     }
+    followBeats();
     const beatmatch::BassState bass = beatmatch::bassSwap(progress);
     if (!std::isnan(m_smart.fromLowKill)) {
         writeControl(eqKillKey(m_smart.pFrom->group), bass.fromLowKilled ? 1.0 : 0.0);
@@ -729,6 +803,11 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
     writeControl(eqGainKey(m_smart.pFrom->group, 3), m_smart.fromHigh);
     writeControl(eqGainKey(m_smart.pTo->group, 2), m_smart.toMid);
     writeControl(eqGainKey(m_smart.pTo->group, 3), m_smart.toHigh);
+    if (m_smart.beatLock) {
+        kLogger.info() << "Beat lock" << m_smart.pTo->group << "done: ended at ratio"
+                       << m_smart.toRatio << ", largest slip"
+                       << m_smart.worstSlipBeats << "beats";
+    }
     if (m_smart.beatmatched) {
         writeControl(ConfigKey(m_smart.pTo->group, QStringLiteral("quantize")),
                 m_smart.toQuantize);
@@ -742,6 +821,34 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
         resetDeckTempo(m_smart.pFrom, true);
     }
     m_smart = SmartTransition();
+}
+
+void AutoDJProcessor::followBeats() {
+    if (!m_smart.beatLock || !m_smart.pFrom->isPlaying() || !m_smart.pTo->isPlaying()) {
+        return;
+    }
+    const double fromSec = trackSecond(m_smart.pFrom);
+    const double toSec = trackSecond(m_smart.pTo);
+    const double fromRatio = m_smart.pFrom->rateRatio();
+    if (fromSec < 0.0 || toSec < 0.0 || !(fromRatio > 0.0)) {
+        return;
+    }
+    double slip = 0.0;
+    const double ratio = beatmatch::followRatio(m_smart.fromGrid.beatAt(fromSec),
+            m_smart.fromGrid.beatSecAt(fromSec) / fromRatio,
+            m_smart.toGrid.beatAt(toSec),
+            m_smart.toGrid.beatSecAt(toSec),
+            &slip);
+    // The first second is the phase sync settling in; not counted.
+    if (++m_smart.lockUpdates > 50) {
+        m_smart.worstSlipBeats = std::max(m_smart.worstSlipBeats, std::fabs(slip));
+    }
+    // Safety: never more than 10% off the track's own speed.
+    if (std::fabs(ratio - 1.0) > 0.1 || std::fabs(ratio - m_smart.toRatio) < 1e-5) {
+        return;
+    }
+    ControlObject::set(ConfigKey(m_smart.pTo->group, QStringLiteral("rate_ratio")), ratio);
+    m_smart.toRatio = ratio; // the glide back starts from here
 }
 
 void AutoDJProcessor::startGlide(DeckAttributes* pDeck, double startRatio) {
@@ -832,25 +939,19 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     // still placed on its phrases and the incoming intro is still skipped,
     // but the new beat comes in as the fade ends (no clashing beats).
     const double fromRatio = pFromDeck->rateRatio();
+    const double toRatio = pToDeck->rateRatio();
     // A grid that drifts off the beat counts as "not matched" too.
     QString gridWhy;
     const bool gridsOk = gridsAllowBeatmatch(pFromTrack, pToTrack, &gridWhy);
-    const bool matched = gridsOk &&
-            beatmatch::matchRatio(fromBpm * fromRatio, toBpm, kBeatmatchTolerancePct)
-                    .has_value();
-    const QString notMatchedWhy = gridsOk
-            ? QStringLiteral("%1 vs %2 BPM")
-                      .arg(fromBpm * fromRatio, 0, 'f', 1)
-                      .arg(toBpm, 0, 'f', 1)
-            : gridWhy;
     // Seconds here are real time at each deck's current speed, the same
-    // convention as the rest of calculateTransition.
-    phrasealign::Grid from;
-    from.firstBeatSec = framePositionToSeconds(pFromBeats->firstBeat(), pFromDeck);
-    from.beatSec = 60.0 / (fromBpm * fromRatio);
-    phrasealign::Grid to;
-    to.firstBeatSec = framePositionToSeconds(pToBeats->firstBeat(), pToDeck);
-    to.beatSec = 60.0 / (toBpm * pToDeck->rateRatio());
+    // convention as the rest of calculateTransition. A beat map (the tempo
+    // bends with the music) gives the time of every beat.
+    const phrasealign::Grid from = AnalyzerEnergy::beatGrid(pFromTrack).atSpeed(fromRatio);
+    const phrasealign::Grid to = AnalyzerEnergy::beatGrid(pToTrack).atSpeed(toRatio);
+    if (!from.isValid() || !to.isValid()) {
+        logOnce(QStringLiteral(" nogrid"), QStringLiteral("skipped, a track has no beat grid"));
+        return;
+    }
 
     // Keep the length the transition mode chose (intro/outro or the
     // seconds setting), rounded to whole 8-bar phrases.
@@ -868,7 +969,6 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
             wantedSec = m_transitionTime;
         }
     }
-    const int bars = phrasealign::barsForSeconds(wantedSec, from.beatSec);
 
     // Where each track's "body" is (from the energy analysis): the fade must
     // be over before the outgoing track starts fading out on its own, and a
@@ -927,6 +1027,17 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     const double toEarliestSec = toBodyStartSec >= 0.0
             ? std::max(0.0, getIntroStartSecond(pToDeck))
             : pToDeck->startPos;
+    const int bars = phrasealign::barsForSeconds(wantedSec, from.beatSecAt(fromLimitSec));
+    // Beatmatched only within the 5% rule, compared at the tempo each track
+    // has where the mix happens (a beat map may bend away from its average).
+    const double fromMixBpm = 60.0 / from.beatSecAt(fromLimitSec);
+    const double toMixBpm = 60.0 /
+            (to.beatSecAt(toBodyStartSec >= 0.0 ? toBodyStartSec : toEarliestSec) * toRatio);
+    const bool matched = gridsOk &&
+            beatmatch::matchRatio(fromMixBpm, toMixBpm, kBeatmatchTolerancePct).has_value();
+    const QString notMatchedWhy = gridsOk
+            ? QStringLiteral("%1 vs %2 BPM").arg(fromMixBpm, 0, 'f', 1).arg(toMixBpm, 0, 'f', 1)
+            : gridWhy;
     const auto plan = matched
             ? phrasealign::plan(from,
                       to,
@@ -962,7 +1073,7 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                                       .arg(notMatchedWhy)) +
                     QStringLiteral("%1 bars, fade %2 -> %3 s (limit %4 s), incoming starts at "
                                    "%5 s (beat at %6 s, %7)")
-                            .arg(bars)
+                            .arg(plan->bars) // an unmatched mix may be a quick switch
                     .arg(plan->fromFadeBeginSec)
                     .arg(plan->fromFadeEndSec)
                     .arg(fromLimitSec)
@@ -1004,7 +1115,7 @@ bool AutoDJProcessor::gridsAllowBeatmatch(const TrackPointer& pFromTrack,
         AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec);
         const auto check = EnergyStore::loadGridCheck(db, pTrack->getId());
         // Not checked yet, or the DJ changed the grid since: trust it.
-        if (check && check->isFor(bpm, firstBeatSec) &&
+        if (check && check->isFor(bpm, firstBeatSec, AnalyzerEnergy::beatGrid(pTrack).isMap()) &&
                 check->driftBeats > EnergyCalculator::kGridMaxDriftBeats) {
             if (pWhy) {
                 *pWhy = QStringLiteral("the beat grid of \"%1\" drifts %2 beats off the music")
@@ -1049,12 +1160,13 @@ bool AutoDJProcessor::tryPhraseFadeNow() {
         return false;
     }
     const double ratio = pFromDeck->rateRatio();
-    phrasealign::Grid grid;
-    grid.firstBeatSec = framePositionToSeconds(pBeats->firstBeat(), pFromDeck);
-    grid.beatSec = 60.0 / (bpm * ratio);
+    const phrasealign::Grid grid = AnalyzerEnergy::beatGrid(pFromTrack).atSpeed(ratio);
+    if (!grid.isValid()) {
+        return false;
+    }
     const double nowSec = pFromDeck->playPosition() * duration;
     const double wantedSec = m_transitionTime > 0.0 ? m_transitionTime : 16.0;
-    const int bars = phrasealign::barsForSeconds(wantedSec, grid.beatSec);
+    const int bars = phrasealign::barsForSeconds(wantedSec, grid.beatSecAt(nowSec));
     const double limitSec = phrasealign::fadeNowLimitSec(grid, nowSec, bars);
     if (limitSec < 0.0) {
         return false;
@@ -1290,7 +1402,7 @@ std::pair<double, bool> AutoDJProcessor::energyOf(TrackId trackId) const {
 }
 
 int AutoDJProcessor::insertPendingBridges() {
-    const QList<std::pair<int, TrackId>> bridges = m_pendingBridges;
+    const QList<std::pair<int, QList<TrackId>>> bridges = m_pendingBridges;
     m_pendingBridges.clear();
     if (bridges.isEmpty() || !m_pTrackCollectionManager ||
             !m_pTrackCollectionManager->internalCollection()) {
@@ -1316,8 +1428,13 @@ int AutoDJProcessor::insertPendingBridges() {
         VERIFY_OR_DEBUG_ASSERT(k >= 1 && k <= current.size()) {
             continue;
         }
-        if (playlistDao.insertTrackIntoPlaylist(it->second, playlistId, current[k - 1].second + 1)) {
-            ++added;
+        // One or two tracks: inserting the last one first at the same
+        // position leaves them in their order.
+        const QList<TrackId>& ids = it->second;
+        for (auto id = ids.crbegin(); id != ids.crend(); ++id) {
+            if (playlistDao.insertTrackIntoPlaylist(*id, playlistId, current[k - 1].second + 1)) {
+                ++added;
+            }
         }
     }
     m_pAutoDJTableModel->select();

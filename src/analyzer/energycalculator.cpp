@@ -121,14 +121,20 @@ void EnergyCalculator::endBlock() {
     m_blockSumHigh = 0.0;
 }
 
-double EnergyCalculator::gridDriftBeats(double firstBeatSec,
-        double beatSec,
+double EnergyCalculator::gridDriftBeats(const phrasealign::Grid& grid,
         double bodyStartSec,
         double bodyEndSec) const {
     const int blockCount = static_cast<int>(m_blockLowDb.size());
     const double blockSec = m_blockFrames / m_sampleRate;
-    const double regionSec = kGridWindowBeats * kGridWindowsPerRegion * beatSec;
-    if (!(beatSec > 0.1) || !(bodyEndSec - bodyStartSec >= regionSec) || blockCount < 2) {
+    // Everything is counted in beats of the grid, so a beat map that bends
+    // with the music is judged beat by beat.
+    constexpr double regionBeats = kGridWindowBeats * kGridWindowsPerRegion;
+    if (!(grid.beatSec > 0.1) || blockCount < 2) {
+        return -1.0;
+    }
+    const double bodyStartBeat = grid.beatAt(bodyStartSec);
+    const double bodyEndBeat = grid.beatAt(bodyEndSec);
+    if (!(bodyEndBeat - bodyStartBeat >= regionBeats)) {
         return -1.0;
     }
     // Circular distance between two phases, in beats (0..0.5).
@@ -137,9 +143,10 @@ double EnergyCalculator::gridDriftBeats(double firstBeatSec,
         return std::min(d, 1.0 - d);
     };
     const double regionStarts[] = {
-            bodyStartSec,
-            0.5 * (bodyStartSec + bodyEndSec - regionSec),
-            bodyEndSec - regionSec,
+            // in beats
+            bodyStartBeat,
+            0.5 * (bodyStartBeat + bodyEndBeat - regionBeats),
+            bodyEndBeat - regionBeats,
     };
     double best = -1.0;
     for (const std::vector<float>* pLevels : {&m_blockLowDb, &m_blockHighDb}) {
@@ -159,7 +166,7 @@ double EnergyCalculator::gridDriftBeats(double firstBeatSec,
                 if (hit <= 0.0) {
                     continue;
                 }
-                const double angle = kTwoPi * (b * blockSec - firstBeatSec) / beatSec;
+                const double angle = kTwoPi * grid.beatAt(b * blockSec);
                 re += hit * std::cos(angle);
                 im += hit * std::sin(angle);
                 weight += hit;
@@ -181,9 +188,11 @@ double EnergyCalculator::gridDriftBeats(double firstBeatSec,
             double sumClarity = 0.0;
             double windowPhase[kGridWindowsPerRegion];
             for (int w = 0; w < kGridWindowsPerRegion; ++w) {
-                const double from = regionStarts[r] + w * kGridWindowBeats * beatSec;
+                const double fromBeat = regionStarts[r] + w * kGridWindowBeats;
                 double weight = 0.0;
-                const auto v = window(from, from + kGridWindowBeats * beatSec, &weight);
+                const auto v = window(grid.beatTime(fromBeat),
+                        grid.beatTime(fromBeat + kGridWindowBeats),
+                        &weight);
                 windowPhase[w] = phaseOf(v.first, v.second);
                 if (weight > 0.0) {
                     sumRe += v.first / weight;

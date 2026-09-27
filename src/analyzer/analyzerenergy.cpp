@@ -41,6 +41,34 @@ bool AnalyzerEnergy::gridOf(const TrackPointer& pTrack, double* pBpm, double* pF
     return true;
 }
 
+// static
+phrasealign::Grid AnalyzerEnergy::beatGrid(const TrackPointer& pTrack) {
+    double bpm = 0.0;
+    double firstBeatSec = 0.0;
+    if (!gridOf(pTrack, &bpm, &firstBeatSec)) {
+        return phrasealign::Grid{};
+    }
+    const phrasealign::Grid steady{firstBeatSec, 60.0 / bpm};
+    const mixxx::BeatsPointer pBeats = pTrack->getBeats();
+    if (!pBeats || pBeats->hasConstantTempo()) {
+        return steady;
+    }
+    // A beat map: every beat from the first to the end of the track.
+    constexpr std::size_t kMaxBeats = 20000; // over an hour at 300 BPM
+    const double sampleRate = pTrack->getSampleRate().value();
+    const double endSec = pTrack->getDuration();
+    std::vector<double> times;
+    for (auto it = pBeats->iteratorFrom(pBeats->firstBeat()); times.size() < kMaxBeats; ++it) {
+        const double sec = it->value() / sampleRate;
+        if ((endSec > 0.0 && sec > endSec + 1.0) || (!times.empty() && sec <= times.back())) {
+            break;
+        }
+        times.push_back(sec);
+    }
+    const phrasealign::Grid map = phrasealign::Grid::fromBeats(std::move(times));
+    return map.isValid() ? map : steady;
+}
+
 AnalyzerEnergy::AnalyzerEnergy(const QSqlDatabase& dbConnection)
         : m_db(dbConnection),
           m_tableReady(EnergyStore::ensureTable(dbConnection)) {
@@ -68,7 +96,8 @@ bool AnalyzerEnergy::initialize(const AnalyzerTrack& track,
     double firstBeatSec = 0.0;
     gridOf(pTrack, &bpm, &firstBeatSec);
     const auto gridCheck = EnergyStore::loadGridCheck(m_db, m_trackId);
-    const bool gridChecked = gridCheck && gridCheck->isFor(bpm, firstBeatSec);
+    const bool gridChecked =
+            gridCheck && gridCheck->isFor(bpm, firstBeatSec, beatGrid(pTrack).isMap());
     if (version && *version == EnergyCalculator::kVersion && gridChecked) {
         if (const auto body = EnergyStore::loadBody(m_db, m_trackId)) {
             EnergyCalculator::Result stored;
@@ -117,16 +146,17 @@ void AnalyzerEnergy::storeResults(TrackPointer pTrack) {
 void AnalyzerEnergy::storeGridCheck(
         const TrackPointer& pTrack, const EnergyCalculator::Result* pResult) {
     EnergyStore::GridCheck check;
-    check.version = EnergyCalculator::kGridCheckVersion;
+    const phrasealign::Grid grid = beatGrid(pTrack);
+    check.version = grid.isMap() ? EnergyCalculator::kGridCheckMapVersion
+                                 : EnergyCalculator::kGridCheckVersion;
     if (gridOf(pTrack, &check.bpm, &check.firstBeatSec) && pResult) {
-        check.driftBeats = m_pCalculator->gridDriftBeats(check.firstBeatSec,
-                60.0 / check.bpm,
-                pResult->bodyStartSec,
-                pResult->bodyEndSec);
+        check.driftBeats = m_pCalculator->gridDriftBeats(
+                grid, pResult->bodyStartSec, pResult->bodyEndSec);
     }
     EnergyStore::saveGridCheck(m_db, m_trackId, check);
     qInfo() << "AnalyzerEnergy: beat grid check" << pTrack->getInfo()
-            << "bpm" << check.bpm << "drift" << check.driftBeats << "beats"
+            << "bpm" << check.bpm << (grid.isMap() ? "(beat map)" : "(steady grid)")
+            << "drift" << check.driftBeats << "beats"
             << (check.driftBeats > EnergyCalculator::kGridMaxDriftBeats
                                ? "-> grid does NOT stay on the beat, Auto DJ will not beatmatch it"
                                : (check.driftBeats < 0.0 ? "(cannot tell)" : "(OK)"));
@@ -140,10 +170,10 @@ void AnalyzerEnergy::setAutoMarkers(
     // the point is that the DJ can SEE them on the waveform and move the
     // wrong ones. A marker the DJ set or moved is never touched: we only
     // fill an empty marker, or update one that is still where we put it.
-    const mixxx::BeatsPointer pBeats = pTrack->getBeats();
-    const double bpm = pTrack->getBpm();
     const double sampleRate = pTrack->getSampleRate().value();
-    if (!pBeats || !(bpm > 0.0) || !(sampleRate > 0.0)) {
+    // Steady grid or a beat map that bends with the music.
+    const phrasealign::Grid grid = beatGrid(pTrack);
+    if (!grid.isValid() || !(sampleRate > 0.0)) {
         return; // no grid to snap to
     }
     const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
@@ -151,9 +181,6 @@ void AnalyzerEnergy::setAutoMarkers(
     if (!pIntro || !pOutro) {
         return; // made by AnalyzerSilence, which runs before us
     }
-    phrasealign::Grid grid;
-    grid.firstBeatSec = pBeats->firstBeat().value() / sampleRate;
-    grid.beatSec = 60.0 / bpm;
     const auto toSec = [sampleRate](mixxx::audio::FramePos pos) {
         return pos.isValid() ? pos.value() / sampleRate : -1.0;
     };
@@ -193,7 +220,8 @@ void AnalyzerEnergy::setAutoMarkers(
             outroStartNowSec < 0.0 || isOurs(outroStartNowSec, before.outroStartSec);
     if (outroFree && outroEndSec > 0.0) {
         if (outroStartSec > std::max(0.0, introEndSec) &&
-                outroStartSec + grid.beatSec * phrasealign::kBeatsPerBar <= outroEndSec) {
+                outroStartSec + grid.beatSecAt(outroStartSec) * phrasealign::kBeatsPerBar <=
+                        outroEndSec) {
             pOutro->setStartPosition(toFrame(outroStartSec));
             after.outroStartSec = outroStartSec;
         } else if (outroStartNowSec >= 0.0) {

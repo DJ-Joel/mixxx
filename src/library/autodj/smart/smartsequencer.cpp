@@ -378,43 +378,79 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
                 result.warnings << warning;
                 result.orderLines << QStringLiteral("      !! %1: %2").arg(label, s.reason);
                 if (!bridgeCandidates.isEmpty()) {
+                    // One track if any bridges the gap, else two in a row.
+                    const auto findBridges = [&](const QSet<TrackId>& ids,
+                                                     const QSet<QString>& names,
+                                                     int maxResults) {
+                        QList<BridgeSuggestion> found = bridgeFinder.find(
+                                from, to, bridgeCandidates, ids, names, maxResults);
+                        if (found.isEmpty()) {
+                            found = bridgeFinder.findPairs(
+                                    from, to, bridgeCandidates, ids, names, maxResults);
+                        }
+                        return found;
+                    };
+                    const auto idsOf = [](const BridgeSuggestion& b) {
+                        QList<TrackId> ids{b.track.id};
+                        if (b.isPair) {
+                            ids.append(b.second.id);
+                        }
+                        return ids;
+                    };
+                    const auto textOf = [](const BridgeSuggestion& b) {
+                        return b.isPair ? QStringLiteral("%1  then  %2")
+                                                  .arg(MixScorer::trackText(b.track),
+                                                          MixScorer::trackText(b.second))
+                                        : MixScorer::trackText(b.track);
+                    };
                     BridgeGap gap;
                     gap.k = k;
                     gap.fromText = MixScorer::trackText(from);
                     gap.toText = MixScorer::trackText(to);
-                    const QList<BridgeSuggestion> all = bridgeFinder.find(from,
-                            to,
-                            bridgeCandidates,
-                            queuedIds,
-                            queuedNames,
-                            SequenceResult::kMaxBridgeOptions);
-                    for (const BridgeSuggestion& b : all) {
-                        gap.options.append(b.track.id);
-                        gap.optionTexts.append(MixScorer::trackText(b.track));
+                    for (const BridgeSuggestion& option :
+                            findBridges(queuedIds, queuedNames, SequenceResult::kMaxBridgeOptions)) {
+                        gap.options.append(idsOf(option));
+                        gap.optionTexts.append(textOf(option));
                     }
                     result.gaps.append(gap);
-                    const QList<BridgeSuggestion> bridges = bridgeFinder.find(
-                            from, to, bridgeCandidates, usedIds, usedNames);
+                    const QList<BridgeSuggestion> bridges = findBridges(usedIds, usedNames, 3);
                     if (bridges.isEmpty()) {
                         result.orderLines << QStringLiteral(
-                                "         no single track in your library bridges this gap");
+                                "         no track (or pair of tracks) in your library bridges "
+                                "this gap");
                     } else {
                         for (int b = 0; b < bridges.size(); ++b) {
                             result.orderLines << QStringLiteral("         %1 %2")
                                                          .arg(b == 0 ? QStringLiteral("add:")
                                                                      : QStringLiteral("or: "),
-                                                                 MixScorer::trackText(
-                                                                         bridges[b].track));
+                                                                 textOf(bridges[b]));
                         }
                         // The best one is reserved, so no track is suggested twice.
-                        const TrackFeatures& pick = bridges.first().track;
-                        result.bestBridges.append(std::make_pair(k, pick.id));
-                        usedIds.insert(pick.id);
-                        if (!pick.displayName.isEmpty()) {
-                            usedNames.insert(BridgeFinder::nameKey(pick));
+                        const BridgeSuggestion& pick = bridges.first();
+                        result.bestBridges.append(std::make_pair(k, idsOf(pick)));
+                        for (const TrackFeatures* pTrack : {&pick.track, &pick.second}) {
+                            if (pTrack == &pick.second && !pick.isPair) {
+                                continue;
+                            }
+                            usedIds.insert(pTrack->id);
+                            if (!pTrack->displayName.isEmpty()) {
+                                usedNames.insert(BridgeFinder::nameKey(*pTrack));
+                            }
                         }
                     }
                 }
+            } else if (from.gridUnsteady || to.gridUnsteady) {
+                // Mixes in key and tempo, but a beat grid drifts: Auto DJ
+                // cannot beatmatch it and switches quickly instead.
+                const TrackFeatures& unsteady = from.gridUnsteady ? from : to;
+                const QString note = QStringLiteral(
+                        "no beatmatch: the beat grid of %1 drifts off the beat (quick switch)")
+                                             .arg(unsteady.displayName.isEmpty()
+                                                             ? MixScorer::trackText(unsteady)
+                                                             : unsteady.displayName);
+                result.warnings << QStringLiteral("Tracks %1 and %2: %3")
+                                           .arg(QString::number(k), QString::number(k + 1), note);
+                result.orderLines << QStringLiteral("      ~~ %1").arg(note);
             }
         }
         result.orderLines << MixScorer::trackLine(k + 1, to);

@@ -56,4 +56,26 @@ EqBlend eqBlend(double progress) {
     return e;
 }
 
+double followRatio(double fromBeat,
+        double fromBeatRealSec,
+        double toBeat,
+        double toBeatTrackSec,
+        double* pSlipBeats) {
+    if (!(fromBeatRealSec > 0.0) || !(toBeatTrackSec > 0.0)) {
+        return 1.0;
+    }
+    // Where in the beat each track is: positive = the incoming beat comes
+    // late (it must catch up).
+    double slip = fromBeat - toBeat;
+    slip -= std::round(slip); // -0.5 .. 0.5
+    if (pSlipBeats) {
+        *pSlipBeats = slip;
+    }
+    double nudge = 0.0;
+    if (std::fabs(slip) > kLockDeadBeats) {
+        nudge = std::clamp(slip / kLockBeats, -kMaxLockNudge, kMaxLockNudge);
+    }
+    return toBeatTrackSec / fromBeatRealSec * (1.0 + nudge);
+}
+
 } // namespace beatmatch

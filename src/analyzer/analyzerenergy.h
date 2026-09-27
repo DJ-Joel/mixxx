@@ -5,6 +5,7 @@
 
 #include "analyzer/analyzer.h"
 #include "analyzer/energycalculator.h"
+#include "library/autodj/smart/phrasealign.h"
 #include "track/trackid.h"
 
 /// Auto DJ 2.0: computes the energy score (1..10) of each track and saves
@@ -15,6 +16,10 @@ class AnalyzerEnergy : public Analyzer {
     /// The track's beat grid as tempo + first beat (seconds). False (and
     /// 0, 0) if it has none.
     static bool gridOf(const TrackPointer& pTrack, double* pBpm, double* pFirstBeatSec);
+    /// The track's beats (seconds at its own speed): a steady grid, or the
+    /// time of every beat when Mixxx made a beat map that bends with the
+    /// music ("Assume constant tempo" off). Not valid if it has none.
+    static phrasealign::Grid beatGrid(const TrackPointer& pTrack);
 
     explicit AnalyzerEnergy(const QSqlDatabase& dbConnection);
     ~AnalyzerEnergy() override = default;

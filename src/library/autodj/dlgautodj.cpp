@@ -613,7 +613,7 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
     // that bridges it gets that track; with several, the DJ picks one (the
     // best match is preselected); "no bridge" leaves the gap as it is.
     QList<std::pair<int, QComboBox*>> choices; // gap position, its choice box
-    QList<std::pair<int, TrackId>> onlyChoices; // gaps with one option
+    QList<std::pair<int, QList<TrackId>>> onlyChoices; // gaps with one option
     const QList<BridgeGap>& gaps = m_pAutoDJProcessor->bridgeGaps();
     int bridgeableGaps = 0;
     for (const BridgeGap& gap : gaps) {
@@ -651,11 +651,17 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
             } else {
                 auto* pCombo = new QComboBox(pGapWidget);
                 for (int i = 0; i < gap.options.size(); ++i) {
+                    QVariantList ids; // one or two tracks
+                    for (const TrackId& id : gap.options[i]) {
+                        ids.append(id.toVariant());
+                    }
                     pCombo->addItem(i == 0 ? tr("%1   (best match)").arg(gap.optionTexts[i])
                                            : gap.optionTexts[i],
-                            gap.options[i].toVariant());
+                            ids);
                 }
                 pCombo->addItem(tr("(no bridge here)"), QVariant());
+                pCombo->setToolTip(tr("A choice with \"then\" is two tracks, played in that order "
+                                      "(for a tempo jump too big for one track)."));
                 choices.append(std::make_pair(gap.k, pCombo));
                 pGrid->addWidget(pCombo, row, 1);
             }
@@ -675,27 +681,39 @@ void DlgAutoDJ::slotSmartSortFinished(int trackCount,
             // One track can only go into one gap. The DJ's own choices must
             // not repeat; a track that is the ONLY option for two gaps goes
             // into the first of them.
-            QList<std::pair<int, TrackId>> picks;
+            QList<std::pair<int, QList<TrackId>>> picks;
             QList<TrackId> chosen;
+            const auto anyChosen = [&chosen](const QList<TrackId>& ids) {
+                for (const TrackId& id : ids) {
+                    if (chosen.contains(id)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
             for (const auto& [k, pCombo] : choices) {
                 const QVariant value = pCombo->currentData();
                 if (!value.isValid()) {
                     continue;
                 }
-                const TrackId id(value);
-                if (chosen.contains(id)) {
+                QList<TrackId> ids;
+                const QVariantList values = value.toList();
+                for (const QVariant& v : values) {
+                    ids.append(TrackId(v));
+                }
+                if (anyChosen(ids)) {
                     QMessageBox::warning(&dialog,
                             tr("Smart Sort"),
                             tr("The same track is chosen for two gaps. "
                                "Please choose a different track for one of them."));
                     return;
                 }
-                chosen.append(id);
-                picks.append(std::make_pair(k, id));
+                chosen.append(ids);
+                picks.append(std::make_pair(k, ids));
             }
             int skipped = 0;
             for (const auto& pick : onlyChoices) {
-                if (chosen.contains(pick.second)) {
+                if (anyChosen(pick.second)) {
                     ++skipped; // already chosen for another gap
                     continue;
                 }

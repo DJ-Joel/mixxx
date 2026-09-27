@@ -42,4 +42,27 @@ struct EqBlend {
 };
 EqBlend eqBlend(double progress);
 
+/// Beat lock, for a track whose tempo bends (a beat map): during the mix
+/// the incoming speed is set again and again so that its beats stay on the
+/// outgoing beats, like a DJ riding the pitch fader.
+///
+/// @param fromBeat outgoing track: beat number now (fractional)
+/// @param fromBeatRealSec outgoing track: length of its beat now, in real
+///        seconds (at the deck's speed)
+/// @param toBeat incoming track: beat number now (fractional)
+/// @param toBeatTrackSec incoming track: length of its beat now, at its
+///        own speed
+/// @return the incoming tempo ratio: the one that gives it the same beat
+///         length, nudged by up to kMaxLockNudge to pull a beat that has
+///         slipped back in line within about kLockBeats beats. A slip of
+///         less than kLockDeadBeats is left alone (no needless wobble).
+constexpr double kLockBeats = 4.0;
+constexpr double kMaxLockNudge = 0.02; // 2 %
+constexpr double kLockDeadBeats = 0.01; // 5 ms at 120 BPM
+double followRatio(double fromBeat,
+        double fromBeatRealSec,
+        double toBeat,
+        double toBeatTrackSec,
+        double* pSlipBeats = nullptr);
+
 } // namespace beatmatch

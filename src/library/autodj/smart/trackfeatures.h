@@ -25,6 +25,22 @@ struct TrackFeatures {
     QString artist;      ///< as tagged (may be empty)
     QString title;       ///< as tagged (may be empty)
     QString genre;       ///< as tagged (may be empty)
+    /// A music video (by file type), for video sets: bridges between videos
+    /// should be videos too.
+    bool isVideo = false;
+    /// The beat grid check found that the grid drifts off the music: Auto DJ
+    /// cannot beatmatch this track (it switches quickly instead).
+    bool gridUnsteady = false;
+
+    /// True for the file types that hold video (mp4, mov, mkv, ...).
+    static bool isVideoFile(const QString& location) {
+        const QString suffix = location.section(QChar('.'), -1).toLower();
+        return suffix == QStringLiteral("mp4") || suffix == QStringLiteral("m4v") ||
+                suffix == QStringLiteral("mov") || suffix == QStringLiteral("mkv") ||
+                suffix == QStringLiteral("webm") || suffix == QStringLiteral("avi") ||
+                suffix == QStringLiteral("wmv") || suffix == QStringLiteral("mpg") ||
+                suffix == QStringLiteral("mpeg");
+    }
 
     bool hasBpm() const {
         return bpm > 0.0;
