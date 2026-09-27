@@ -1424,6 +1424,7 @@ add_library(
   src/library/autodj/smart/genrescan.cpp
   src/library/autodj/smart/mixscorer.cpp
   src/library/autodj/smart/phrasealign.cpp
+  src/video/videomix.cpp
   src/library/autodj/smart/smartsequencer.cpp
   src/library/autodj/smart/trackfeatures.cpp
   src/library/banshee/bansheedbconnection.cpp
@@ -2827,7 +2828,8 @@ endif()
 
 # FFmpeg support
 # FFmpeg is multimedia library that can be found http://ffmpeg.org/
-find_package(FFmpeg COMPONENTS AVCODEC AVFORMAT AVUTIL SWRESAMPLE)
+# SWSCALE: Auto DJ 2.0 video mixing (scales the video pictures).
+find_package(FFmpeg COMPONENTS AVCODEC AVFORMAT AVUTIL SWRESAMPLE SWSCALE)
 default_option(FFMPEG "FFmpeg support (version 4.1.9 or later)" "FFmpeg_FOUND")
 if(FFMPEG)
   if(NOT FFmpeg_FOUND)
@@ -2893,6 +2895,14 @@ if(FFMPEG)
   endif()
 
   target_sources(mixxx-lib PRIVATE src/sources/soundsourceffmpeg.cpp)
+  # Auto DJ 2.0 video mixing (music videos on a screen or projector).
+  target_sources(
+    mixxx-lib
+    PRIVATE
+      src/video/videobackend_mf.cpp
+      src/video/videodecoder.cpp
+      src/video/videomanager.cpp
+  )
   target_compile_definitions(
     mixxx-lib
     PUBLIC
@@ -2945,6 +2955,7 @@ if(BUILD_TESTING)
     src/test/beatmatch_test.cpp
     src/test/phrasealign_test.cpp
     src/test/genrescan_test.cpp
+    src/test/videomix_test.cpp
     src/test/beatstranslatetest.cpp
     src/test/borrowabletest.cpp
     src/test/bpmtest.cpp

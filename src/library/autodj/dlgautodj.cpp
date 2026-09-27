@@ -17,7 +17,9 @@
 #include <QPlainTextEdit>
 #include <QVBoxLayout>
 
+#include <QGuiApplication>
 #include <QHeaderView>
+#include <QScreen>
 #include <cmath>
 #include <QTableWidget>
 #include <QTimer>
@@ -26,6 +28,9 @@
 #include "controllers/keyboard/keyboardeventfilter.h"
 #include "mixer/playerinfo.h"
 #include "mixer/playermanager.h"
+#ifdef __FFMPEG__
+#include "video/videomanager.h"
+#endif
 #include "library/library.h"
 #include "library/playlisttablemodel.h"
 #include "moc_dlgautodj.cpp"
@@ -312,6 +317,61 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     connect(pushButtonLiveAssistant, &QPushButton::clicked, this, [this]() {
         showLiveAssistant();
     });
+    // Auto DJ 2.0 video mixing: the music videos of the decks on a screen
+    // or projector, mixed like the sound.
+#ifdef __FFMPEG__
+    pushButtonVideo->setText(tr("Video"));
+    pushButtonVideo->setToolTip(tr(
+            "Shows the music videos of the decks on a screen or projector.\n"
+            "The picture follows each deck (tempo, loops, jumps) and is mixed\n"
+            "like the sound (volume faders and crossfader). Songs without\n"
+            "video show their cover art and title. Esc closes the video."));
+    auto* pVideoMenu = new QMenu(pushButtonVideo);
+    connect(pVideoMenu, &QMenu::aboutToShow, this, [this, pVideoMenu]() {
+        pVideoMenu->clear();
+        pVideoMenu->addSection(tr("Show the videos full screen on"));
+        const QScreen* pMixxxScreen = window() ? window()->screen() : nullptr;
+        const QList<QScreen*> screens = QGuiApplication::screens();
+        for (QScreen* pScreen : screens) {
+            const QRect area = pScreen->geometry();
+            QString label = tr("%1 (%2 x %3)")
+                                    .arg(pScreen->name())
+                                    .arg(area.width())
+                                    .arg(area.height());
+            if (pScreen == pMixxxScreen) {
+                label += tr("  - covers Mixxx, press Esc to close");
+            }
+            QAction* pAction = pVideoMenu->addAction(label);
+            const QPointer<QScreen> pTarget(pScreen);
+            connect(pAction, &QAction::triggered, this, [this, pTarget]() {
+                if (pTarget) {
+                    videoManager()->showOnScreen(pTarget);
+                }
+            });
+        }
+        QAction* pWindowed = pVideoMenu->addAction(tr("In a window (for testing)"));
+        connect(pWindowed, &QAction::triggered, this, [this]() {
+            videoManager()->showInWindow();
+        });
+        pVideoMenu->addSeparator();
+        QAction* pPreview = pVideoMenu->addAction(tr("Preview window"));
+        pPreview->setCheckable(true);
+        pPreview->setChecked(m_pVideo && m_pVideo->isPreviewVisible());
+        connect(pPreview, &QAction::toggled, this, [this](bool visible) {
+            videoManager()->setPreviewVisible(visible);
+        });
+        QAction* pStop = pVideoMenu->addAction(tr("Stop video"));
+        connect(pStop, &QAction::triggered, this, [this]() {
+            if (m_pVideo) {
+                m_pVideo->stop();
+            }
+        });
+    });
+    pushButtonVideo->setMenu(pVideoMenu);
+#else
+    pushButtonVideo->hide(); // needs FFmpeg
+#endif
+
     // Remember every song heard live this session, window open or not.
     connect(&PlayerInfo::instance(),
             &PlayerInfo::currentPlayingTrackChanged,
@@ -1096,4 +1156,15 @@ void DlgAutoDJ::refreshLiveAssistant(bool force) {
         m_pLiveTable->setItem(row, 3, new QTableWidgetItem(energyText(t)));
         m_pLiveTable->setItem(row, 4, new QTableWidgetItem(whyText(t)));
     }
+}
+
+VideoManager* DlgAutoDJ::videoManager() {
+#ifdef __FFMPEG__
+    if (!m_pVideo) {
+        m_pVideo = new VideoManager(window());
+    }
+    return m_pVideo;
+#else
+    return nullptr;
+#endif
 }

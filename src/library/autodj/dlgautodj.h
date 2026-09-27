@@ -19,6 +19,7 @@ class QDialog;
 class QLabel;
 class QTableWidget;
 class QTimer;
+class VideoManager;
 
 class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     Q_OBJECT
@@ -102,4 +103,8 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     QLabel* m_pLiveStatus = nullptr;
     QTimer* m_pLiveTimer = nullptr;
     QString m_liveState;
+
+    // Auto DJ 2.0 video mixing (created when first used).
+    VideoManager* videoManager();
+    QPointer<VideoManager> m_pVideo;
 };
