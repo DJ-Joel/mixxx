@@ -19,7 +19,9 @@ namespace {
 constexpr DWORD kMsiGuidBufferSize = 39;
 
 // Mixxx Upgrade GUID — same as CPACK_WIX_UPGRADE_GUID
-constexpr wchar_t kMixxxUpgradeCode[] = L"{921DC99C-4DCF-478D-B950-50685CB9E6BE}";
+// Auto DJ 2.0 fork: its own upgrade code (see CPACK_WIX_UPGRADE_GUID), so a
+// normal Mixxx installation is never removed.
+constexpr wchar_t kMixxxUpgradeCode[] = L"{88BB8057-62DD-426F-9B3B-9BE8A6FDE3DA}";
 } // namespace
 
 extern "C"

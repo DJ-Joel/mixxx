@@ -93,6 +93,13 @@ CmdlineArgs::CmdlineArgs()
           m_settingsPath(
                   QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
                           .append("/Library/Application Support/Mixxx"))
+#elif defined(Q_OS_WIN)
+          // Auto DJ 2.0 fork: its own settings and library folder
+          // (%LOCALAPPDATA%\Mixxx Auto DJ 2.0), so it never touches the
+          // settings and library of a normal Mixxx on the same PC.
+          m_settingsPath(
+                  QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation)
+                          .append("/Mixxx Auto DJ 2.0/"))
 #else
 
           // TODO(XXX) Trailing slash not needed anymore as we switches from String::append

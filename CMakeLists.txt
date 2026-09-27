@@ -5574,7 +5574,8 @@ configure_file(
 )
 
 # Packaging
-set(CPACK_PACKAGE_NAME "Mixxx")
+# Auto DJ 2.0 fork: its own product, installed next to a normal Mixxx.
+set(CPACK_PACKAGE_NAME "Mixxx Auto DJ 2.0")
 set(CPACK_PACKAGE_VENDOR "Mixxx Project")
 set(CPACK_PACKAGE_CONTACT "RJ Skerry-Ryan <rryan@mixxx.org>")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Digital DJ Application")
@@ -5582,8 +5583,8 @@ set(
   CPACK_PACKAGE_DESCRIPTION_FILE
   "${CMAKE_CURRENT_SOURCE_DIR}/packaging/CPackPackageDescription.txt"
 )
-set(CPACK_PACKAGE_INSTALL_DIRECTORY "Mixxx")
-set(CPACK_PACKAGE_EXECUTABLES "mixxx;Mixxx")
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "Mixxx Auto DJ 2.0")
+set(CPACK_PACKAGE_EXECUTABLES "mixxx;Mixxx Auto DJ 2.0")
 set(CPACK_PACKAGE_ICON "${CMAKE_SOURCE_DIR}/res/images/mixxx_install_logo.bmp")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://www.mixxx.org/")
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE")
@@ -5709,7 +5710,10 @@ set(
 
 # Use WiX toolset version >= 4.0 for building Windows installers.
 set(CPACK_WIX_VERSION 4)
-set(CPACK_WIX_UPGRADE_GUID "921DC99C-4DCF-478D-B950-50685CB9E6BE")
+# Own upgrade code (official Mixxx: 921DC99C-4DCF-478D-B950-50685CB9E6BE), so
+# installing never removes or replaces a normal Mixxx. Must match
+# packaging/wix/mixxxupgradecustomaction.cpp.
+set(CPACK_WIX_UPGRADE_GUID "88BB8057-62DD-426F-9B3B-9BE8A6FDE3DA")
 set(
   CPACK_WIX_LICENSE_RTF
   "${CMAKE_CURRENT_BINARY_DIR}/packaging/wix/LICENSE.rtf"
