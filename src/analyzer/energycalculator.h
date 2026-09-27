@@ -90,12 +90,19 @@ class EnergyCalculator {
     /// v2: only the first tick of a double kick counted. Worse on the
     ///     DJ's library (89 -> 99 flagged, steady tracks failed), so
     /// v3: back to counting every hit.
-    static constexpr int kGridCheckVersion = 3;
+    /// v5: in each region the one window that does not fit (a breakdown,
+    ///     an intro before the bass) is left out; the other three must
+    ///     agree. One odd window flagged songs whose grid was fine.
+    static constexpr int kGridCheckVersion = 5;
     /// The same check made on a beat map (a tempo that bends, followed beat
     /// by beat). Its own number, so a track that gets a beat map is checked
-    /// again even if its BPM and first beat stay the same, while the checks
-    /// of steady grids stay valid.
-    static constexpr int kGridCheckMapVersion = 4;
+    /// again even if its BPM and first beat stay the same.
+    static constexpr int kGridCheckMapVersion = 6;
+    /// Results of the previous versions (steady grid, beat map) still count
+    /// until the track is analysed again, so no track that was flagged is
+    /// suddenly beatmatched without being checked.
+    static constexpr int kGridCheckOldVersion = 3;
+    static constexpr int kGridCheckOldMapVersion = 4;
 
     /// Maps the three 0..1 parts to the 1..10 score.
     static double combine(double loudness01, double brightness01, double busyness01);

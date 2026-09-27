@@ -96,8 +96,9 @@ bool AnalyzerEnergy::initialize(const AnalyzerTrack& track,
     double firstBeatSec = 0.0;
     gridOf(pTrack, &bpm, &firstBeatSec);
     const auto gridCheck = EnergyStore::loadGridCheck(m_db, m_trackId);
-    const bool gridChecked =
-            gridCheck && gridCheck->isFor(bpm, firstBeatSec, beatGrid(pTrack).isMap());
+    const bool beatMap = beatGrid(pTrack).isMap();
+    const bool gridChecked = gridCheck && gridCheck->isFor(bpm, firstBeatSec, beatMap) &&
+            gridCheck->isCurrent(beatMap);
     if (version && *version == EnergyCalculator::kVersion && gridChecked) {
         if (const auto body = EnergyStore::loadBody(m_db, m_trackId)) {
             EnergyCalculator::Result stored;

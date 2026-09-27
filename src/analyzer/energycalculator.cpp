@@ -187,6 +187,8 @@ double EnergyCalculator::gridDriftBeats(const phrasealign::Grid& grid,
             double sumIm = 0.0;
             double sumClarity = 0.0;
             double windowPhase[kGridWindowsPerRegion];
+            double windowRe[kGridWindowsPerRegion] = {};
+            double windowIm[kGridWindowsPerRegion] = {};
             for (int w = 0; w < kGridWindowsPerRegion; ++w) {
                 const double fromBeat = regionStarts[r] + w * kGridWindowBeats;
                 double weight = 0.0;
@@ -195,6 +197,8 @@ double EnergyCalculator::gridDriftBeats(const phrasealign::Grid& grid,
                         &weight);
                 windowPhase[w] = phaseOf(v.first, v.second);
                 if (weight > 0.0) {
+                    windowRe[w] = v.first / weight;
+                    windowIm[w] = v.second / weight;
                     sumRe += v.first / weight;
                     sumIm += v.second / weight;
                     sumClarity += std::hypot(v.first, v.second) / weight;
@@ -204,10 +208,23 @@ double EnergyCalculator::gridDriftBeats(const phrasealign::Grid& grid,
                 clear = false;
                 break;
             }
-            regionPhase[r] = phaseOf(sumRe, sumIm);
+            // One window that does not fit (a breakdown, or an intro before
+            // the bass comes in) is the music changing, not the grid: a
+            // grid that drifts moves ALL the windows. So the odd one out is
+            // left out, and the other three must agree.
+            int odd = 0;
+            const double allPhase = phaseOf(sumRe, sumIm);
+            for (int w = 1; w < kGridWindowsPerRegion; ++w) {
+                if (distance(windowPhase[w], allPhase) > distance(windowPhase[odd], allPhase)) {
+                    odd = w;
+                }
+            }
+            regionPhase[r] = phaseOf(sumRe - windowRe[odd], sumIm - windowIm[odd]);
             // Drift inside the region (the 16 bars a mix can take).
-            for (double p : windowPhase) {
-                worst = std::max(worst, distance(p, regionPhase[r]));
+            for (int w = 0; w < kGridWindowsPerRegion; ++w) {
+                if (w != odd) {
+                    worst = std::max(worst, distance(windowPhase[w], regionPhase[r]));
+                }
             }
         }
         if (!clear) {

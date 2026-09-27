@@ -67,9 +67,12 @@ class EnergyStore {
         double driftBeats = -1.0; ///< -1 = could not tell
         int version = 0; ///< EnergyCalculator::kGridCheckVersion (or ...MapVersion)
         /// True if this check was made on that grid (the DJ has not
-        /// changed it since) with the current version of the check.
-        /// `beatMap`: the grid is a beat map now.
+        /// changed it since), with the current or the previous version of
+        /// the check (a previous result counts until the track is analysed
+        /// again). `beatMap`: the grid is a beat map now.
         bool isFor(double gridBpm, double gridFirstBeatSec, bool beatMap) const;
+        /// Made with the current version of the check.
+        bool isCurrent(bool beatMap) const;
     };
     static std::optional<GridCheck> loadGridCheck(const QSqlDatabase& db, TrackId trackId);
     static bool saveGridCheck(const QSqlDatabase& db, TrackId trackId, const GridCheck& check);

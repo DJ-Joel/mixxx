@@ -229,12 +229,18 @@ bool EnergyStore::saveAutoMarkers(
     return true;
 }
 
-bool EnergyStore::GridCheck::isFor(
-        double gridBpm, double gridFirstBeatSec, bool beatMap) const {
-    // Tiny differences are rounding in the database, not a new grid.
+bool EnergyStore::GridCheck::isCurrent(bool beatMap) const {
     return version ==
             (beatMap ? EnergyCalculator::kGridCheckMapVersion
-                     : EnergyCalculator::kGridCheckVersion) &&
+                     : EnergyCalculator::kGridCheckVersion);
+}
+
+bool EnergyStore::GridCheck::isFor(
+        double gridBpm, double gridFirstBeatSec, bool beatMap) const {
+    const int oldVersion = beatMap ? EnergyCalculator::kGridCheckOldMapVersion
+                                   : EnergyCalculator::kGridCheckOldVersion;
+    // Tiny differences are rounding in the database, not a new grid.
+    return (isCurrent(beatMap) || version == oldVersion) &&
             std::fabs(bpm - gridBpm) < 0.001 &&
             std::fabs(firstBeatSec - gridFirstBeatSec) < 0.002;
 }

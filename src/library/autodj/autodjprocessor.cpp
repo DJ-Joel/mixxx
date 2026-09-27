@@ -90,9 +90,11 @@ QHash<TrackId, GridCheckRow> loadGridChecks(const QSqlDatabase& db) {
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
             "SELECT track_id, bpm, drift_beats FROM autodj_grid_check "
-            "WHERE version = :version OR version = :mapVersion"));
+            "WHERE version IN (:version, :mapVersion, :oldVersion, :oldMapVersion)"));
     query.bindValue(QStringLiteral(":version"), EnergyCalculator::kGridCheckVersion);
     query.bindValue(QStringLiteral(":mapVersion"), EnergyCalculator::kGridCheckMapVersion);
+    query.bindValue(QStringLiteral(":oldVersion"), EnergyCalculator::kGridCheckOldVersion);
+    query.bindValue(QStringLiteral(":oldMapVersion"), EnergyCalculator::kGridCheckOldMapVersion);
     if (query.exec()) {
         while (query.next()) {
             GridCheckRow row;
@@ -2972,6 +2974,15 @@ void AutoDJProcessor::playerTrackLoaded(DeckAttributes* pDeck, TrackPointer pTra
     }
 
     pDeck->loading = false;
+    // When this track's analysis finishes (e.g. the beat grid check of a
+    // track analysed on load), plan the mix again with the new results.
+    if (pTrack) {
+        connect(pTrack.get(),
+                &Track::analyzed,
+                this,
+                &AutoDJProcessor::trackAnalyzed,
+                Qt::UniqueConnection);
+    }
 
     // Since the end position is measured in seconds from 0:00 it is also
     // the track duration.
@@ -3068,6 +3079,26 @@ void AutoDJProcessor::playerEmpty(DeckAttributes* pDeck) {
     // Load the next track. If we are the first AutoDJ track
     // (ADJ_ENABLE_P1LOADED state) then play the track.
     loadNextTrackFromQueue(*pDeck, m_eState == ADJ_ENABLE_P1LOADED);
+}
+
+void AutoDJProcessor::trackAnalyzed() {
+    const Track* pTrack = qobject_cast<const Track*>(sender());
+    if (!pTrack || m_eState != ADJ_IDLE) {
+        return; // not while a mix is running
+    }
+    DeckAttributes* pFromDeck = getFromDeck();
+    DeckAttributes* pToDeck = pFromDeck ? getOtherDeck(pFromDeck) : nullptr;
+    if (!pToDeck) {
+        return;
+    }
+    const TrackPointer pFrom = pFromDeck->getLoadedTrack();
+    const TrackPointer pTo = pToDeck->getLoadedTrack();
+    if (pFrom.get() != pTrack && pTo.get() != pTrack) {
+        return; // no longer on a deck
+    }
+    kLogger.info() << "Analysis of" << pTrack->getInfo()
+                   << "finished: planning the mix again";
+    calculateTransition(pFromDeck, pToDeck, false);
 }
 
 void AutoDJProcessor::playerRateChanged(DeckAttributes* pAttributes) {

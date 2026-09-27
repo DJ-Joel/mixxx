@@ -292,6 +292,19 @@ TEST(EnergyCalculatorTest, DrummerWhoSlowsDownDrifts) {
     EXPECT_GT(gridDrift(loop, 0.3, 0.5), EnergyCalculator::kGridMaxDriftBeats);
 }
 
+TEST(EnergyCalculatorTest, OneOddStretchIsNotDrift) {
+    // A steady track with one 8-second stretch (a breakdown) whose hits
+    // fall half a beat later, right where the check looks at the start.
+    const auto beatAt = [](int n) {
+        const double t = 0.3 + 0.5 * n;
+        return n >= 16 && n < 32 ? t + 0.25 : t;
+    };
+    const auto loop = drumLoop(200, beatAt, false);
+    const double drift = gridDrift(loop, 0.3, 0.5);
+    EXPECT_GE(drift, 0.0);
+    EXPECT_LT(drift, EnergyCalculator::kGridMaxDriftBeats);
+}
+
 TEST(EnergyCalculatorTest, BeatMapThatBendsWithTheDrummerDoesNotDrift) {
     // A live drummer: the tempo wanders slowly up and down by about 2%.
     const auto beatAt = [](int n) {

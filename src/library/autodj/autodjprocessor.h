@@ -438,6 +438,8 @@ class AutoDJProcessor : public QObject {
     void afterToDeckStarted();
     void updateSmartTransition(double progress);
     void followBeats();
+    /// A loaded track's analysis finished: plan the mix again.
+    void trackAnalyzed();
     void endSmartTransition(bool completed);
     void updateGlide(DeckAttributes* pDeck);
     struct SmartTransition {
