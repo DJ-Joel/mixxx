@@ -13,10 +13,12 @@
 
 #include "control/pollingcontrolproxy.h"
 #include "track/track_decl.h"
+#include "track/trackid.h"
 
 class QScreen;
 class VideoDecoder;
 class VideoManager;
+class VideoRecorder;
 class VisualPlayPosition;
 
 /// A window that shows the mixed video, scaled to fit with black bars.
@@ -54,6 +56,10 @@ class VideoManager : public QObject {
     void showInWindow();
     void setPreviewVisible(bool visible);
     bool isPreviewVisible() const;
+    /// A video window (full screen, window or preview) is showing.
+    bool isShowing() const {
+        return anyWindowVisible();
+    }
     /// Hides every video window and closes the video files.
     void stop();
 
@@ -65,6 +71,30 @@ class VideoManager : public QObject {
         return m_pictureDelayMs;
     }
     static constexpr int kMaxPictureDelayMs = 500;
+
+    /// How the picture changes from one song to the next.
+    enum class Transition {
+        Crossfade, ///< blend like the sound (volume faders, crossfader)
+        Cut,       ///< show one deck at a time; cut on a beat of the new song
+    };
+    void setTransition(Transition transition);
+    Transition transition() const {
+        return m_transition;
+    }
+    /// "Artist - Title" at the bottom for a few seconds when a song takes
+    /// over the screen.
+    void setShowTitles(bool show);
+    bool showTitles() const {
+        return m_showTitles;
+    }
+    /// Songs without video: the cover art pulses with the beat.
+    void setMovingPictures(bool moving);
+    bool movingPictures() const {
+        return m_movingPictures;
+    }
+    /// The DJ's name and/or logo (an image file) in the top right corner.
+    /// Empty = none.
+    void setBrand(const QString& text, const QString& logoPath);
     /// Decode on the graphics card when possible.
     void setUseGraphicsCard(bool use);
     bool useGraphicsCard() const {
@@ -77,6 +107,24 @@ class VideoManager : public QObject {
     }
     /// Called by a video window when the DJ closes it.
     void windowClosed();
+
+    /// Video recording: saves the mixed picture (titles, logo, cuts) and
+    /// the mixed sound together as one MP4 file. Works with or without a
+    /// video window open. False (with the reason) if it cannot start.
+    bool startRecording(const QString& path, QString* pError);
+    /// Ends the recording; the file is completed a moment later
+    /// (recordingFinished).
+    void stopRecording();
+    bool isRecording() const;
+    /// How long the current recording is (seconds).
+    double recordingSeconds() const;
+    /// False where video recording is not available (not Windows).
+    static bool canRecord();
+
+  signals:
+    /// A recording's file is complete. `error` is empty when it was saved.
+    void recordingFinished(const QString& path, const QString& error);
+  public:
 
     static constexpr int kCanvasWidth = 1920;
     static constexpr int kCanvasHeight = 1080;
@@ -109,4 +157,28 @@ class VideoManager : public QObject {
     double m_composeMs = 0.0;
     int m_pictureDelayMs = 0;
     bool m_useGraphicsCard = true;
+
+    // Video recording.
+    void recordPicture(bool newPicture);
+    void checkRecordingFinished();
+    PollingControlProxy m_sampleRate;
+    std::unique_ptr<VideoRecorder> m_pRecorder;
+    bool m_recordingStopping = false;
+    QTimer m_recordingCheck;
+
+    // Video phase 3.
+    void drawOverlays(QPainter* pPainter, double nowSec);
+    Transition m_transition = Transition::Crossfade;
+    bool m_showTitles = true;
+    bool m_movingPictures = true;
+    QString m_brandText;
+    QImage m_brandLogo;
+    QElapsedTimer m_clock;   ///< time for beats, cuts and titles
+    int m_shownDeck = -1;    ///< Cut: the deck on screen
+    int m_cutTarget = -1;    ///< Cut: the deck waiting for its beat
+    double m_cutSince = 0.0; ///< Cut: when it started waiting
+    int m_titleDeck = -1;    ///< the deck whose title is shown
+    TrackId m_titledTrack;   ///< the song whose title was shown last
+    QString m_titleText;
+    double m_titleStart = -100.0;
 };

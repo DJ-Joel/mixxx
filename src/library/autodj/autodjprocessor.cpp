@@ -53,6 +53,10 @@ const QString kKeyMorphPreference = QStringLiteral("SmartKeyMorph");
 constexpr int kKeyMorphDefault = 1; // semitones
 constexpr int kKeyMorphMax = 2;
 constexpr double kBeatmatchTolerancePct = 5.0; // the DJ's 5% rule
+// Safety net for an outgoing track without a beat grid: a short switch of
+// this length at its end, instead of Mixxx's long default fade (two beats
+// that do not match, for many seconds).
+constexpr double kNoGridSwitchSec = 4.0;
 constexpr double kMissing = std::numeric_limits<double>::quiet_NaN();
 
 ConfigKey eqKillKey(const QString& deckGroup) {
@@ -682,6 +686,17 @@ void AutoDJProcessor::beginSmartTransition(
     // then a plain fade instead (the same decision as the phrase plan).
     QString gridWhy;
     const bool gridsOk = gridsAllowBeatmatch(pFromDeck->getLoadedTrack(), pToTrack, &gridWhy);
+    // The phrase plan already decided whether this mix is beatmatched, and
+    // placed the incoming song for it (its beat in the middle of the fade,
+    // or at its end for a switch). Follow that decision, so the plan and the
+    // mix never disagree near the 5% limit.
+    const TrackPointer pFromTrackNow = pFromDeck->getLoadedTrack();
+    const bool plannedSwitch = m_plannedMix.valid && !m_plannedMix.matched && pFromTrackNow &&
+            pToTrack && m_plannedMix.fromId == pFromTrackNow->getId() &&
+            m_plannedMix.toId == pToTrack->getId();
+    if (plannedSwitch && ratio) {
+        ratio.reset();
+    }
     if (!gridsOk) {
         ratio.reset();
     }
@@ -745,6 +760,10 @@ void AutoDJProcessor::beginSmartTransition(
     } else if (!gridsOk) {
         kLogger.info() << "No beatmatch for" << pToDeck->group << ":" << gridWhy
                        << ": plain crossfade";
+    } else if (plannedSwitch) {
+        kLogger.info() << "No beatmatch for" << pToDeck->group
+                       << ": the phrase plan chose a switch (" << toTrackBpm << "vs" << fromBpm
+                       << "BPM now)";
     } else {
         kLogger.info() << "No beatmatch for" << pToDeck->group
                        << "(" << toTrackBpm << "vs" << fromBpm
@@ -933,10 +952,57 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     const mixxx::BeatsPointer pToBeats = pToTrack->getBeats();
     const double fromBpm = pFromTrack->getBpm();
     const double toBpm = pToTrack->getBpm();
-    if (!pFromBeats || !pToBeats || !(fromBpm > 0.0) || !(toBpm > 0.0)) {
-        logOnce(QStringLiteral(" nogrid"), QStringLiteral("skipped, a track has no beat grid"));
+    const bool fromHasGrid = pFromBeats && fromBpm > 0.0 &&
+            AnalyzerEnergy::beatGrid(pFromTrack).isValid();
+    const bool toHasGrid = pToBeats && toBpm > 0.0 &&
+            AnalyzerEnergy::beatGrid(pToTrack).isValid();
+    if (!fromHasGrid && !toHasGrid) {
+        // Nothing is known about either beat (e.g. a library that was never
+        // analysed): Mixxx's own timing, as without Auto DJ 2.0 plus Video
+        // Mixing.
+        logOnce(QStringLiteral(" nogrid"),
+                QStringLiteral("skipped, neither track has a beat grid"));
         return;
     }
+    // Safety net: an outgoing track without a beat grid (never analysed, or a
+    // broken file) next to one that has a grid cannot be put on phrases.
+    // Instead of Mixxx's long default fade (two beats that do not match, for
+    // many seconds), a short switch just before its outro (or its end).
+    if (!fromHasGrid) {
+        double endSec = getOutroEndSecond(pFromDeck);
+        const mixxx::audio::FramePos outroStart = pFromDeck->outroStartPosition();
+        if (outroStart.isValid() && outroStart <= pFromDeck->trackEndPosition()) {
+            endSec = std::min(endSec, framePositionToSeconds(outroStart, pFromDeck));
+        }
+        const double beginSec = std::max(fromDeckPositionSec, endSec - kNoGridSwitchSec);
+        if (!(endSec > beginSec)) {
+            logOnce(QStringLiteral(" nogrid"),
+                    QStringLiteral("no beat grid on the outgoing track and no time left: "
+                                   "keeping the plain timing"));
+            return;
+        }
+        const double toStartSec = std::max(0.0, getIntroStartSecond(pToDeck));
+        pFromDeck->fadeBeginPos = beginSec;
+        pFromDeck->fadeEndPos = endSec;
+        pToDeck->startPos = toStartSec;
+        m_lastAlignApplied = true;
+        logOnce(QStringLiteral(" nogrid %1").arg(endSec * pFromDeck->rateRatio(), 0, 'f', 1),
+                QStringLiteral("NO beat grid on the outgoing track: short switch, fade %1 -> "
+                               "%2 s, incoming starts at %3 s")
+                        .arg(beginSec)
+                        .arg(endSec)
+                        .arg(toStartSec));
+        const double toDuration = getEndSecond(pToDeck);
+        if (!pToDeck->isPlaying() && toDuration > 0.0) {
+            const double toNowSec = pToDeck->playPosition() * toDuration;
+            if (std::fabs(toNowSec - toStartSec) > 0.05) {
+                pToDeck->setPlayPosition(toStartSec / toDuration);
+            }
+        }
+        return;
+    }
+    // An incoming track without a grid is fine: the mix is simply not
+    // beatmatched (its beat comes in as the fade ends, see planUnmatched).
     // Beatmatched only within the 5% rule. Otherwise the outgoing side is
     // still placed on its phrases and the incoming intro is still skipped,
     // but the new beat comes in as the fade ends (no clashing beats).
@@ -950,8 +1016,8 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     // bends with the music) gives the time of every beat.
     const phrasealign::Grid from = AnalyzerEnergy::beatGrid(pFromTrack).atSpeed(fromRatio);
     const phrasealign::Grid to = AnalyzerEnergy::beatGrid(pToTrack).atSpeed(toRatio);
-    if (!from.isValid() || !to.isValid()) {
-        logOnce(QStringLiteral(" nogrid"), QStringLiteral("skipped, a track has no beat grid"));
+    if (!from.isValid()) {
+        logOnce(QStringLiteral(" nogrid"), QStringLiteral("skipped, the outgoing track has no beat grid"));
         return;
     }
 
@@ -1032,14 +1098,22 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     const int bars = phrasealign::barsForSeconds(wantedSec, from.beatSecAt(fromLimitSec));
     // Beatmatched only within the 5% rule, compared at the tempo each track
     // has where the mix happens (a beat map may bend away from its average).
-    const double fromMixBpm = 60.0 / from.beatSecAt(fromLimitSec);
-    const double toMixBpm = 60.0 /
-            (to.beatSecAt(toBodyStartSec >= 0.0 ? toBodyStartSec : toEarliestSec) * toRatio);
-    const bool matched = gridsOk &&
+    // An outgoing deck still easing back to its own tempo after the previous
+    // mix will be there by the time this mix starts.
+    const double fromMixRatio = m_glide.pDeck == pFromDeck ? 1.0 : fromRatio;
+    const double fromMixBpm = 60.0 / from.beatSecAt(fromLimitSec) * fromMixRatio / fromRatio;
+    const double toMixBpm = to.isValid()
+            ? 60.0 / (to.beatSecAt(toBodyStartSec >= 0.0 ? toBodyStartSec : toEarliestSec) *
+                             toRatio)
+            : 0.0;
+    const bool matched = gridsOk && toHasGrid && to.isValid() &&
             beatmatch::matchRatio(fromMixBpm, toMixBpm, kBeatmatchTolerancePct).has_value();
-    const QString notMatchedWhy = gridsOk
-            ? QStringLiteral("%1 vs %2 BPM").arg(fromMixBpm, 0, 'f', 1).arg(toMixBpm, 0, 'f', 1)
-            : gridWhy;
+    const QString notMatchedWhy = !to.isValid()
+            ? QStringLiteral("the incoming track has no beat grid")
+            : (gridsOk ? QStringLiteral("%1 vs %2 BPM")
+                                 .arg(fromMixBpm, 0, 'f', 1)
+                                 .arg(toMixBpm, 0, 'f', 1)
+                       : gridWhy);
     const auto plan = matched
             ? phrasealign::plan(from,
                       to,
@@ -1084,6 +1158,10 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                     .arg(toBodyMarked ? introSource : QStringLiteral("measured"))
                     .append(fromOutroMarked ? QStringLiteral(", limit from Outro Start")
                                             : QString()));
+    m_plannedMix.valid = true;
+    m_plannedMix.fromId = pFromTrack->getId();
+    m_plannedMix.toId = pToTrack->getId();
+    m_plannedMix.matched = matched;
     pFromDeck->fadeBeginPos = plan->fromFadeBeginSec;
     pFromDeck->fadeEndPos = plan->fromFadeEndSec;
     pToDeck->startPos = plan->toStartSec;
@@ -2089,6 +2167,16 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
     const bool fromDeckAtFadeOrEnd = fromDeckReachedFadeOrEnd(
             thisDeck, thisPlayPosition, getEndSecond(thisDeck));
 
+    // Auto DJ 2.0 plus Video Mixing: the queue ran empty and the last song
+    // has now ended with nothing on the other deck: switch Auto DJ off.
+    if (m_eState == ADJ_IDLE && thisDeck->getLoadedTrack() && !otherDeck->getLoadedTrack() &&
+            !otherDeckPlaying &&
+            (thisPlayPosition >= 1.0 || (!thisDeckPlaying && fromDeckAtFadeOrEnd))) {
+        kLogger.info() << "The last song has ended and the queue is empty: Auto DJ off";
+        toggleAutoDJ(false);
+        return;
+    }
+
     if (m_eState == ADJ_IDLE) {
         if (!thisDeckPlaying && thisPlayPosition < 1) {
             // this is a cueing seek, recalculate the transition, from the
@@ -2279,13 +2367,30 @@ bool AutoDJProcessor::loadNextTrackFromQueue(const DeckAttributes& deck, bool pl
 
     // We ran out of tracks in the queue.
     if (!nextTrack) {
-        // Disable AutoDJ.
-        toggleAutoDJ(false);
-
-        // And eject track (nextTrack is null) as "End of auto DJ warning"
-        emitLoadTrackToPlayer(nextTrack, deck.group, false);
+        // Auto DJ 2.0 plus Video Mixing: while a song is still playing, Auto DJ
+        // stays on, so the DJ can add more songs to the queue during the last
+        // one; they are then loaded and mixed as usual. It switches itself
+        // off when that last song ends (see playerPositionChanged). Only with
+        // nothing playing does it switch off at once, as Mixxx does.
+        const DeckAttributes* pLeft = getLeftDeck();
+        const DeckAttributes* pRight = getRightDeck();
+        const bool somethingPlaying =
+                (pLeft && pLeft->isPlaying()) || (pRight && pRight->isPlaying());
+        if (!somethingPlaying) {
+            toggleAutoDJ(false);
+        } else if (!m_queueEmptyLogged) {
+            m_queueEmptyLogged = true;
+            kLogger.info() << "Queue empty: Auto DJ stays on until the last song ends";
+        }
+        // Empty the free deck (nextTrack is null) as "End of auto DJ warning",
+        // so the finished song is not played again. Only if it holds a track:
+        // ejecting calls this function again (playerEmpty).
+        if (deck.getLoadedTrack()) {
+            emitLoadTrackToPlayer(nextTrack, deck.group, false);
+        }
         return false;
     }
+    m_queueEmptyLogged = false;
 
     emitLoadTrackToPlayer(nextTrack, deck.group, play);
     return true;

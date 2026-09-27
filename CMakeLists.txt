@@ -2899,15 +2899,19 @@ if(FFMPEG)
   target_sources(
     mixxx-lib
     PRIVATE
+      src/video/videoaudiotap.cpp
       src/video/videobackend_mf.cpp
       src/video/videodecoder.cpp
       src/video/videomanager.cpp
+      src/video/videorecorder.cpp
   )
   # The Windows video decoder raises _WIN32_WINNT for itself (graphics-card
   # decoding needs Windows 8+ names), so it must not use the precompiled
   # header, which was built with the Windows 7 setting.
+  # The video recorder includes the Windows headers itself (NOMINMAX).
   set_source_files_properties(
     src/video/videobackend_mf.cpp
+    src/video/videorecorder.cpp
     PROPERTIES SKIP_PRECOMPILE_HEADERS ON
   )
   target_compile_definitions(

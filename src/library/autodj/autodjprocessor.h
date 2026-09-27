@@ -468,6 +468,17 @@ class AutoDJProcessor : public QObject {
         double worstSlipBeats = 0.0;
     };
     SmartTransition m_smart;
+    // The queue ran empty while a song was playing (logged once).
+    bool m_queueEmptyLogged = false;
+    // The last phrase plan's decision: beatmatched or a switch. The mix
+    // itself follows it (see beginSmartTransition).
+    struct PlannedMix {
+        bool valid = false;
+        TrackId fromId;
+        TrackId toId;
+        bool matched = false;
+    };
+    PlannedMix m_plannedMix;
     struct Glide {
         DeckAttributes* pDeck = nullptr;
         double startRatio = 1.0;

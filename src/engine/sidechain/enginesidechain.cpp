@@ -83,6 +83,9 @@ void EngineSideChain::writeSamples(const CSAMPLE* pBuffer, int iFrames) {
     if (numSamplesWritten != numSamples) {
         Counter("EngineSideChain::writeSamples buffer overrun").increment();
     }
+    // Wait-free: safe in the engine callback.
+    m_framesWritten.fetch_add(numSamplesWritten / mixxx::kEngineChannelOutputCount,
+            std::memory_order_release);
 
     if (m_sampleFifo.writeAvailable() < SIDECHAIN_BUFFER_SIZE / 5) {
         // Signal to the sidechain that samples are available.
@@ -115,6 +118,8 @@ void EngineSideChain::run() {
             foreach (SideChainWorker* pWorker, m_workers) {
                 pWorker->process(m_pWorkBuffer, samples_read);
             }
+            m_framesRead.fetch_add(samples_read / mixxx::kEngineChannelOutputCount,
+                    std::memory_order_release);
         }
 
         // Check to see if we're supposed to exit/stop this thread.

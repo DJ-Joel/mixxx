@@ -13,6 +13,9 @@
 #include "errordialoghandler.h"
 #include "moc_recordingmanager.cpp"
 #include "recording/defs_recording.h"
+#ifdef __FFMPEG__
+#include "video/videoaudiotap.h"
+#endif
 
 #define MIN_DISK_FREE 1024 * 1024 * 1024ll // one gibibyte
 
@@ -55,6 +58,10 @@ RecordingManager::RecordingManager(UserSettingsPointer pConfig, EngineMixer* pEn
                 this,
                 &RecordingManager::slotDurationRecorded);
         pSidechain->addSideChainWorker(pEngineRecord);
+#ifdef __FFMPEG__
+        // Auto DJ 2.0 plus Video Mixing: the same sound for video recording.
+        pSidechain->addSideChainWorker(new VideoAudioTap(pSidechain));
+#endif
     }
 }
 

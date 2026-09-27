@@ -1,6 +1,10 @@
 #include "library/autodj/dlgautodj.h"
 
 #include <QActionGroup>
+#include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+#include <QStandardPaths>
 #include <QComboBox>
 #include <algorithm>
 #include <QDialog>
@@ -21,12 +25,14 @@
 #include <QHeaderView>
 #include <QScreen>
 #include <QSlider>
+#include <QFileDialog>
 #include <QPushButton>
 #include <cmath>
 #include <QTableWidget>
 #include <QTimer>
 
 #include "control/controlobject.h"
+#include "control/controlproxy.h"
 #include "controllers/keyboard/keyboardeventfilter.h"
 #include "mixer/playerinfo.h"
 #include "mixer/playermanager.h"
@@ -328,9 +334,13 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     pushButtonVideo->setToolTip(tr(
             "Shows the music videos of the decks on a screen or projector.\n"
             "The picture follows each deck (tempo, loops, jumps) and is mixed\n"
-            "like the sound (volume faders and crossfader). Songs without\n"
-            "video show their cover art and title. Esc closes the video."));
+            "like the sound (volume faders and crossfader), or cuts on the beat.\n"
+            "Songs without video show their cover art and title, pulsing with\n"
+            "the beat. The menu also has song titles, your name or logo,\n"
+            "picture timing and graphics-card decoding. Esc closes the video.\n"
+            "\"Record video...\" saves the mixed picture and sound as an MP4."));
     auto* pVideoMenu = new QMenu(pushButtonVideo);
+    pVideoMenu->setToolTipsVisible(true);
     connect(pVideoMenu, &QMenu::aboutToShow, this, [this, pVideoMenu]() {
         pVideoMenu->clear();
         pVideoMenu->addSection(tr("Show the videos full screen on"));
@@ -365,6 +375,53 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             videoManager()->setPreviewVisible(visible);
         });
         pVideoMenu->addSeparator();
+        // How the picture changes from song to song.
+        auto* pTransitions = new QActionGroup(pVideoMenu);
+        const int transition = m_pConfig->getValue(ConfigKey(kVideoGroup, "Transition"), 0);
+        QAction* pCrossfade = pVideoMenu->addAction(tr("Transitions: crossfade with the mix"));
+        QAction* pCut = pVideoMenu->addAction(tr("Transitions: cut on the beat"));
+        for (QAction* pAction : {pCrossfade, pCut}) {
+            pAction->setCheckable(true);
+            pTransitions->addAction(pAction);
+        }
+        (transition == 1 ? pCut : pCrossfade)->setChecked(true);
+        pCut->setToolTip(tr("One video at a time; the new song's video takes over on its beat."));
+        connect(pCrossfade, &QAction::triggered, this, [this]() {
+            m_pConfig->setValue(ConfigKey(kVideoGroup, "Transition"), 0);
+            if (m_pVideo) {
+                m_pVideo->setTransition(VideoManager::Transition::Crossfade);
+            }
+        });
+        connect(pCut, &QAction::triggered, this, [this]() {
+            m_pConfig->setValue(ConfigKey(kVideoGroup, "Transition"), 1);
+            if (m_pVideo) {
+                m_pVideo->setTransition(VideoManager::Transition::Cut);
+            }
+        });
+        pVideoMenu->addSeparator();
+        QAction* pTitles = pVideoMenu->addAction(tr("Show song titles"));
+        pTitles->setCheckable(true);
+        pTitles->setChecked(m_pConfig->getValue(ConfigKey(kVideoGroup, "ShowTitles"), true));
+        connect(pTitles, &QAction::toggled, this, [this](bool on) {
+            m_pConfig->setValue(ConfigKey(kVideoGroup, "ShowTitles"), on);
+            if (m_pVideo) {
+                m_pVideo->setShowTitles(on);
+            }
+        });
+        QAction* pMoving = pVideoMenu->addAction(tr("Moving pictures for songs without video"));
+        pMoving->setCheckable(true);
+        pMoving->setChecked(m_pConfig->getValue(ConfigKey(kVideoGroup, "MovingPictures"), true));
+        connect(pMoving, &QAction::toggled, this, [this](bool on) {
+            m_pConfig->setValue(ConfigKey(kVideoGroup, "MovingPictures"), on);
+            if (m_pVideo) {
+                m_pVideo->setMovingPictures(on);
+            }
+        });
+        QAction* pBrand = pVideoMenu->addAction(tr("Your name or logo on screen..."));
+        connect(pBrand, &QAction::triggered, this, [this]() {
+            showVideoBrand();
+        });
+        pVideoMenu->addSeparator();
         QAction* pTiming = pVideoMenu->addAction(tr("Picture timing..."));
         connect(pTiming, &QAction::triggered, this, [this]() {
             showPictureTiming();
@@ -381,6 +438,31 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             }
         });
         pVideoMenu->addSeparator();
+        if (VideoManager::canRecord()) {
+            if (m_pVideo && m_pVideo->isRecording()) {
+                const int seconds = static_cast<int>(m_pVideo->recordingSeconds());
+                QAction* pStopRecording = pVideoMenu->addAction(
+                        tr("Stop video recording (%1:%2)")
+                                .arg(seconds / 60)
+                                .arg(seconds % 60, 2, 10, QLatin1Char('0')));
+                connect(pStopRecording, &QAction::triggered, this, [this]() {
+                    if (m_pVideo) {
+                        m_pVideo->stopRecording();
+                    }
+                    updateVideoButton();
+                });
+            } else {
+                QAction* pRecord = pVideoMenu->addAction(tr("Record video..."));
+                pRecord->setToolTip(tr(
+                        "Saves what is on the video screen (titles, logo, cuts)\n"
+                        "and the mix you hear, together in one MP4 file.\n"
+                        "Mixxx's REC button does this too while the video is showing\n"
+                        "(the MP4 is saved next to the sound file, with the same name)."));
+                connect(pRecord, &QAction::triggered, this, [this]() {
+                    startVideoRecording();
+                });
+            }
+        }
         QAction* pStop = pVideoMenu->addAction(tr("Stop video"));
         connect(pStop, &QAction::triggered, this, [this]() {
             if (m_pVideo) {
@@ -389,6 +471,12 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
         });
     });
     pushButtonVideo->setMenu(pVideoMenu);
+    // Mixxx's REC button also records the video while it is showing.
+    auto* pRecordingStatus = new ControlProxy(QStringLiteral("[Recording]"),
+            QStringLiteral("status"),
+            this,
+            ControlFlag::AllowMissingOrInvalid);
+    pRecordingStatus->connectValueChanged(this, &DlgAutoDJ::recordingStatusChanged);
 #else
     pushButtonVideo->hide(); // needs FFmpeg
 #endif
@@ -436,6 +524,8 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             "Shortcut: Shift+F12");
     QString fadeBtnTooltip = tr(
             "Trigger the transition to the next track\n"
+            "With Beatmatch on, the mix waits for the start of the next\n"
+            "8-bar phrase, so it stays on the beat.\n"
             "\n"
             "Shortcut: Shift+F11");
     QString skipBtnTooltip = tr(
@@ -1273,6 +1363,151 @@ void DlgAutoDJ::showPictureTiming() {
 #endif
 }
 
+void DlgAutoDJ::startVideoRecording() {
+#ifdef __FFMPEG__
+    VideoManager* pVideo = videoManager();
+    if (!pVideo) {
+        return;
+    }
+    // Where: the folder used last time, else Mixxx's recordings folder.
+    QString folder = m_pConfig->getValue(ConfigKey(kVideoGroup, "RecordFolder"), QString());
+    if (folder.isEmpty() || !QDir(folder).exists()) {
+        folder = m_pConfig->getValueString(ConfigKey("[Recording]", "Directory"));
+    }
+    if (folder.isEmpty()) {
+        folder = QStandardPaths::writableLocation(QStandardPaths::MusicLocation) +
+                QStringLiteral("/Mixxx/Recordings");
+    }
+    QDir().mkpath(folder);
+    const QString suggested = QDir(folder).filePath(QStringLiteral("Mixxx video %1.mp4")
+                    .arg(QDateTime::currentDateTime().toString(
+                            QStringLiteral("yyyy-MM-dd hh-mm"))));
+    QString path = QFileDialog::getSaveFileName(this,
+            tr("Record video"),
+            suggested,
+            tr("MP4 video (*.mp4)"));
+    if (path.isEmpty()) {
+        return;
+    }
+    if (!path.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive)) {
+        path += QStringLiteral(".mp4");
+    }
+    m_pConfig->setValue(ConfigKey(kVideoGroup, "RecordFolder"), QFileInfo(path).absolutePath());
+    QString error;
+    if (!pVideo->startRecording(path, &error)) {
+        QMessageBox::warning(this, tr("Video recording"), error);
+    }
+    updateVideoButton();
+#endif
+}
+
+void DlgAutoDJ::recordingStatusChanged(double status) {
+#ifdef __FFMPEG__
+    constexpr double kRecordOff = 0.0; // defs_recording.h RECORD_OFF
+    constexpr double kRecordOn = 2.0;  // RECORD_ON (sound file open)
+    if (status == kRecordOff) {
+        if (m_recStartedVideo && m_pVideo) {
+            qInfo() << "Video recording: REC was switched off, stopping the video recording too";
+            m_pVideo->stopRecording();
+        }
+        m_recHandled = false;
+        m_recStartedVideo = false;
+        updateVideoButton();
+        return;
+    }
+    // Only the first "on" of a REC press (a split into a new sound file
+    // keeps the one video file going).
+    if (status != kRecordOn || m_recHandled) {
+        return;
+    }
+    m_recHandled = true;
+    if (!m_pVideo || !m_pVideo->isShowing() || m_pVideo->isRecording() ||
+            !VideoManager::canRecord()) {
+        return; // video off (REC records the sound only), or already recording
+    }
+    const QString soundPath = m_pConfig->getValueString(ConfigKey("[Recording]", "Path"));
+    if (soundPath.isEmpty()) {
+        return;
+    }
+    const QFileInfo soundFile(soundPath);
+    const QString path = soundFile.dir().filePath(soundFile.completeBaseName() +
+            QStringLiteral(".mp4"));
+    QString error;
+    if (m_pVideo->startRecording(path, &error)) {
+        m_recStartedVideo = true;
+        qInfo().noquote() << "Video recording: started by REC:" << path;
+    } else {
+        QMessageBox::warning(this,
+                tr("Video recording"),
+                tr("REC is recording the sound, but the video could not be "
+                   "recorded:\n%1")
+                        .arg(error));
+    }
+    updateVideoButton();
+#else
+    Q_UNUSED(status);
+#endif
+}
+
+void DlgAutoDJ::updateVideoButton() {
+#ifdef __FFMPEG__
+    const bool recording = m_pVideo && m_pVideo->isRecording();
+    pushButtonVideo->setText(recording ? tr("Video (REC)") : tr("Video"));
+    pushButtonVideo->setStyleSheet(
+            recording ? QStringLiteral("QPushButton { color: #ff4040; font-weight: bold; }")
+                      : QString());
+#endif
+}
+
+void DlgAutoDJ::showVideoBrand() {
+#ifdef __FFMPEG__
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Your name or logo on screen"));
+    auto* pLayout = new QVBoxLayout(&dialog);
+    pLayout->addWidget(new QLabel(tr(
+            "Shown in the top right corner of the video screen.\n"
+            "Leave both empty for nothing.")));
+    pLayout->addWidget(new QLabel(tr("Name (text):")));
+    auto* pText = new QLineEdit(
+            m_pConfig->getValue(ConfigKey(kVideoGroup, "BrandText"), QString()));
+    pLayout->addWidget(pText);
+    pLayout->addWidget(new QLabel(tr("Logo (a picture file, e.g. PNG):")));
+    auto* pLogoRow = new QHBoxLayout();
+    auto* pLogo = new QLineEdit(
+            m_pConfig->getValue(ConfigKey(kVideoGroup, "BrandLogo"), QString()));
+    pLogo->setReadOnly(true);
+    auto* pChoose = new QPushButton(tr("Choose..."));
+    auto* pClear = new QPushButton(tr("No logo"));
+    pLogoRow->addWidget(pLogo, 1);
+    pLogoRow->addWidget(pChoose);
+    pLogoRow->addWidget(pClear);
+    pLayout->addLayout(pLogoRow);
+    connect(pChoose, &QPushButton::clicked, &dialog, [&dialog, pLogo]() {
+        const QString file = QFileDialog::getOpenFileName(&dialog,
+                tr("Choose your logo"),
+                pLogo->text(),
+                tr("Pictures (*.png *.jpg *.jpeg *.bmp *.gif *.webp)"));
+        if (!file.isEmpty()) {
+            pLogo->setText(file);
+        }
+    });
+    connect(pClear, &QPushButton::clicked, pLogo, &QLineEdit::clear);
+    auto* pButtons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(pButtons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(pButtons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    pLayout->addWidget(pButtons);
+    dialog.resize(520, dialog.sizeHint().height());
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    m_pConfig->setValue(ConfigKey(kVideoGroup, "BrandText"), pText->text().trimmed());
+    m_pConfig->setValue(ConfigKey(kVideoGroup, "BrandLogo"), pLogo->text());
+    if (m_pVideo) {
+        m_pVideo->setBrand(pText->text(), pLogo->text());
+    }
+#endif
+}
+
 VideoManager* DlgAutoDJ::videoManager() {
 #ifdef __FFMPEG__
     if (!m_pVideo) {
@@ -1281,6 +1516,28 @@ VideoManager* DlgAutoDJ::videoManager() {
                 m_pConfig->getValue(ConfigKey(kVideoGroup, "GraphicsCard"), true));
         m_pVideo->setPictureDelayMs(
                 m_pConfig->getValue(ConfigKey(kVideoGroup, "PictureDelayMs"), 0));
+        m_pVideo->setTransition(
+                m_pConfig->getValue(ConfigKey(kVideoGroup, "Transition"), 0) == 1
+                        ? VideoManager::Transition::Cut
+                        : VideoManager::Transition::Crossfade);
+        m_pVideo->setShowTitles(
+                m_pConfig->getValue(ConfigKey(kVideoGroup, "ShowTitles"), true));
+        m_pVideo->setMovingPictures(
+                m_pConfig->getValue(ConfigKey(kVideoGroup, "MovingPictures"), true));
+        m_pVideo->setBrand(m_pConfig->getValue(ConfigKey(kVideoGroup, "BrandText"), QString()),
+                m_pConfig->getValue(ConfigKey(kVideoGroup, "BrandLogo"), QString()));
+        connect(m_pVideo,
+                &VideoManager::recordingFinished,
+                this,
+                [this](const QString& path, const QString& error) {
+                    updateVideoButton();
+                    if (!error.isEmpty()) {
+                        QMessageBox::warning(this,
+                                tr("Video recording"),
+                                tr("The video recording could not be saved:\n%1\n\n%2")
+                                        .arg(error, QDir::toNativeSeparators(path)));
+                    }
+                });
     }
     return m_pVideo;
 #else

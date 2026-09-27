@@ -66,7 +66,8 @@ does not know where the beat is. Auto DJ 2.0 plus Video Mixing adds:
 | **Beat maps and beat lock** | Songs with a live drummer (tempo drifts) can use Mixxx's variable-tempo beat map; during the mix the incoming speed keeps following the outgoing beats. |
 | **Key morph** | If two keys clash, the incoming song is pitched by a semitone (tempo unchanged) so the keys fit. |
 | **Genre Scan** | Suggests genres for untagged songs from MusicBrainz; the DJ reviews them before anything is saved. |
-| **Video mixing** | Music videos play on a second screen or projector, follow each deck (tempo, loops, jumps) and are mixed like the sound. |
+| **Video mixing** | Music videos play on a second screen or projector, follow each deck (tempo, loops, jumps) and are mixed like the sound, or cut on the beat. Song titles, the DJ's name or logo, and moving pictures for songs without video. The whole video set can be recorded as an MP4. |
+| **End of the queue** | Auto DJ stays on while the last song plays, so more songs can still be added; it switches off when that song ends. |
 | **Own installer** | A Windows installer that installs "Mixxx Auto DJ 2.0 plus Video Mixing" next to a normal Mixxx without touching it. |
 
 ---
@@ -85,7 +86,7 @@ Everything is on the **Auto DJ** page, in the row of buttons above the queue:
 | **+?** | Adds a random song (as in Mixxx). |
 | **Smart Fill** | Adds songs that continue the set. The arrow opens the options: how many, energy direction (build up / keep level / up and down), never the same artist twice, where to take songs from (library, crate or playlist), and "keep the queue filled automatically". |
 | **Live Assistant** | Opens the next-song window. Double-click a suggestion to load it on the free deck. |
-| **Video** | Show the videos full screen on a screen or projector, in a window, or in a small preview. Also: picture timing, graphics-card decoding on/off, stop video. |
+| **Video** | Show the videos full screen on a screen or projector, in a window, or in a small preview. Also: transitions (crossfade or cut on the beat), song titles, moving pictures, your name or logo, picture timing, graphics-card decoding on/off, **record video** (saves the picture and the mix as one MP4), stop video. |
 
 On the **Analyze** page there is a **Genre Scan** button.
 
@@ -308,7 +309,18 @@ When a mix starts (`AutoDJProcessor::beginSmartTransition`):
    30 seconds, too slowly to hear.
 
 If the tempos are too far apart, or a beat grid drifts, there is no
-beatmatch: see 4.11.
+beatmatch: see 4.11. Whether a mix is beatmatched is decided once, by the
+phrase plan (4.10), which also places the incoming song for it; the mix
+itself follows that decision. (Deciding twice, a moment apart, could
+disagree for tempos right at the 5% limit.) A song that is still easing back
+to its own tempo after the previous mix is judged at its own tempo, since it
+will be there when the mix starts.
+
+**End of the queue:** when the queue runs empty, Mixxx normally switches
+Auto DJ off at once, and songs added afterwards are never played. Here Auto
+DJ stays on while the last song plays: songs added in the meantime are
+loaded and mixed as usual. When the last song ends with nothing to follow,
+Auto DJ switches itself off.
 
 ### 4.10 Phrase alignment
 
@@ -337,7 +349,15 @@ must not play together. `phrasealign::planUnmatched()` still ends the fade on
 an outgoing phrase ending, but the new beat comes in as the fade **ends**, and
 only the new song's intro plays under the outgoing beat. If the intro is
 shorter than the fade, the fade is shortened to fit it, down to a **quick
-switch of one bar**. *Why:* a short, clean change on the phrase is what a DJ
+switch of one bar**. An incoming song **without a beat grid** is handled the
+same way (it cannot be beatmatched).
+
+**Safety net:** if the outgoing song has **no beat grid** at all (never
+analysed, or a broken file) but the next one has, phrases cannot be found.
+Instead of Mixxx's long default crossfade (two beats that do not match, for
+many seconds), Auto DJ makes a short switch of 4 seconds just before the
+song's outro (or its end). When **neither** song has a beat grid, nothing is
+known about either beat, and Mixxx's own timing is kept. *Why:* a short, clean change on the phrase is what a DJ
 does with two songs that do not match; a long crossfade of two tempos is the
 worst case for dancers.
 
@@ -407,6 +427,44 @@ For video DJ sets (`src/video/`):
   flash of the wrong picture).
 - Output: 1920×1080, full screen on any screen, in a window, or a small
   preview.
+- **Transitions:** "crossfade with the mix" (above), or **"cut on the
+  beat"**: one video at a time. The new song's video takes over when it is
+  clearly louder than the old one, on the new song's next beat (Mixxx's
+  `beat_active`), or after at most one second. During an Auto DJ mix the
+  crossfader passes the middle exactly at the bass swap, so the picture cuts
+  where the new song takes over. A small margin stops the picture flickering
+  between two decks that are about equally loud.
+- **Song titles:** "Artist - Title" appears at the bottom for 7 seconds
+  (fading in and out) whenever a new song takes over the screen.
+- **Your name or logo:** a text and/or a picture file, shown in the top right
+  corner all the time.
+- **Moving pictures:** a song without video shows its cover art and title;
+  while it plays, the picture grows about 4% on every beat and settles back
+  (like a speaker cone), so the screen moves with the music.
+- **Record video** (Windows): saves exactly what the video screen shows
+  (titles, logo, cuts) together with the mix as one MP4 file (H.264 video,
+  1920x1080, 30 pictures a second; AAC sound, 192 kbit/s), using the encoder
+  built into Windows (Media Foundation), on the graphics card when it has
+  one. It works with or without a video window open. The Video button shows
+  "Video (REC)" while recording.
+  - **Mixxx's REC button** does it too: if the video is showing when REC is
+    pressed, an MP4 with the same name is saved next to the sound file, and
+    pressing REC again stops both. With the video off, REC records the sound
+    only, as before. (It watches `[Recording],status`; Mixxx's recording
+    code is not changed.)
+  - The sound is the same mix Mixxx's own Record button saves. It comes from
+    Mixxx's recording side channel (`src/video/videoaudiotap.*`), so the
+    audio engine is not changed except for two frame counters in
+    `EngineSideChain`.
+  - Picture and sound share one clock: the number of sound frames the engine
+    has made. The side channel delivers the sound in batches (up to about
+    half a second late), each tagged with its frame number; each picture is
+    stamped with the engine's frame count when it was drawn, minus the
+    picture timing. So they stay in step however late either arrives.
+  - The file is written on its own thread (`src/video/videorecorder.*`). If
+    it falls behind, pictures are dropped (the one before stays a little
+    longer), never the sound. The log says how many.
+  - The sound must run at 44100 or 48000 Hz (an AAC limit).
 
 ### 4.16 The Windows installer
 
@@ -468,7 +526,7 @@ Auto DJ 2.0 plus Video Mixing adds its own tables to Mixxx's library database
 
 Settings are stored in Mixxx's settings file under `[Auto DJ]` (Smart Fill
 options, key morph limit and so on) and `[Video]` (picture timing, graphics
-card).
+card, the folder of the last video recording).
 
 ---
 
@@ -480,7 +538,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*
 ```
 
-135 tests. The energy and grid-check tests use synthetic drum loops (steady,
+140 tests. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -496,11 +554,13 @@ music, many of them music videos.
   beat is not a downbeat (common), phrases are off by a few beats; the DJ can
   move the grid.
 - Assumes 4/4 time.
-- A song with no beat grid at all falls back to Mixxx's normal crossfade.
+- A song with no beat grid gets a short 4-second switch (or, if neither song
+  has one, Mixxx's own timing), not a phrase-aligned mix.
 - Beat lock needs a beat map on at least one of the two songs; steady grids
   rely on the one-time beatmatch.
 - Video: the picture follows the deck, but the video is not time-stretched
   (at +5% the picture simply runs 5% faster, which is what you want).
+- Video recording is Windows only, and needs the sound at 44100 or 48000 Hz.
 - Tested mainly on Windows 11.
 
 ---
@@ -543,3 +603,10 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
 27. **This documentation.**
 28. **Renamed to "Auto DJ 2.0 plus Video Mixing"** (installer, install
     folder, settings folder, window title, About box, code comments, docs).
+29. **Safety net for songs without a beat grid** (short switch) and **video
+    phase 3**: cut on the beat, song titles, name or logo, moving pictures.
+30. **End of the queue**: Auto DJ stays on until the last song ends; the mix
+    follows the phrase plan's beatmatch decision; updated tooltips.
+31. **Video recording**: "Record video..." saves the mixed picture and sound
+    as one MP4 (Windows encoder), in step through the engine's frame count.
+    Mixxx's REC button also records the video while it is showing.

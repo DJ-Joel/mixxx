@@ -139,7 +139,9 @@
           <enum>Qt::NoFocus</enum>
          </property>
          <property name="toolTip">
-          <string>Runs beatgrid, key, and ReplayGain detection on the selected tracks. Does not generate waveforms for the selected tracks to save disk space.</string>
+          <string>Runs beatgrid, key, and ReplayGain detection on the selected tracks. Does not generate waveforms for the selected tracks to save disk space.
+
+Auto DJ 2.0 plus Video Mixing also measures each song's energy (1-10), finds where the beat kicks in and where the energy drops (sets the Intro End and Outro Start markers, unless you set them yourself), and checks that the beat grid stays on the beat. Songs analysed before are only checked again where needed.</string>
          </property>
          <property name="text">
           <string>Analyze</string>

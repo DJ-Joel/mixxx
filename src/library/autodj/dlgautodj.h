@@ -109,5 +109,16 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     QPointer<VideoManager> m_pVideo;
     /// Video: move the picture earlier or later than the sound.
     void showPictureTiming();
+    /// Video: the DJ's name and/or logo on screen.
+    void showVideoBrand();
+    /// Video: record the mixed picture and sound as an MP4 file.
+    void startVideoRecording();
+    /// The Video button shows "REC" while recording.
+    void updateVideoButton();
+    /// Mixxx's REC button: while the video is showing, REC also records
+    /// the video (an MP4 next to the sound file, same name).
+    void recordingStatusChanged(double status);
+    bool m_recHandled = false;      ///< this REC press was looked at
+    bool m_recStartedVideo = false; ///< the video recording came from REC
     QPointer<QDialog> m_pPictureTiming;
 };
