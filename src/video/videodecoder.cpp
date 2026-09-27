@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 
 #include "video/videobackend.h"
 
@@ -50,8 +51,9 @@ QString avError(int error) {
 /// Windows decoder cannot play (Mixxx's FFmpeg has no H.264/H.265).
 class FfmpegBackend : public Backend {
   public:
-    explicit FfmpegBackend(QString name)
-            : m_name(std::move(name)) {
+    FfmpegBackend(QString name, bool useGraphicsCard)
+            : m_name(std::move(name)),
+              m_useHw(useGraphicsCard) {
     }
     ~FfmpegBackend() override {
         close();
@@ -335,7 +337,7 @@ class FfmpegBackend : public Backend {
 
     const QString m_name;
     std::string m_path;
-    bool m_useHw = true;
+    bool m_useHw;
     AVFormatContext* m_pFormat = nullptr;
     AVCodecContext* m_pCodec = nullptr;
     AVBufferRef* m_pHwDevice = nullptr;
@@ -351,10 +353,21 @@ class FfmpegBackend : public Backend {
     double m_lastSec = -1.0;
 };
 
-/// The picture as a QImage that fits the canvas (shape kept).
-QImage toImage(const Picture& picture, int maxWidth, int maxHeight) {
+/// A decoded picture at its own size, kept for loops and jumps back.
+struct RecentPicture {
+    double seconds = 0.0;
+    double aspect = 0.0; ///< width / height as shown
+    QImage image;
+    std::size_t bytes() const {
+        return static_cast<std::size_t>(image.sizeInBytes());
+    }
+};
+
+/// The picture as a QImage at its own size.
+RecentPicture toRecent(double seconds, const Picture& picture) {
+    RecentPicture recent;
     if (picture.width <= 0 || picture.height <= 0 || picture.pixels.empty()) {
-        return {};
+        return recent;
     }
     QImage image(picture.width, picture.height, QImage::Format_RGB32);
     for (int y = 0; y < picture.height; ++y) {
@@ -362,16 +375,28 @@ QImage toImage(const Picture& picture, int maxWidth, int maxHeight) {
                 picture.pixels.data() + static_cast<std::size_t>(picture.stride) * y,
                 static_cast<std::size_t>(picture.width) * 4);
     }
-    const double aspect = picture.displayAspect > 0.0
+    recent.seconds = seconds;
+    recent.aspect = picture.displayAspect > 0.0
             ? picture.displayAspect
             : static_cast<double>(picture.width) / picture.height;
+    recent.image = std::move(image);
+    return recent;
+}
+
+/// The picture scaled to fit the canvas (shape kept).
+QImage toCanvasSize(const RecentPicture& picture, int maxWidth, int maxHeight) {
+    const QImage& image = picture.image;
+    if (image.isNull()) {
+        return {};
+    }
+    const double aspect = picture.aspect;
     int width = maxWidth;
     int height = static_cast<int>(std::lround(maxWidth / aspect));
     if (height > maxHeight) {
         height = maxHeight;
         width = static_cast<int>(std::lround(maxHeight * aspect));
     }
-    if (width == picture.width && height == picture.height) {
+    if (width == image.width() && height == image.height()) {
         return image;
     }
     return image.scaled(width, height, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
@@ -379,10 +404,11 @@ QImage toImage(const Picture& picture, int maxWidth, int maxHeight) {
 
 } // namespace
 
-VideoDecoder::VideoDecoder(QString name, int maxWidth, int maxHeight)
+VideoDecoder::VideoDecoder(QString name, int maxWidth, int maxHeight, bool useGraphicsCard)
         : m_name(std::move(name)),
           m_maxWidth(maxWidth),
-          m_maxHeight(maxHeight) {
+          m_maxHeight(maxHeight),
+          m_useGraphicsCard(useGraphicsCard) {
     m_thread = std::thread([this]() {
         run();
     });
@@ -419,6 +445,18 @@ void VideoDecoder::setTarget(double seconds) {
     }
 }
 
+void VideoDecoder::setUseGraphicsCard(bool use) {
+    QMutexLocker locker(&m_mutex);
+    if (use == m_useGraphicsCard) {
+        return;
+    }
+    m_useGraphicsCard = use;
+    if (!m_requestedPath.isEmpty()) {
+        m_pathChanged = true; // open it again the new way
+        m_wake.wakeAll();
+    }
+}
+
 QImage VideoDecoder::frame(quint64* pSerial) const {
     QMutexLocker locker(&m_mutex);
     if (pSerial) {
@@ -446,9 +484,28 @@ void VideoDecoder::run() {
     Backend::Frame pending;   // decoded frame after the target (shown later)
     double shownSec = -1e9;
     bool moreWork = false; // the last step stopped before reaching the target
+    // The last pictures shown, in order, for loops and jumps back.
+    std::deque<RecentPicture> recent;
+    std::size_t recentBytes = 0;
+    // After a seek: the pictures from the key frame up to the target are
+    // not shown, unless getting there takes too long.
+    bool catchingUp = false;
+    bool described = false; // said where it decodes (after the first picture)
+    auto catchUpStarted = std::chrono::steady_clock::now();
+    constexpr double kMaxCatchUpMs = 400.0;
+
+    const auto publish = [this](QImage image) {
+        QMutexLocker locker(&m_mutex);
+        if (!m_pathChanged) {
+            m_frame = std::move(image);
+            ++m_serial;
+        }
+    };
+
     for (;;) {
         QString path;
         bool pathChanged = false;
+        bool useGraphicsCard = true;
         double target = 0.0;
         {
             QMutexLocker locker(&m_mutex);
@@ -463,6 +520,7 @@ void VideoDecoder::run() {
             path = m_requestedPath;
             target = m_target;
             m_targetChanged = false;
+            useGraphicsCard = m_useGraphicsCard;
         }
         if (pathChanged) {
             pBackend.reset();
@@ -470,14 +528,18 @@ void VideoDecoder::run() {
             pending = Backend::Frame();
             shownSec = -1e9;
             moreWork = false;
+            recent.clear();
+            recentBytes = 0;
+            catchingUp = false;
+            described = false;
             State state = State::Closed;
             if (!path.isEmpty()) {
                 // The Windows decoder first (it has H.264/H.265), then FFmpeg.
                 const std::string utf8 = path.toStdString();
                 state = State::Failed;
                 std::unique_ptr<Backend> candidates[] = {
-                        video::makeMediaFoundationBackend(),
-                        std::make_unique<FfmpegBackend>(m_name),
+                        video::makeMediaFoundationBackend(useGraphicsCard),
+                        std::make_unique<FfmpegBackend>(m_name, useGraphicsCard),
                 };
                 for (auto& pCandidate : candidates) {
                     if (!pCandidate) {
@@ -494,8 +556,7 @@ void VideoDecoder::run() {
                     }
                 }
                 if (pBackend) {
-                    qInfo().noquote() << "Video:" << m_name << "opened" << path << "-"
-                                      << QString::fromStdString(pBackend->description());
+                    qInfo().noquote() << "Video:" << m_name << "opened" << path;
                 }
             }
             QMutexLocker locker(&m_mutex);
@@ -513,6 +574,38 @@ void VideoDecoder::run() {
         const double frameSec = pBackend->frameSeconds();
         int seeks = 0;
         int shown = 0;
+        int fromMemory = 0;
+
+        // A loop or a jump back into the last pictures: show the kept one,
+        // no decoding. Only inside them (with a later picture kept too);
+        // at the end, decoding carries on as usual.
+        if (!recent.empty() && target >= recent.front().seconds - 0.5 * frameSec) {
+            auto after = std::upper_bound(recent.begin(),
+                    recent.end(),
+                    target + 0.5 * frameSec,
+                    [](double t, const RecentPicture& p) { return t < p.seconds; });
+            if (after != recent.begin() && after != recent.end()) {
+                const RecentPicture& at = *(after - 1);
+                // A gap (pictures skipped while decoding fast) is a miss.
+                if (after->seconds - at.seconds <= 3.5 * frameSec) {
+                    if (at.seconds != shownSec) {
+                        const QImage image = toCanvasSize(at, m_maxWidth, m_maxHeight);
+                        if (!image.isNull()) {
+                            shownSec = at.seconds;
+                            ++shown;
+                            ++fromMemory;
+                            publish(image);
+                        }
+                    }
+                    moreWork = false;
+                    QMutexLocker locker(&m_mutex);
+                    m_stats.framesShown += shown;
+                    m_stats.fromMemory += fromMemory;
+                    continue;
+                }
+            }
+        }
+
         // Backwards (a loop or a jump back), or far ahead: seek. Otherwise
         // decode forward to the target.
         const double decodedUpTo = std::max(candidate.seconds, pending.seconds);
@@ -522,6 +615,10 @@ void VideoDecoder::run() {
             pBackend->seek(target);
             candidate = Backend::Frame();
             pending = Backend::Frame();
+            recent.clear(); // no longer one piece with what comes next
+            recentBytes = 0;
+            catchingUp = true;
+            catchUpStarted = started;
             ++seeks;
         }
         bool failed = false;
@@ -544,6 +641,8 @@ void VideoDecoder::run() {
         if (failed) {
             candidate = Backend::Frame();
             pending = Backend::Frame();
+            recent.clear();
+            recentBytes = 0;
             if (!pBackend->retryAnotherWay()) {
                 qWarning() << "Video:" << m_name << "cannot decode the video of" << path;
                 pBackend.reset();
@@ -551,22 +650,48 @@ void VideoDecoder::run() {
                 if (!m_pathChanged) {
                     m_state = State::Failed;
                 }
+            } else {
+                qInfo().noquote() << "Video:" << m_name << "carries on:"
+                                  << QString::fromStdString(pBackend->description());
             }
             continue;
         }
-        if (candidate && candidate.seconds != shownSec) {
-            Picture picture;
-            QImage image;
-            if (pBackend->toPicture(candidate, &picture)) {
-                image = toImage(picture, m_maxWidth, m_maxHeight);
+        if (catchingUp && candidate) {
+            const double waitedMs = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - catchUpStarted)
+                                            .count();
+            if (candidate.seconds >= target - 3.5 * frameSec || !moreWork ||
+                    waitedMs > kMaxCatchUpMs) {
+                catchingUp = false;
             }
+        }
+        if (candidate && candidate.seconds != shownSec && !catchingUp) {
+            Picture picture;
+            RecentPicture decoded;
+            if (pBackend->toPicture(candidate, &picture)) {
+                decoded = toRecent(candidate.seconds, picture);
+            }
+            const QImage image = toCanvasSize(decoded, m_maxWidth, m_maxHeight);
             if (!image.isNull()) {
                 shownSec = candidate.seconds;
                 ++shown;
-                QMutexLocker locker(&m_mutex);
-                if (!m_pathChanged) {
-                    m_frame = std::move(image);
-                    ++m_serial;
+                publish(image);
+                if (!described) {
+                    // Now it is known where it decodes.
+                    described = true;
+                    qInfo().noquote() << "Video:" << m_name << "decoding:"
+                                      << QString::fromStdString(pBackend->description());
+                }
+                // Keep it for loops and jumps back (in time order).
+                if (!recent.empty() && decoded.seconds <= recent.back().seconds) {
+                    recent.clear();
+                    recentBytes = 0;
+                }
+                recentBytes += decoded.bytes();
+                recent.push_back(std::move(decoded));
+                while (recentBytes > kRecentPicturesBytes && recent.size() > 1) {
+                    recentBytes -= recent.front().bytes();
+                    recent.pop_front();
                 }
             }
         }

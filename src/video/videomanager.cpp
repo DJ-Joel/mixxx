@@ -33,12 +33,15 @@ PollingControlProxy control(const QString& group, const QString& item) {
 } // namespace
 
 struct VideoManager::Deck {
-    explicit Deck(const QString& deckGroup)
+    Deck(const QString& deckGroup, bool useGraphicsCard)
             : group(deckGroup),
-              decoder(std::make_unique<VideoDecoder>(
-                      deckGroup, VideoManager::kCanvasWidth, VideoManager::kCanvasHeight)),
+              decoder(std::make_unique<VideoDecoder>(deckGroup,
+                      VideoManager::kCanvasWidth,
+                      VideoManager::kCanvasHeight,
+                      useGraphicsCard)),
               position(VisualPlayPosition::getVisualPlayPosition(deckGroup)),
               play(control(deckGroup, QStringLiteral("play"))),
+              rateRatio(control(deckGroup, QStringLiteral("rate_ratio"))),
               volume(control(deckGroup, QStringLiteral("volume"))),
               orientation(control(deckGroup, QStringLiteral("orientation"))),
               trackSamples(control(deckGroup, QStringLiteral("track_samples"))),
@@ -49,6 +52,7 @@ struct VideoManager::Deck {
     std::unique_ptr<VideoDecoder> decoder;
     QSharedPointer<VisualPlayPosition> position;
     PollingControlProxy play;
+    PollingControlProxy rateRatio;
     PollingControlProxy volume;
     PollingControlProxy orientation;
     PollingControlProxy trackSamples;
@@ -215,6 +219,25 @@ void VideoManager::windowClosed() {
     qInfo() << "Video: stopped";
 }
 
+void VideoManager::setPictureDelayMs(int delayMs) {
+    delayMs = std::clamp(delayMs, -kMaxPictureDelayMs, kMaxPictureDelayMs);
+    if (delayMs != m_pictureDelayMs) {
+        m_pictureDelayMs = delayMs;
+        qDebug() << "Video: picture timing" << delayMs << "ms"; // many while sliding
+    }
+}
+
+void VideoManager::setUseGraphicsCard(bool use) {
+    if (use == m_useGraphicsCard) {
+        return;
+    }
+    m_useGraphicsCard = use;
+    qInfo() << "Video:" << (use ? "graphics card decoding on" : "graphics card decoding off");
+    for (auto& pDeck : m_decks) {
+        pDeck->decoder->setUseGraphicsCard(use);
+    }
+}
+
 bool VideoManager::anyWindowVisible() const {
     return (m_pOutput && m_pOutput->isVisible()) || (m_pPreview && m_pPreview->isVisible());
 }
@@ -287,7 +310,7 @@ void VideoManager::tick() {
     const int deckCount = std::clamp(static_cast<int>(m_numDecks.get()), 0, kMaxDecks);
     while (static_cast<int>(m_decks.size()) < deckCount) {
         m_decks.push_back(std::make_unique<Deck>(
-                QStringLiteral("[Channel%1]").arg(m_decks.size() + 1)));
+                QStringLiteral("[Channel%1]").arg(m_decks.size() + 1), m_useGraphicsCard));
     }
 
     CSAMPLE_GAIN gainLeft = 1.0f;
@@ -314,10 +337,17 @@ void VideoManager::tick() {
             // The deck's position in seconds of the track (engine time).
             const double samples = deck.trackSamples.get();
             const double rate = deck.trackSampleRate.get();
-            if (samples > 0.0 && rate > 0.0) {
-                deck.decoder->setTarget(deck.position->getEnginePlayPos() * samples / 2.0 / rate);
-            }
             input.playing = deck.play.toBool();
+            if (samples > 0.0 && rate > 0.0) {
+                double seconds = deck.position->getEnginePlayPos() * samples / 2.0 / rate;
+                // Picture timing, in real time: at a changed tempo that is
+                // a different amount of the track.
+                if (m_pictureDelayMs != 0 && input.playing) {
+                    const double speed = std::max(0.0, deck.rateRatio.get());
+                    seconds -= m_pictureDelayMs / 1000.0 * speed;
+                }
+                deck.decoder->setTarget(std::max(0.0, seconds));
+            }
             input.volume = deck.volume.get();
             const auto orientation = static_cast<int>(deck.orientation.get());
             input.xfaderGain = orientation == EngineChannel::LEFT
@@ -390,9 +420,11 @@ void VideoManager::logStats() {
         }
         qInfo().noquote() << "Video:" << pDeck->group << stats.framesShown << "frames ("
                           << QString::number(stats.framesShown / seconds, 'f', 1) << "/s),"
-                          << stats.seeks << "seeks, decoding"
-                          << QString::number(stats.framesShown > 0
-                                             ? stats.busyMs / stats.framesShown
+                          << stats.seeks << "seeks," << stats.fromMemory
+                          << "from memory (loops, jumps back), decoding"
+                          << QString::number(stats.framesShown > stats.fromMemory
+                                             ? stats.busyMs /
+                                                     (stats.framesShown - stats.fromMemory)
                                              : stats.busyMs,
                                      'f',
                                      1)

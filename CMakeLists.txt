@@ -2903,6 +2903,13 @@ if(FFMPEG)
       src/video/videodecoder.cpp
       src/video/videomanager.cpp
   )
+  # The Windows video decoder raises _WIN32_WINNT for itself (graphics-card
+  # decoding needs Windows 8+ names), so it must not use the precompiled
+  # header, which was built with the Windows 7 setting.
+  set_source_files_properties(
+    src/video/videobackend_mf.cpp
+    PROPERTIES SKIP_PRECOMPILE_HEADERS ON
+  )
   target_compile_definitions(
     mixxx-lib
     PUBLIC

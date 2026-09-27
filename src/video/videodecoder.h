@@ -18,10 +18,15 @@
 /// On Windows it uses the Windows decoder (Media Foundation: H.264, H.265,
 /// ...), which Mixxx's FFmpeg build does not include; FFmpeg is the
 /// fallback for other kinds of video, and the only decoder elsewhere.
+///
+/// The last few seconds of pictures are kept, so a loop or a jump back
+/// shows the right picture at once instead of decoding again from the last
+/// key frame. After a real seek, the pictures on the way from the key frame
+/// to the target are not shown (no flash of the wrong picture).
 class VideoDecoder {
   public:
     /// Pictures are scaled to fit inside this size (the output canvas).
-    VideoDecoder(QString name, int maxWidth, int maxHeight);
+    VideoDecoder(QString name, int maxWidth, int maxHeight, bool useGraphicsCard);
     ~VideoDecoder();
     VideoDecoder(const VideoDecoder&) = delete;
     VideoDecoder& operator=(const VideoDecoder&) = delete;
@@ -32,6 +37,13 @@ class VideoDecoder {
 
     /// Where the deck is now: seconds from the start of the track's audio.
     void setTarget(double seconds);
+
+    /// Decode on the graphics card when possible. A change opens the
+    /// current file again.
+    void setUseGraphicsCard(bool use);
+
+    /// Memory for the last pictures (per deck), for loops and jumps back.
+    static constexpr std::size_t kRecentPicturesBytes = 192u * 1024u * 1024u;
 
     /// The latest picture for the open file (null if none yet or no video).
     /// `pSerial` gets a number that changes whenever the picture changes.
@@ -51,6 +63,7 @@ class VideoDecoder {
     struct Stats {
         int framesShown = 0;
         int seeks = 0;
+        int fromMemory = 0; ///< pictures shown from the recent pictures
         double busyMs = 0.0;
     };
     Stats takeStats();
@@ -69,6 +82,7 @@ class VideoDecoder {
     bool m_pathChanged = false;
     double m_target = 0.0;
     bool m_targetChanged = false;
+    bool m_useGraphicsCard = true;
     bool m_stop = false;
     QImage m_frame;
     quint64 m_serial = 0;

@@ -32,7 +32,9 @@ class Backend {
     };
     /// `path` is UTF-8.
     virtual OpenResult open(const std::string& path) = 0;
-    /// For the log, e.g. "Windows decoder, h264 640x480 29.97 fps".
+    /// For the log, e.g. "Windows decoder, h264 640x480 29.97 fps,
+    /// graphics card". Where it decodes is only known for sure once a
+    /// frame has been decoded.
     virtual std::string description() const = 0;
     virtual double frameSeconds() const = 0;
 
@@ -59,7 +61,8 @@ class Backend {
 
 /// The Windows decoder (Media Foundation: H.264, H.265 and whatever else
 /// Windows can play). nullptr on other systems. Must be created, used and
-/// destroyed on one thread.
-std::unique_ptr<Backend> makeMediaFoundationBackend();
+/// destroyed on one thread. `useGraphicsCard`: let the graphics card decode
+/// and convert the pictures (falls back to the processor if it cannot).
+std::unique_ptr<Backend> makeMediaFoundationBackend(bool useGraphicsCard);
 
 } // namespace video

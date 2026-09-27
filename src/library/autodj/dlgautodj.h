@@ -107,4 +107,7 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     // Auto DJ 2.0 video mixing (created when first used).
     VideoManager* videoManager();
     QPointer<VideoManager> m_pVideo;
+    /// Video: move the picture earlier or later than the sound.
+    void showPictureTiming();
+    QPointer<QDialog> m_pPictureTiming;
 };

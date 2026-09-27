@@ -2,11 +2,31 @@
 
 #if defined(_WIN32) && defined(__MEDIAFOUNDATION__)
 
+// Mixxx builds for Windows 7 (_WIN32_WINNT=0x0601), which hides the
+// Windows 8+ names used for graphics-card decoding. This file raises it for
+// itself (it is built without the precompiled header, see CMakeLists.txt);
+// the Windows 8+ functions are looked up at run time, so Mixxx still starts
+// on older Windows and just decodes on the processor there.
+#if defined(_WIN32_WINNT) && _WIN32_WINNT < 0x0A00
+#undef _WIN32_WINNT
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0A00
+#endif
+#if defined(WINVER) && WINVER < 0x0A00
+#undef WINVER
+#endif
+#ifndef WINVER
+#define WINVER 0x0A00
+#endif
+
 #ifndef NOMINMAX
 #define NOMINMAX // keep std::min / std::max usable
 #endif
 #include <windows.h>
 // windows.h first
+#include <d3d10_1.h> // (not d3d10.h: the SDK wants d3d10_1.h first)
+#include <d3d11.h>
 #include <mfapi.h>
 #include <mferror.h>
 #include <mfidl.h>
@@ -25,11 +45,18 @@ namespace {
 constexpr DWORD kVideoStream = static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
 constexpr double kHundredNanoseconds = 1e7;
 
-// MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING (Windows 8 and later).
-// Mixxx builds for Windows 7 (_WIN32_WINNT=0x0601), which hides the name,
-// so it is spelled out here.
+// Spelled out, so nothing depends on which GUIDs the import libraries have.
+// MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING (Windows 8 and later)
 const GUID kAdvancedVideoProcessing = {
         0x0f81da2c, 0xb537, 0x4672, {0xa8, 0xb2, 0xa6, 0x81, 0xb1, 0x73, 0x07, 0xa3}};
+// MF_SOURCE_READER_D3D_MANAGER
+const GUID kD3DManager = {
+        0xec822da2, 0xe1e9, 0x4b29, {0xa0, 0xd8, 0x56, 0x3c, 0x71, 0x9f, 0x52, 0x69}};
+// MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS
+const GUID kHardwareTransforms = {
+        0xa634a91c, 0x822b, 0x41b9, {0xa4, 0x94, 0x4d, 0xe4, 0x64, 0x36, 0x12, 0xb0}};
+
+using CreateDxgiDeviceManager = HRESULT(WINAPI*)(UINT*, IMFDXGIDeviceManager**);
 
 template<typename T>
 void safeRelease(T** ppObject) {
@@ -71,18 +98,27 @@ std::string codecName(const GUID& subtype) {
             subtype == MFVideoFormat_WMV3 || subtype == MFVideoFormat_WVC1) {
         return "wmv";
     }
+    // Video subtypes are a four-letter code in a common GUID.
+    if (subtype.Data1 == MAKEFOURCC('V', 'P', '9', '0')) {
+        return "vp9";
+    }
+    if (subtype.Data1 == MAKEFOURCC('A', 'V', '0', '1')) {
+        return "av1";
+    }
     return "other";
 }
 
 class MediaFoundationBackend : public Backend {
   public:
-    MediaFoundationBackend() {
+    explicit MediaFoundationBackend(bool useGraphicsCard)
+            : m_useGraphicsCard(useGraphicsCard) {
         m_hrCom = CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE);
         m_hrStartup = MFStartup(MF_VERSION);
     }
 
     ~MediaFoundationBackend() override {
         close();
+        releaseGraphicsCard();
         if (SUCCEEDED(m_hrStartup)) {
             MFShutdown();
         }
@@ -92,17 +128,105 @@ class MediaFoundationBackend : public Backend {
     }
 
     OpenResult open(const std::string& path) override {
+        m_path = path;
+        const OpenResult result = openReader(m_useGraphicsCard && setUpGraphicsCard());
+        if (result == OpenResult::Failed && m_pDeviceManager) {
+            // The graphics card could not do it: the processor then.
+            releaseGraphicsCard();
+            return openReader(false);
+        }
+        return result;
+    }
+
+    bool retryAnotherWay() override {
+        if (!m_onGraphicsCard) {
+            return false;
+        }
+        // Decoding on the graphics card failed part way: carry on with the
+        // processor from the same place.
+        const double resumeSec = m_lastSeconds;
+        releaseGraphicsCard();
+        if (openReader(false) != OpenResult::Video) {
+            return false;
+        }
+        if (resumeSec > 0.0) {
+            seek(resumeSec);
+        }
+        return true;
+    }
+
+  private:
+    /// A Direct3D 11 device with video support, shared with the reader.
+    bool setUpGraphicsCard() {
+        releaseGraphicsCard();
+        static const HMODULE d3d11 = LoadLibraryW(L"d3d11.dll");
+        const HMODULE mfplat = GetModuleHandleW(L"mfplat.dll");
+        if (!d3d11 || !mfplat) {
+            return false;
+        }
+        const auto createDevice = reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(
+                reinterpret_cast<void*>(GetProcAddress(d3d11, "D3D11CreateDevice")));
+        const auto createManager = reinterpret_cast<CreateDxgiDeviceManager>(
+                reinterpret_cast<void*>(GetProcAddress(mfplat, "MFCreateDXGIDeviceManager")));
+        if (!createDevice || !createManager) {
+            return false; // Windows 7
+        }
+        const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1,
+                D3D_FEATURE_LEVEL_11_0,
+                D3D_FEATURE_LEVEL_10_1,
+                D3D_FEATURE_LEVEL_10_0};
+        HRESULT hr = createDevice(nullptr,
+                D3D_DRIVER_TYPE_HARDWARE,
+                nullptr,
+                D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                levels,
+                static_cast<UINT>(sizeof(levels) / sizeof(levels[0])),
+                D3D11_SDK_VERSION,
+                &m_pDevice,
+                nullptr,
+                nullptr);
+        if (FAILED(hr) || !m_pDevice) {
+            releaseGraphicsCard();
+            return false;
+        }
+        // The reader uses the device from its own threads.
+        ID3D10Multithread* pMultithread = nullptr;
+        if (SUCCEEDED(m_pDevice->QueryInterface(IID_PPV_ARGS(&pMultithread)))) {
+            pMultithread->SetMultithreadProtected(TRUE);
+            safeRelease(&pMultithread);
+        }
+        UINT resetToken = 0;
+        if (FAILED(createManager(&resetToken, &m_pDeviceManager)) || !m_pDeviceManager ||
+                FAILED(m_pDeviceManager->ResetDevice(m_pDevice, resetToken))) {
+            releaseGraphicsCard();
+            return false;
+        }
+        return true;
+    }
+
+    void releaseGraphicsCard() {
+        close(); // the reader holds the manager
+        safeRelease(&m_pDeviceManager);
+        safeRelease(&m_pDevice);
+    }
+
+    OpenResult openReader(bool withGraphicsCard) {
         close();
         if (FAILED(m_hrStartup)) {
             return OpenResult::Failed;
         }
         IMFAttributes* pAttributes = nullptr;
-        if (FAILED(MFCreateAttributes(&pAttributes, 1))) {
+        if (FAILED(MFCreateAttributes(&pAttributes, 3))) {
             return OpenResult::Failed;
         }
-        // Lets the reader turn the video into RGB32 pictures for us.
+        // Lets the reader turn the video into RGB32 pictures for us (on the
+        // graphics card when it has one).
         pAttributes->SetUINT32(kAdvancedVideoProcessing, TRUE);
-        const std::wstring widePath = widen(path);
+        if (withGraphicsCard && m_pDeviceManager) {
+            pAttributes->SetUnknown(kD3DManager, m_pDeviceManager);
+            pAttributes->SetUINT32(kHardwareTransforms, TRUE);
+        }
+        const std::wstring widePath = widen(m_path);
         HRESULT hr = MFCreateSourceReaderFromURL(widePath.c_str(), pAttributes, &m_pReader);
         safeRelease(&pAttributes);
         if (FAILED(hr) || !m_pReader) {
@@ -150,15 +274,20 @@ class MediaFoundationBackend : public Backend {
         return OpenResult::Video;
     }
 
+  public:
     std::string description() const override {
-        char text[160];
+        char text[200];
         std::snprintf(text,
                 sizeof(text),
-                "Windows decoder, %s %dx%d %.2f fps",
+                "Windows decoder, %s %dx%d %.2f fps, %s",
                 m_codec.c_str(),
                 m_cropWidth,
                 m_cropHeight,
-                1.0 / m_frameSeconds);
+                1.0 / m_frameSeconds,
+                m_onGraphicsCard ? "graphics card"
+                                 : (m_pDeviceManager ? "processor (the graphics card "
+                                                       "does not decode this video)"
+                                                     : "processor"));
         return text;
     }
 
@@ -192,6 +321,19 @@ class MediaFoundationBackend : public Backend {
                 continue; // a gap in the stream: read on
             }
             pFrame->seconds = timestamp / kHundredNanoseconds;
+            m_lastSeconds = pFrame->seconds;
+            if (m_pDeviceManager && !m_checkedWhere) {
+                // A picture in graphics-card memory = decoded there.
+                m_checkedWhere = true;
+                IMFMediaBuffer* pBuffer = nullptr;
+                IMFDXGIBuffer* pDxgi = nullptr;
+                if (SUCCEEDED(pSample->GetBufferByIndex(0, &pBuffer)) && pBuffer &&
+                        SUCCEEDED(pBuffer->QueryInterface(IID_PPV_ARGS(&pDxgi)))) {
+                    m_onGraphicsCard = true;
+                }
+                safeRelease(&pDxgi);
+                safeRelease(&pBuffer);
+            }
             pFrame->handle = std::shared_ptr<void>(pSample, [](void* p) {
                 static_cast<IMFSample*>(p)->Release();
             });
@@ -253,6 +395,8 @@ class MediaFoundationBackend : public Backend {
   private:
     void close() {
         safeRelease(&m_pReader);
+        m_onGraphicsCard = false;
+        m_checkedWhere = false;
         m_width = m_height = 0;
         m_cropX = m_cropY = m_cropWidth = m_cropHeight = 0;
         m_stride = 0;
@@ -329,8 +473,15 @@ class MediaFoundationBackend : public Backend {
         return true;
     }
 
+    const bool m_useGraphicsCard;
     HRESULT m_hrCom = E_FAIL;
     HRESULT m_hrStartup = E_FAIL;
+    ID3D11Device* m_pDevice = nullptr;
+    IMFDXGIDeviceManager* m_pDeviceManager = nullptr;
+    bool m_onGraphicsCard = false; // decoded pictures are in graphics-card memory
+    bool m_checkedWhere = false;
+    double m_lastSeconds = 0.0;
+    std::string m_path;
     IMFSourceReader* m_pReader = nullptr;
     std::string m_codec;
     double m_frameSeconds = 1.0 / 30.0;
@@ -346,8 +497,8 @@ class MediaFoundationBackend : public Backend {
 
 } // namespace
 
-std::unique_ptr<Backend> makeMediaFoundationBackend() {
-    return std::make_unique<MediaFoundationBackend>();
+std::unique_ptr<Backend> makeMediaFoundationBackend(bool useGraphicsCard) {
+    return std::make_unique<MediaFoundationBackend>(useGraphicsCard);
 }
 
 } // namespace video
@@ -355,7 +506,7 @@ std::unique_ptr<Backend> makeMediaFoundationBackend() {
 #else // not Windows
 
 namespace video {
-std::unique_ptr<Backend> makeMediaFoundationBackend() {
+std::unique_ptr<Backend> makeMediaFoundationBackend(bool) {
     return nullptr;
 }
 } // namespace video

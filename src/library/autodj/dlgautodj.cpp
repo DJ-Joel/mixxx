@@ -20,6 +20,8 @@
 #include <QGuiApplication>
 #include <QHeaderView>
 #include <QScreen>
+#include <QSlider>
+#include <QPushButton>
 #include <cmath>
 #include <QTableWidget>
 #include <QTimer>
@@ -42,6 +44,8 @@
 
 namespace {
 const char* kPreferenceGroupName = "[Auto DJ]";
+// Video settings (picture timing, graphics card).
+const char* kVideoGroup = "[Video]";
 const char* kRepeatPlaylistPreference = "Requeue";
 // Auto DJ 2.0 Smart Fill options: 0 = build up, 1 = keep level, 2 = up and down.
 const char* kSmartFillEnergyPreference = "SmartFillEnergy";
@@ -360,6 +364,23 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
         connect(pPreview, &QAction::toggled, this, [this](bool visible) {
             videoManager()->setPreviewVisible(visible);
         });
+        pVideoMenu->addSeparator();
+        QAction* pTiming = pVideoMenu->addAction(tr("Picture timing..."));
+        connect(pTiming, &QAction::triggered, this, [this]() {
+            showPictureTiming();
+        });
+        QAction* pGraphicsCard = pVideoMenu->addAction(tr("Decode on the graphics card"));
+        pGraphicsCard->setCheckable(true);
+        pGraphicsCard->setChecked(
+                m_pConfig->getValue(ConfigKey(kVideoGroup, "GraphicsCard"), true));
+        pGraphicsCard->setToolTip(tr("Turn off if videos look wrong or stutter."));
+        connect(pGraphicsCard, &QAction::toggled, this, [this](bool on) {
+            m_pConfig->setValue(ConfigKey(kVideoGroup, "GraphicsCard"), on);
+            if (m_pVideo) {
+                m_pVideo->setUseGraphicsCard(on);
+            }
+        });
+        pVideoMenu->addSeparator();
         QAction* pStop = pVideoMenu->addAction(tr("Stop video"));
         connect(pStop, &QAction::triggered, this, [this]() {
             if (m_pVideo) {
@@ -1176,10 +1197,90 @@ void DlgAutoDJ::refreshLiveAssistant(bool force) {
     }
 }
 
+void DlgAutoDJ::showPictureTiming() {
+#ifdef __FFMPEG__
+    if (m_pPictureTiming) {
+        m_pPictureTiming->show();
+        m_pPictureTiming->raise();
+        return;
+    }
+    auto* pDialog = new QDialog(this);
+    pDialog->setAttribute(Qt::WA_DeleteOnClose);
+    pDialog->setWindowTitle(tr("Picture timing"));
+    auto* pLayout = new QVBoxLayout(pDialog);
+    auto* pHelp = new QLabel(tr(
+            "Projectors and TVs often show the picture a little late.\n"
+            "Play a video where you can see a drum hit or a clap, and move\n"
+            "the slider until what you see and hear happen together.\n"
+            "The change is live."));
+    pLayout->addWidget(pHelp);
+    auto* pSlider = new QSlider(Qt::Horizontal);
+    const int limit = VideoManager::kMaxPictureDelayMs;
+    pSlider->setRange(-limit / 10, limit / 10); // steps of 10 ms
+    pSlider->setPageStep(5);
+    pSlider->setTickPosition(QSlider::TicksBelow);
+    pSlider->setTickInterval(10);
+    pLayout->addWidget(pSlider);
+    auto* pEnds = new QHBoxLayout();
+    pEnds->addWidget(new QLabel(tr("picture earlier")));
+    pEnds->addStretch();
+    pEnds->addWidget(new QLabel(tr("picture later")));
+    pLayout->addLayout(pEnds);
+    auto* pValue = new QLabel();
+    QFont big = pValue->font();
+    big.setPointSizeF(big.pointSizeF() * 1.4);
+    big.setBold(true);
+    pValue->setFont(big);
+    pValue->setAlignment(Qt::AlignCenter);
+    pLayout->addWidget(pValue);
+    auto* pButtons = new QHBoxLayout();
+    auto* pReset = new QPushButton(tr("Back to 0"));
+    auto* pClose = new QPushButton(tr("Close"));
+    pButtons->addWidget(pReset);
+    pButtons->addStretch();
+    pButtons->addWidget(pClose);
+    pLayout->addLayout(pButtons);
+
+    const auto showValue = [pValue](int ms) {
+        if (ms == 0) {
+            pValue->setText(tr("in time with the sound (0 ms)"));
+        } else if (ms < 0) {
+            pValue->setText(tr("picture %1 ms earlier").arg(-ms));
+        } else {
+            pValue->setText(tr("picture %1 ms later").arg(ms));
+        }
+    };
+    const int now = m_pConfig->getValue(ConfigKey(kVideoGroup, "PictureDelayMs"), 0);
+    pSlider->setValue(now / 10);
+    showValue(pSlider->value() * 10);
+    connect(pSlider, &QSlider::valueChanged, pDialog, [this, showValue](int steps) {
+        const int ms = steps * 10;
+        showValue(ms);
+        m_pConfig->setValue(ConfigKey(kVideoGroup, "PictureDelayMs"), ms);
+        videoManager()->setPictureDelayMs(ms);
+    });
+    connect(pReset, &QPushButton::clicked, pSlider, [pSlider]() {
+        pSlider->setValue(0);
+    });
+    connect(pClose, &QPushButton::clicked, pDialog, &QDialog::close);
+    // One line in the log for the value the DJ settled on.
+    connect(pDialog, &QDialog::finished, this, [this]() {
+        qInfo() << "Video: picture timing set to"
+                << m_pConfig->getValue(ConfigKey(kVideoGroup, "PictureDelayMs"), 0) << "ms";
+    });
+    m_pPictureTiming = pDialog;
+    pDialog->show();
+#endif
+}
+
 VideoManager* DlgAutoDJ::videoManager() {
 #ifdef __FFMPEG__
     if (!m_pVideo) {
         m_pVideo = new VideoManager(window());
+        m_pVideo->setUseGraphicsCard(
+                m_pConfig->getValue(ConfigKey(kVideoGroup, "GraphicsCard"), true));
+        m_pVideo->setPictureDelayMs(
+                m_pConfig->getValue(ConfigKey(kVideoGroup, "PictureDelayMs"), 0));
     }
     return m_pVideo;
 #else

@@ -57,6 +57,20 @@ class VideoManager : public QObject {
     /// Hides every video window and closes the video files.
     void stop();
 
+    /// Picture timing: show the picture this many milliseconds later
+    /// (negative = earlier) than the sound. Projectors and TVs often show
+    /// the picture a little late; a negative value makes up for that.
+    void setPictureDelayMs(int delayMs);
+    int pictureDelayMs() const {
+        return m_pictureDelayMs;
+    }
+    static constexpr int kMaxPictureDelayMs = 500;
+    /// Decode on the graphics card when possible.
+    void setUseGraphicsCard(bool use);
+    bool useGraphicsCard() const {
+        return m_useGraphicsCard;
+    }
+
     /// The mixed picture (1920x1080).
     const QImage& canvas() const {
         return m_canvas;
@@ -93,4 +107,6 @@ class VideoManager : public QObject {
     QElapsedTimer m_statsTimer;
     int m_composed = 0;
     double m_composeMs = 0.0;
+    int m_pictureDelayMs = 0;
+    bool m_useGraphicsCard = true;
 };
