@@ -70,6 +70,18 @@ bool EnergyStore::ensureTable(const QSqlDatabase& db) {
         return false;
     }
     if (!query.exec(QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS autodj_downbeat ("
+                "track_id INTEGER PRIMARY KEY, "
+                "bpm REAL, "
+                "first_beat_sec REAL, "
+                "phase INTEGER, "
+                "margin REAL, "
+                "sure INTEGER, "
+                "version INTEGER)"))) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    if (!query.exec(QStringLiteral(
                 "CREATE TABLE IF NOT EXISTS autodj_energy_manual ("
                 "track_id INTEGER PRIMARY KEY, "
                 "rating INTEGER NOT NULL)"))) {
@@ -287,6 +299,63 @@ bool EnergyStore::saveGridCheck(
     query.bindValue(QStringLiteral(":first"), check.firstBeatSec);
     query.bindValue(QStringLiteral(":drift"), check.driftBeats);
     query.bindValue(QStringLiteral(":version"), check.version);
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    return true;
+}
+
+bool EnergyStore::Downbeat::isFor(double gridBpm, double gridFirstBeatSec) const {
+    return version == kVersion && std::fabs(bpm - gridBpm) < 0.001 &&
+            std::fabs(firstBeatSec - gridFirstBeatSec) < 0.002;
+}
+
+// static
+std::optional<EnergyStore::Downbeat> EnergyStore::loadDownbeat(
+        const QSqlDatabase& db, TrackId trackId) {
+    if (!ensureTable(db)) {
+        return std::nullopt;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "SELECT bpm, first_beat_sec, phase, margin, sure, version FROM autodj_downbeat "
+            "WHERE track_id=:id"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return std::nullopt;
+    }
+    if (!query.next()) {
+        return std::nullopt;
+    }
+    Downbeat d;
+    d.bpm = query.value(0).toDouble();
+    d.firstBeatSec = query.value(1).toDouble();
+    d.phase = query.value(2).toInt();
+    d.margin = query.value(3).toDouble();
+    d.sure = query.value(4).toInt() != 0;
+    d.version = query.value(5).toInt();
+    return d;
+}
+
+// static
+bool EnergyStore::saveDownbeat(const QSqlDatabase& db, TrackId trackId, const Downbeat& d) {
+    if (!ensureTable(db)) {
+        return false;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "INSERT OR REPLACE INTO autodj_downbeat "
+            "(track_id, bpm, first_beat_sec, phase, margin, sure, version) "
+            "VALUES (:id, :bpm, :first, :phase, :margin, :sure, :version)"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    query.bindValue(QStringLiteral(":bpm"), d.bpm);
+    query.bindValue(QStringLiteral(":first"), d.firstBeatSec);
+    query.bindValue(QStringLiteral(":phase"), d.phase);
+    query.bindValue(QStringLiteral(":margin"), d.margin);
+    query.bindValue(QStringLiteral(":sure"), d.sure ? 1 : 0);
+    query.bindValue(QStringLiteral(":version"), d.version);
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return false;

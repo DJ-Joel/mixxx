@@ -5,6 +5,7 @@
 
 #include "analyzer/analyzer.h"
 #include "analyzer/energycalculator.h"
+#include "library/autodj/smart/downbeat.h"
 #include "library/autodj/smart/phrasealign.h"
 #include "track/trackid.h"
 
@@ -35,9 +36,13 @@ class AnalyzerEnergy : public Analyzer {
   private:
     void setAutoMarkers(const TrackPointer& pTrack, const EnergyCalculator::Result& result);
     void storeGridCheck(const TrackPointer& pTrack, const EnergyCalculator::Result* pResult);
+    void storeDownbeat(const TrackPointer& pTrack);
 
     QSqlDatabase m_db;
     bool m_tableReady;
     TrackId m_trackId;
     std::unique_ptr<EnergyCalculator> m_pCalculator;
+    std::unique_ptr<downbeat::Features> m_pDownbeat; ///< where beat 1 of the bar is
+    int m_channels = 2;
+    std::vector<float> m_mono;
 };

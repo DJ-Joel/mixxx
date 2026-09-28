@@ -439,6 +439,9 @@ class AutoDJProcessor : public QObject {
     bool tryPhraseFadeNow();
     // Auto DJ 2.0 plus Video Mixing: false if the beat grid check found that one of the two
     // tracks has a grid that drifts off the beat (then a plain fade).
+    /// The track's beats counted from beat 1 of the bar: the grid, moved on to
+    /// the downbeat the analysis found when it is sure (downbeat.h).
+    phrasealign::Grid gridFor(const TrackPointer& pTrack) const;
     bool gridsAllowBeatmatch(const TrackPointer& pFromTrack,
             const TrackPointer& pToTrack,
             QString* pWhy) const;
@@ -496,6 +499,7 @@ class AutoDJProcessor : public QObject {
         double lastToSec = -1.0;
         int distrustUntil = 0;  // updates up to this one are not acted on
         int bigSlipCount = 0;   // updates in a row with the lines clearly off
+        bool lockPaused = false; // a beat map went wrong here: tempo only
         // Stem mix: both songs have their parts, so the parts cross over
         // instead of the EQ (drums + bass swap, vocals never together). The
         // DJ's own part levels, put back afterwards.

@@ -1420,6 +1420,7 @@ add_library(
   src/library/autodj/genrescanner.cpp
   src/library/autodj/smart/beatmatch.cpp
   src/library/autodj/smart/vocalmap.cpp
+  src/library/autodj/smart/downbeat.cpp
   src/library/autodj/smart/bridgefinder.cpp
   src/library/autodj/smart/energystore.cpp
   src/library/autodj/smart/genrescan.cpp
@@ -3005,6 +3006,7 @@ if(BUILD_TESTING)
     src/test/beatstest.cpp
     src/test/beatmatch_test.cpp
     src/test/vocalmap_test.cpp
+    src/test/downbeat_test.cpp
     src/test/phrasealign_test.cpp
     src/test/genrescan_test.cpp
     src/test/videomix_test.cpp

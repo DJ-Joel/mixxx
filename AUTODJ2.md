@@ -371,7 +371,20 @@ Dance music is built in phrases of 8 bars (32 beats). A mix that starts in
 the middle of a phrase sounds wrong even when the beats match.
 `phrasealign::plan()`:
 
-- counts phrases from the first beat of each song's grid;
+- counts phrases from **beat 1 of the bar**: Mixxx's grid has no downbeat,
+  so the analysis finds it (`src/library/autodj/smart/downbeat.*`, unit
+  tested). Most of this music has a kick on every beat, but the bass note
+  and the chords usually change on beat 1 and it is hit harder: for each of
+  the four places in the bar those changes are added up over the whole
+  song (bass and chord pitch profiles from a small FFT, and the onset
+  strength). The winner is used only when it is clear ("clear by" 0.6 or
+  more), holds in both halves of the song, and stays the same with the beat
+  lines moved 30-60 ms earlier or later; otherwise the grid's first line
+  stays beat 1. Stored per grid in `autodj_downbeat` (found again when the
+  grid changes); Auto DJ's grid (`AutoDJProcessor::gridFor`) then starts on
+  beat 1. The beat grid itself is not changed. Checked in two blind
+  listening tests: every song found this clearly was right by ear;
+  uncertain ones (0.2-0.45) included wrong answers and are left alone;
 - picks, on the outgoing song, the **last** phrase start from which a whole
   fade still ends before its energy drops (Outro Start marker, or the end of
   the body);
@@ -723,10 +736,10 @@ card, the folder of the last video recording).
 Unit tests are in `src/test/` and run with the other Mixxx tests:
 
 ```
-mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*
+mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*
 ```
 
-163 tests. The energy and grid-check tests use synthetic drum loops (steady,
+167 tests. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -847,3 +860,9 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     pushed good mixes out of line. Tempo planning ignores wrong beats in a
     fade-out. Stem Split: a song removed from the library is no longer
     split, and songs over 20 minutes (DJ mixes) are only split on their own.
+39. **Beat 1 of the bar.** The analysis finds the downbeat from bass and
+    chord changes and harder hits, and Auto DJ counts bars and phrases from
+    it when it is clear and steady (two blind listening tests). The beat
+    lock pauses where a beat map goes wrong (a fade-out read as a much
+    faster tempo had pushed a mix half a beat apart) and holds the steady
+    tempos together until the beat lines are good again.

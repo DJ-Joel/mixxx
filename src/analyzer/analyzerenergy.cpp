@@ -2,6 +2,7 @@
 
 #include <QtDebug>
 
+#include <algorithm>
 #include <cmath>
 
 #include "analyzer/analyzertrack.h"
@@ -99,7 +100,11 @@ bool AnalyzerEnergy::initialize(const AnalyzerTrack& track,
     const bool beatMap = beatGrid(pTrack).isMap();
     const bool gridChecked = gridCheck && gridCheck->isFor(bpm, firstBeatSec, beatMap) &&
             gridCheck->isCurrent(beatMap);
-    if (version && *version == EnergyCalculator::kVersion && gridChecked) {
+    // Beat 1 of the bar also belongs to the grid it was found on (no grid:
+    // nothing to find).
+    const auto downbeat = EnergyStore::loadDownbeat(m_db, m_trackId);
+    const bool downbeatFound = bpm <= 0.0 || (downbeat && downbeat->isFor(bpm, firstBeatSec));
+    if (version && *version == EnergyCalculator::kVersion && gridChecked && downbeatFound) {
         if (const auto body = EnergyStore::loadBody(m_db, m_trackId)) {
             EnergyCalculator::Result stored;
             stored.bodyStartSec = body->startSec;
@@ -111,6 +116,8 @@ bool AnalyzerEnergy::initialize(const AnalyzerTrack& track,
     m_pCalculator = std::make_unique<EnergyCalculator>(
             static_cast<double>(sampleRate.value()),
             static_cast<int>(channelCount.value()));
+    m_channels = std::max(1, static_cast<int>(channelCount.value()));
+    m_pDownbeat = std::make_unique<downbeat::Features>(static_cast<double>(sampleRate.value()));
     return true;
 }
 
@@ -119,6 +126,18 @@ bool AnalyzerEnergy::processSamples(const CSAMPLE* pIn, SINT count) {
         return false;
     }
     m_pCalculator->process(pIn, count);
+    if (m_pDownbeat) {
+        const SINT frames = count / m_channels;
+        m_mono.resize(static_cast<std::size_t>(frames));
+        for (SINT f = 0; f < frames; ++f) {
+            float sum = 0.0f;
+            for (int c = 0; c < m_channels; ++c) {
+                sum += pIn[f * m_channels + c];
+            }
+            m_mono[static_cast<std::size_t>(f)] = sum / m_channels;
+        }
+        m_pDownbeat->process(m_mono.data(), static_cast<int>(frames));
+    }
     return true;
 }
 
@@ -126,6 +145,7 @@ void AnalyzerEnergy::storeResults(TrackPointer pTrack) {
     VERIFY_OR_DEBUG_ASSERT(m_pCalculator) {
         return;
     }
+    storeDownbeat(pTrack);
     EnergyCalculator::Result result;
     if (!m_pCalculator->finish(&result)) {
         qDebug() << "AnalyzerEnergy: not enough audio for an energy score"
@@ -244,4 +264,39 @@ void AnalyzerEnergy::setAutoMarkers(
 
 void AnalyzerEnergy::cleanup() {
     m_pCalculator.reset();
+    m_pDownbeat.reset();
+    m_mono.clear();
+}
+
+void AnalyzerEnergy::storeDownbeat(const TrackPointer& pTrack) {
+    EnergyStore::Downbeat stored;
+    stored.version = EnergyStore::Downbeat::kVersion;
+    if (!m_pDownbeat || !gridOf(pTrack, &stored.bpm, &stored.firstBeatSec)) {
+        return; // no grid (yet): nothing to find
+    }
+    // The grid's own beats, counted from its first line.
+    const phrasealign::Grid grid = beatGrid(pTrack);
+    std::vector<double> beats = grid.beats;
+    if (!grid.isMap()) {
+        const double end = pTrack->getDuration();
+        for (int n = 0; n < 20000; ++n) {
+            const double t = grid.beatTime(n);
+            if (t > end) {
+                break;
+            }
+            beats.push_back(t);
+        }
+    }
+    const downbeat::Result found = downbeat::find(*m_pDownbeat, beats);
+    stored.phase = found.phase;
+    stored.margin = found.margin;
+    stored.sure = found.sure;
+    EnergyStore::saveDownbeat(m_db, m_trackId, stored);
+    qInfo().noquote() << "AnalyzerEnergy: beat 1" << pTrack->getInfo() << "- the"
+                      << (found.phase == 0 ? QStringLiteral("grid's first beat")
+                                           : QStringLiteral("grid's beat %1").arg(found.phase + 1))
+                      << "(clear by" << found.margin << ")"
+                      << (!found.sure ? QStringLiteral("- not sure, bars stay as the grid has them")
+                                  : (found.phase == 0 ? QStringLiteral("- the grid is right")
+                                                      : QStringLiteral("- Auto DJ counts bars from there")));
 }

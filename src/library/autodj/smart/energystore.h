@@ -77,6 +77,21 @@ class EnergyStore {
     static std::optional<GridCheck> loadGridCheck(const QSqlDatabase& db, TrackId trackId);
     static bool saveGridCheck(const QSqlDatabase& db, TrackId trackId, const GridCheck& check);
 
+    /// Where beat 1 of the bar is (downbeat.h), for the grid it was found on.
+    struct Downbeat {
+        double bpm = 0.0;
+        double firstBeatSec = 0.0;
+        int phase = 0; ///< grid beat index % 4 of beat 1
+        double margin = 0.0;
+        bool sure = false;
+        int version = 0;
+        static constexpr int kVersion = 3; // 2: must be steady, 3: stricter "sure"
+        /// Found on this grid, with the current method.
+        bool isFor(double gridBpm, double gridFirstBeatSec) const;
+    };
+    static std::optional<Downbeat> loadDownbeat(const QSqlDatabase& db, TrackId trackId);
+    static bool saveDownbeat(const QSqlDatabase& db, TrackId trackId, const Downbeat& downbeat);
+
     /// Sets the DJ's rating (1..10) for the tracks. rating 0 clears it, so
     /// the measured value is used again.
     static bool setManualRating(

@@ -15,6 +15,7 @@
 #include "engine/channels/enginedeck.h"
 #include "control/controlobject.h"
 #include "library/autodj/smart/beatmatch.h"
+#include "library/autodj/smart/downbeat.h"
 #include "library/autodj/smart/vocalmap.h"
 #include "waveform/waveform.h"
 #include "library/autodj/smart/bridgefinder.h"
@@ -811,7 +812,7 @@ void AutoDJProcessor::beginSmartTransition(
     const double fromBpm = readControl(fromBpmKey); // includes its tempo change
     // The incoming tempo where it starts: with a beat map that bends, this
     // is not the same as its average BPM.
-    const phrasealign::Grid toGrid = AnalyzerEnergy::beatGrid(pToTrack);
+    const phrasealign::Grid toGrid = gridFor(pToTrack);
     const double toStartSec = trackSecond(pToDeck);
     const double toTrackBpm = toGrid.isValid() && toStartSec >= 0.0
             ? 60.0 / toGrid.steadyBeatSecAt(toStartSec)
@@ -866,7 +867,7 @@ void AutoDJProcessor::beginSmartTransition(
         // Beat lock: a beat map means the tempo bends (a live drummer), so
         // one fixed speed would slowly drift off the beat. Only 1:1 (not
         // half or double time).
-        m_smart.fromGrid = AnalyzerEnergy::beatGrid(pFromDeck->getLoadedTrack());
+        m_smart.fromGrid = gridFor(pFromDeck->getLoadedTrack());
         m_smart.toGrid = toGrid;
         const bool oneToOne = fromBpm > 0.0 &&
                 std::fabs(*ratio * toTrackBpm / fromBpm - 1.0) < 0.1;
@@ -1210,6 +1211,43 @@ void AutoDJProcessor::followBeats() {
     m_smart.lastMs = nowMs;
     m_smart.lastFromSec = fromSec;
     m_smart.lastToSec = toSec;
+    // A beat map that goes wrong where the music stops (fade-outs read as
+    // 159 or 235 BPM) must not steer the lock: it pushed a real mix half a
+    // beat apart. There, hold the two steady tempos together and wait.
+    {
+        const double fromLocal = m_smart.fromGrid.beatSecAt(fromSec);
+        const double fromSteady = m_smart.fromGrid.steadyBeatSecAt(fromSec);
+        const double toLocal = m_smart.toGrid.beatSecAt(toSec);
+        const double toSteady = m_smart.toGrid.steadyBeatSecAt(toSec);
+        const bool wrong = !(fromSteady > 0.0) || !(toSteady > 0.0) ||
+                std::fabs(fromLocal / fromSteady - 1.0) > 0.08 ||
+                std::fabs(toLocal / toSteady - 1.0) > 0.08;
+        if (wrong) {
+            if (!m_smart.lockPaused) {
+                m_smart.lockPaused = true;
+                kLogger.info() << "Beat lock" << m_smart.pTo->group
+                               << ": paused, the beat lines go wrong here ("
+                               << (fromSteady > 0.0 ? 60.0 / fromLocal : 0.0) << "BPM outgoing,"
+                               << (toSteady > 0.0 ? 60.0 / toLocal : 0.0)
+                               << "BPM incoming): the steady tempos are held together";
+            }
+            if (fromSteady > 0.0 && toSteady > 0.0) {
+                const double steadyRatio = toSteady / (fromSteady / fromRatio);
+                if (std::fabs(steadyRatio - 1.0) <= 0.1 &&
+                        std::fabs(steadyRatio - m_smart.toRatio) > 1e-5) {
+                    ControlObject::set(ConfigKey(m_smart.pTo->group, QStringLiteral("rate_ratio")),
+                            steadyRatio);
+                    m_smart.toRatio = steadyRatio;
+                }
+            }
+            m_smart.lastMs = -1; // jump watch starts again afterwards
+            return;
+        }
+        if (m_smart.lockPaused) {
+            m_smart.lockPaused = false;
+            kLogger.info() << "Beat lock" << m_smart.pTo->group << ": beat lines good again";
+        }
+    }
     // Lines: how far the two songs' beat lines are apart. Slip: how far
     // their kicks are apart (the lines plus the kick line-up).
     const double fromBeat = m_smart.fromGrid.beatAt(fromSec);
@@ -1359,9 +1397,9 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     const double fromBpm = pFromTrack->getBpm();
     const double toBpm = pToTrack->getBpm();
     const bool fromHasGrid = pFromBeats && fromBpm > 0.0 &&
-            AnalyzerEnergy::beatGrid(pFromTrack).isValid();
+            gridFor(pFromTrack).isValid();
     const bool toHasGrid = pToBeats && toBpm > 0.0 &&
-            AnalyzerEnergy::beatGrid(pToTrack).isValid();
+            gridFor(pToTrack).isValid();
     if (!fromHasGrid && !toHasGrid) {
         // Nothing is known about either beat (e.g. a library that was never
         // analysed): Mixxx's own timing, as without Auto DJ 2.0 plus Video
@@ -1420,8 +1458,8 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     // Seconds here are real time at each deck's current speed, the same
     // convention as the rest of calculateTransition. A beat map (the tempo
     // bends with the music) gives the time of every beat.
-    const phrasealign::Grid from = AnalyzerEnergy::beatGrid(pFromTrack).atSpeed(fromRatio);
-    const phrasealign::Grid to = AnalyzerEnergy::beatGrid(pToTrack).atSpeed(toRatio);
+    const phrasealign::Grid from = gridFor(pFromTrack).atSpeed(fromRatio);
+    const phrasealign::Grid to = gridFor(pToTrack).atSpeed(toRatio);
     if (!from.isValid()) {
         logOnce(QStringLiteral(" nogrid"), QStringLiteral("skipped, the outgoing track has no beat grid"));
         return;
@@ -1590,6 +1628,31 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     }
 }
 
+phrasealign::Grid AutoDJProcessor::gridFor(const TrackPointer& pTrack) const {
+    phrasealign::Grid grid = AnalyzerEnergy::beatGrid(pTrack);
+    if (!grid.isValid() || !m_pTrackCollectionManager ||
+            !m_pTrackCollectionManager->internalCollection()) {
+        return grid;
+    }
+    double bpm = 0.0;
+    double firstBeatSec = 0.0;
+    if (!AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec)) {
+        return grid;
+    }
+    const auto found = EnergyStore::loadDownbeat(
+            m_pTrackCollectionManager->internalCollection()->database(), pTrack->getId());
+    if (!found || !found->sure || found->phase <= 0 || !found->isFor(bpm, firstBeatSec)) {
+        return grid; // the grid's first line is beat 1, or not sure
+    }
+    if (grid.isMap()) {
+        const phrasealign::Grid moved =
+                phrasealign::Grid::fromBeats(downbeat::fromBeatOne(grid.beats, found->phase));
+        return moved.isValid() ? moved : grid;
+    }
+    grid.firstBeatSec += found->phase * grid.beatSec;
+    return grid;
+}
+
 bool AutoDJProcessor::gridsAllowBeatmatch(const TrackPointer& pFromTrack,
         const TrackPointer& pToTrack,
         QString* pWhy) const {
@@ -1606,7 +1669,7 @@ bool AutoDJProcessor::gridsAllowBeatmatch(const TrackPointer& pFromTrack,
         AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec);
         const auto check = EnergyStore::loadGridCheck(db, pTrack->getId());
         // Not checked yet, or the DJ changed the grid since: trust it.
-        if (check && check->isFor(bpm, firstBeatSec, AnalyzerEnergy::beatGrid(pTrack).isMap()) &&
+        if (check && check->isFor(bpm, firstBeatSec, gridFor(pTrack).isMap()) &&
                 check->driftBeats > EnergyCalculator::kGridMaxDriftBeats) {
             if (pWhy) {
                 *pWhy = QStringLiteral("the beat grid of \"%1\" drifts %2 beats off the music")
@@ -1651,7 +1714,7 @@ bool AutoDJProcessor::tryPhraseFadeNow() {
         return false;
     }
     const double ratio = pFromDeck->rateRatio();
-    const phrasealign::Grid grid = AnalyzerEnergy::beatGrid(pFromTrack).atSpeed(ratio);
+    const phrasealign::Grid grid = gridFor(pFromTrack).atSpeed(ratio);
     if (!grid.isValid()) {
         return false;
     }
