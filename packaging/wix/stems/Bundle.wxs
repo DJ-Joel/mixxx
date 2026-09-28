@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Auto DJ 2.0 plus Video Mixing: setup.exe.
+
+  Installs Mixxx with the stems engine (it splits songs on the processor).
+  On a computer with an NVIDIA graphics driver (nvcuda.dll in System32) it
+  also downloads and installs the NVIDIA speed-up (StemsNvidia.wxs), so
+  songs split about 4 times faster on the graphics card. Other computers
+  never download it.
+
+  Built by "build installer" (build.bat) with WiX 6:
+    -d Version    bundle version (a.b.c)
+    -d MainMsi    the Mixxx installer made by cpack
+    -d NvidiaMsi  build\stems-nvidia\MixxxStemsNvidia.msi (the uploaded one)
+    -d NvidiaUrl  where setup.exe downloads it from
+    -d License    the licence text (RTF)
+    -d Icon       the setup icon
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal"
+     xmlns:util="http://wixtoolset.org/schemas/v4/wxs/util">
+  <Bundle
+      Name="Mixxx Auto DJ 2.0 plus Video Mixing"
+      Manufacturer="Mixxx Auto DJ 2.0 plus Video Mixing"
+      Version="$(var.Version)"
+      UpgradeCode="2EABFE02-69C3-414E-AD89-89C328E7B0E0"
+      IconSourceFile="$(var.Icon)">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          Theme="rtfLicense"
+          LicenseFile="$(var.License)"
+          ShowVersion="yes" />
+    </BootstrapperApplication>
+
+    <!-- The install folder (the Options button can change it). -->
+    <Variable Name="InstallFolder" Type="formatted"
+        Value="[ProgramFiles6432Folder]Mixxx Auto DJ 2.0 plus Video Mixing" />
+
+    <!-- An NVIDIA graphics driver puts nvcuda.dll into System32. -->
+    <util:FileSearch Id="FindNvidiaDriver"
+        Path="[System64Folder]nvcuda.dll"
+        Result="exists"
+        Variable="NvidiaFound" />
+
+    <Chain>
+      <MsiPackage Id="MixxxMain" SourceFile="$(var.MainMsi)">
+        <MsiProperty Name="INSTALL_ROOT" Value="[InstallFolder]" />
+      </MsiPackage>
+      <MsiPackage Id="StemsNvidia"
+          SourceFile="$(var.NvidiaMsi)"
+          Compressed="no"
+          DownloadUrl="$(var.NvidiaUrl)"
+          InstallCondition="NvidiaFound">
+        <MsiProperty Name="INSTALLFOLDER" Value="[InstallFolder]" />
+      </MsiPackage>
+    </Chain>
+  </Bundle>
+</Wix>

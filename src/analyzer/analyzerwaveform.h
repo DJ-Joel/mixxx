@@ -153,8 +153,21 @@ class AnalyzerWaveform : public Analyzer {
     void storeResults(TrackPointer tio) override;
     void cleanup() override;
 
+    /// Auto DJ 2.0 plus Video Mixing: the audio comes from the song's stem
+    /// file made by Mixxx (parts ready), so the waveform gets the parts too.
+    void setFromStemFile(bool fromStemFile) {
+        m_fromStemFile = fromStemFile;
+    }
+    /// Added to the description of a waveform made from such a stem file,
+    /// so it is not taken for one with made-up parts (see shouldAnalyze).
+    static QString partsMarker() {
+        return QStringLiteral(" [parts from the stem file]");
+    }
+
   private:
     bool shouldAnalyze(TrackPointer tio) const;
+    bool m_fromStemFile = false;
+    bool m_madeFromStemFile = false; ///< the waveform being made has real parts
 
     void storeCurrentStridePower();
     void resetCurrentStride();

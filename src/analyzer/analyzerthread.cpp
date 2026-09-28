@@ -10,6 +10,13 @@
 #include "analyzer/analyzersilence.h"
 #include "analyzer/analyzerwaveform.h"
 #include "analyzer/constants.h"
+#ifdef __STEM__
+#include <cmath>
+
+#include "stems/stemcache.h"
+#include "track/steminfoimporter.h"
+#include "waveform/waveform.h"
+#endif
 #include "library/dao/analysisdao.h"
 #include "moc_analyzerthread.cpp"
 #include "sources/audiosourcestereoproxy.h"
@@ -103,7 +110,10 @@ void AnalyzerThread::doRun() {
             return;
         }
         QSqlDatabase dbConnection = mixxx::DbConnectionPooled(m_dbConnectionPool);
-        m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerWaveform>(m_pConfig, dbConnection)));
+        auto pWaveform = std::make_unique<AnalyzerWaveform>(m_pConfig, dbConnection);
+        m_pWaveformAnalyzer = pWaveform.get();
+        m_waveformIndex = static_cast<int>(m_analyzers.size());
+        m_analyzers.push_back(AnalyzerWithState(std::move(pWaveform)));
     }
     if (AnalyzerGain::isEnabled(ReplayGainSettings(m_pConfig))) {
         m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerGain>(m_pConfig)));
@@ -178,6 +188,7 @@ void AnalyzerThread::doRun() {
                 for (auto&& analyzer : m_analyzers) {
                     analyzer.finish(*m_currentTrack);
                 }
+                analyzeStemWaveform(openParams);
                 emitDoneProgress(kAnalyzerProgressDone);
             } else {
                 for (auto&& analyzer : m_analyzers) {
@@ -187,6 +198,7 @@ void AnalyzerThread::doRun() {
             }
         } else {
             kLogger.debug() << "Skipping track analysis because no analyzer initialized.";
+            analyzeStemWaveform(openParams);
             emitDoneProgress(kAnalyzerProgressDone);
         }
     }
@@ -197,6 +209,63 @@ void AnalyzerThread::doRun() {
 
     kLogger.debug() << "Exiting worker thread";
     emitProgress(AnalyzerThreadState::Exit);
+}
+
+void AnalyzerThread::analyzeStemWaveform(const mixxx::AudioSource::OpenParams& openParams) {
+#ifdef __STEM__
+    // Auto DJ 2.0 plus Video Mixing: a song that plays from its stem file
+    // (parts made by Mixxx) gets a waveform with the parts too, so the
+    // decks can show them in colour. Only the waveform is made from the
+    // stem file; BPM, key, loudness and energy stay those of the song.
+    if (!m_currentTrack || m_waveformIndex < 0 || !m_pWaveformAnalyzer || isStopping() ||
+            !stems::StemCache::playbackEnabled()) {
+        return;
+    }
+    const TrackPointer pTrack = m_currentTrack->getTrack();
+    const ConstWaveformPointer pWaveform = pTrack->getWaveform();
+    if (pWaveform && pWaveform->hasStem() &&
+            pWaveform->getDescription().endsWith(AnalyzerWaveform::partsMarker())) {
+        return; // done before
+    }
+    if (mixxx::StemInfoImporter::maybeStemFile(pTrack->getLocation()) &&
+            mixxx::StemInfoImporter::hasStemAtom(pTrack->getLocation())) {
+        return; // a real stem file: analysed with its parts already
+    }
+    const QString stemFile = stems::StemCache::readyFileFor(pTrack);
+    if (stemFile.isEmpty()) {
+        return;
+    }
+    mixxx::AudioSourcePointer pSource =
+            SoundSourceProxy(pTrack).openAlternativeAudioSource(stemFile, openParams);
+    const bool matches = pSource &&
+            pSource->getSignalInfo().getSampleRate() == pTrack->getSampleRate() &&
+            pSource->getSignalInfo().getChannelCount() == mixxx::audio::ChannelCount::stem() &&
+            std::abs(pSource->frameIndexRange().length() /
+                            static_cast<double>(pSource->getSignalInfo().getSampleRate()) -
+                    pTrack->getDuration()) < 0.25;
+    if (!matches) {
+        return;
+    }
+    AnalyzerWithState& waveform = m_analyzers[m_waveformIndex];
+    m_pWaveformAnalyzer->setFromStemFile(true);
+    const bool started = waveform.initialize(*m_currentTrack,
+            pSource->getSignalInfo().getSampleRate(),
+            pSource->getSignalInfo().getChannelCount(),
+            pSource->frameLength());
+    m_pWaveformAnalyzer->setFromStemFile(false);
+    if (!started) {
+        return;
+    }
+    kLogger.info() << "Stems: waveform with the parts for" << pTrack->getInfo();
+    // Only the waveform analyzer is active now; the others ignore the audio.
+    if (analyzeAudioSource(pSource) == AnalysisResult::Finished) {
+        waveform.finish(*m_currentTrack);
+    } else {
+        waveform.cancel();
+    }
+#else
+    Q_UNUSED(openParams);
+#endif
 }
 
 bool AnalyzerThread::submitNextTrack(const AnalyzerTrack& nextTrack) {

@@ -1473,7 +1473,14 @@ bool Track::importPendingStemInfosWhileLocked() {
     const QList<StemInfo> stemInfos =
             mixxx::StemInfoImporter::importStemInfos(
                     getLocation());
-
+    // Auto DJ 2.0 plus Video Mixing: an MP4 that is not a stem file has no
+    // parts inside, but it may play from its Mixxx stem file; the deck set
+    // those parts (CachingReaderWorker) and they must stay, or the deck
+    // draws the plain waveform. The deck itself clears them when it plays
+    // the song without its parts.
+    if (stemInfos.isEmpty() && !m_stemInfo.isEmpty()) {
+        return false;
+    }
     return setStemInfosWhileLocked(stemInfos);
 }
 #endif

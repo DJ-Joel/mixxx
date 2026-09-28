@@ -132,6 +132,47 @@ cpack -G WIX
 
 The result is `build\mixxx-autodj2-video-mixing-<version>-amd64.msi`.
 
+**The stems engine** (song splitting, about 2 GB, not in git) is a folder
+`build\stems-engine` next to `mixxx.exe`. When it is there, the build
+setup puts it into the installer, without NVIDIA's files (see below). It is
+made from Python packages:
+
+```
+python -m venv onnx-env
+onnx-env\Scripts\pip install onnxruntime-gpu[cuda,cudnn]==1.30.0
+```
+
+- `onnxruntime.dll`, `onnxruntime_providers_shared.dll`,
+  `onnxruntime_providers_cuda.dll`: from
+  `onnx-env\Lib\site-packages\onnxruntime\capi`
+- `cuda\*.dll`: from `onnx-env\Lib\site-packages\nvidia\cu13\bin\x86_64`
+  (cudart, cublas, cublasLt, cufft, curand, nvrtc, nvrtc-builtins,
+  nvJitLink) and `...\nvidia\cudnn\bin` (all cuDNN 9 DLLs)
+- `model\htdemucs.onnx`: Demucs v4 "htdemucs" exported to ONNX with the
+  Mixxx project's conversion (github.com/mixxxdj/demucs)
+- `licenses\`: the licence texts of all of the above and a NOTICE.txt
+
+Without the `cuda` folder the engine runs on the processor (about 4x
+faster than playing instead of about 15x).
+
+**setup.exe** (what DJs download, about 400 MB) is a WiX "bundle"
+(`packaging/wix/stems/Bundle.wxs`, needs the WiX extensions
+`WixToolset.BootstrapperApplications.wixext/6.0.2` and
+`WixToolset.Util.wixext/6.0.2`). It installs the Mixxx MSI; on a computer
+with an NVIDIA graphics driver (`nvcuda.dll` in System32) it also downloads
+and installs the **NVIDIA speed-up** (`packaging/wix/stems/StemsNvidia.wxs`:
+the `cuda` folder and `onnxruntime_providers_cuda.dll`, about 1 GB) from the
+GitHub release `stems-nvidia-1`. Other computers never download it.
+
+```
+build nvidia-pack    (once: makes build\stems-nvidia\MixxxStemsNvidia.msi)
+build installer      (the Mixxx MSI, then build\setup\MixxxAutoDJ2-Setup.exe)
+```
+
+Upload `MixxxStemsNvidia.msi` once as the file of the GitHub release
+`stems-nvidia-1`. Keep that exact file: setup.exe checks that the download
+is byte for byte the file it was built with.
+
 ---
 
 ## 4. How it works
@@ -483,13 +524,22 @@ installed next to a normal Mixxx:
   one exists, so nothing is lost.
 - the window title and the About box say "Mixxx - Auto DJ 2.0 plus Video
   Mixing".
+- the stems engine (ONNX Runtime + the Demucs model, about 0.35 GB) is in
+  the installer when it was there at build time (its own cabinet,
+  `CPACK_WIX_CAB_PER_COMPONENT`: one Windows cabinet holds at most about
+  2 GB). NVIDIA's CUDA / cuDNN files are the separate NVIDIA speed-up that
+  setup.exe downloads only for NVIDIA computers (see Building it). They are
+  passed on as runtime files of this application under NVIDIA's licences
+  (only used by this application, not offered on their own; the download
+  is part of this application's setup); the licence texts are in
+  `stems-engine\licenses`.
 
 ---
 
 ### 4.17 Stems: splitting songs into parts
 
-Work in progress (steps 1-5 of 6 done: listening test, splitting engine,
-decks play the parts, DJ stem controls, Auto DJ stem mixes). Songs are split into
+Done in 6 steps: listening test, splitting engine, decks play the parts,
+DJ stem controls, Auto DJ stem mixes, waveforms and installer. Songs are split into
 four parts - drums, bass, other (synths, guitars, melody) and vocals - by
 Demucs v4 ("htdemucs", Meta, MIT license), the model the Mixxx project
 converted to ONNX (github.com/mixxxdj/demucs).
@@ -566,6 +616,14 @@ converted to ONNX (github.com/mixxxdj/demucs).
   without parts: the EQ mix as before. Switch: Auto DJ > Stems > "Use the
   parts in Auto DJ mixes" (`[Stems],AutoDJStems`, on by default).
   Limit: Auto DJ does not yet know where a song has singing.
+- **Waveforms with the parts:** when a deck loads a song whose parts are
+  ready, the analyzer makes its waveform once more from the stem file
+  (`AnalyzerThread::analyzeStemWaveform`), so the deck shows the parts in
+  their colours like a real stem file. Only the waveform: BPM, key,
+  loudness and energy stay those of the song itself. Such a waveform is
+  marked "[parts from the stem file]" in its description; a waveform that
+  claims parts without that mark (and is not from a real stem file) is
+  made again.
 - **How:** the song is read exactly as the deck plays it, converted to
   44100 Hz if needed (windowed-sinc resampler), normalised, and cut into
   7.8 s pieces that overlap by a quarter; the model's answers are blended
@@ -738,3 +796,14 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     with parts: instrumental first, drums + bass swap in the middle, vocals
     never together (stem knobs move, restored afterwards). Unmatched mixes:
     the outgoing vocals echo out. Switch in Auto DJ > Stems.
+36. **Stems, step 6: waveforms and installer.** Songs playing from their
+    parts get a waveform with the parts in colour. The installer includes
+    the stems engine with its licence texts; setup.exe downloads the NVIDIA
+    speed-up only on computers with an NVIDIA graphics driver. Fixes found
+    on the way: Windows' MP4 reader was asked for 8 channels and made up
+    "surround" channels from stereo (MP4 videos then played and were
+    analysed as 8 channels, and their waveforms claimed 4 fake parts); it
+    now never gets more channels than the file has, and fake-parts
+    waveforms are made again. The newest saved waveform is now the one
+    kept. An MP4 keeps the parts list its deck set when the file is opened
+    again elsewhere (it was wiped, so the deck drew the plain waveform).

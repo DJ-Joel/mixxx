@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Auto DJ 2.0 plus Video Mixing: the NVIDIA speed-up for stem splitting.
+
+  NVIDIA's CUDA and cuDNN runtime files (about 1.8 GB) that let the stems
+  engine run on an NVIDIA graphics card. Not in the main installer: setup.exe
+  (Bundle.wxs) downloads this package only when the computer has an NVIDIA
+  graphics driver. Installed into the same folder as Mixxx.
+
+  Built once with "build nvidia-pack" (from build\stems-engine) and then
+  uploaded as a GitHub release file. Do not rebuild it without uploading it
+  again: setup.exe checks that the downloaded file is exactly this one.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Mixxx Auto DJ 2.0 plus Video Mixing - NVIDIA speed-up"
+      Manufacturer="Mixxx Auto DJ 2.0 plus Video Mixing"
+      Version="1.0.0"
+      UpgradeCode="276BFCD2-B35B-43BA-8446-CF0DEDFC7E6A"
+      Scope="perMachine"
+      Language="1033">
+    <MajorUpgrade DowngradeErrorMessage="A newer NVIDIA speed-up is already installed." />
+    <MediaTemplate EmbedCab="yes" MaximumUncompressedMediaSize="1000" CompressionLevel="high" />
+
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="Mixxx Auto DJ 2.0 plus Video Mixing">
+        <Directory Id="StemsEngineFolder" Name="stems-engine">
+          <Directory Id="CudaFolder" Name="cuda" />
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <ComponentGroup Id="NvidiaConnector" Directory="StemsEngineFolder">
+      <Component><File Source="$(var.EngineDir)\onnxruntime_providers_cuda.dll" /></Component>
+    </ComponentGroup>
+    <ComponentGroup Id="NvidiaFiles" Directory="CudaFolder">
+      <Component><File Source="$(var.EngineDir)\cuda\cublas64_13.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cublasLt64_13.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudart64_13.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_adv64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_cnn64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_engines_precompiled64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_engines_runtime_compiled64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_engines_tensor_ir64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_ext64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_graph64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_heuristic64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cudnn_ops64_9.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\cufft64_12.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\curand64_10.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\nvJitLink_130_0.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\nvrtc-builtins64_134.dll" /></Component>
+      <Component><File Source="$(var.EngineDir)\cuda\nvrtc64_130_0.dll" /></Component>
+    </ComponentGroup>
+
+    <Feature Id="NvidiaSpeedUp" Title="Stem splitting on NVIDIA graphics cards">
+      <ComponentGroupRef Id="NvidiaConnector" />
+      <ComponentGroupRef Id="NvidiaFiles" />
+    </Feature>
+  </Package>
+</Wix>

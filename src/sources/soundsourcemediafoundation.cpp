@@ -653,8 +653,12 @@ bool configureMediaType(
     }
     kLogger.debug() << "Number of channels in input stream" << numChannels;
     if (params.getSignalInfo().getChannelCount().isValid()) {
-        numChannels = std::min(params.getSignalInfo().getChannelCount(),
-                mixxx::kMaxEngineChannelInputCount);
+        // Auto DJ 2.0 plus Video Mixing: never more channels than the file
+        // has. Asked for 8, Windows turns stereo into made-up "surround"
+        // channels, which Mixxx then took for the 4 parts of a stem file.
+        numChannels = std::min<UINT32>(numChannels,
+                std::min<UINT32>(params.getSignalInfo().getChannelCount(),
+                        mixxx::kMaxEngineChannelInputCount));
         hr = pAudioType->SetUINT32(
                 MF_MT_AUDIO_NUM_CHANNELS, numChannels);
         if (FAILED(hr)) {

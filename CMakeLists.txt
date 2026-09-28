@@ -2672,6 +2672,39 @@ install(
   DESTINATION "${MIXXX_INSTALL_LICENSEDIR}"
 )
 
+# Auto DJ 2.0 plus Video Mixing: the stems engine (ONNX Runtime and the
+# Demucs model, not in git; see AUTODJ2.md). It goes into the installer next
+# to mixxx.exe when the folder is there; without it the installer has no
+# stem splitting. NVIDIA's CUDA / cuDNN files (the "cuda" folder and
+# onnxruntime_providers_cuda.dll, 1.8 GB) are NOT in this installer: they
+# are a separate package (packaging/wix/stems) that setup.exe downloads
+# only on computers with an NVIDIA graphics card.
+if(WIN32)
+  set(
+    MIXXX_STEMS_ENGINE_DIR
+    "${CMAKE_BINARY_DIR}/stems-engine"
+    CACHE PATH
+    "Stems engine folder to put in the installer"
+  )
+  if(
+    EXISTS "${MIXXX_STEMS_ENGINE_DIR}/onnxruntime.dll"
+    AND EXISTS "${MIXXX_STEMS_ENGINE_DIR}/model/htdemucs.onnx"
+  )
+    message(STATUS "Stems engine: in the installer (${MIXXX_STEMS_ENGINE_DIR})")
+    install(
+      DIRECTORY "${MIXXX_STEMS_ENGINE_DIR}/"
+      DESTINATION "${MIXXX_INSTALL_BINDIR}/stems-engine"
+      COMPONENT StemsEngine
+      PATTERN "cuda" EXCLUDE
+      PATTERN "onnxruntime_providers_cuda.dll" EXCLUDE
+      PATTERN "onnxruntime_providers_tensorrt.dll" EXCLUDE
+    )
+    set(MIXXX_STEMS_ENGINE_INSTALLED true)
+  else()
+    message(STATUS "Stems engine: not found, the installer has no stem splitting")
+  endif()
+endif()
+
 # Documentation
 install(
   FILES
@@ -5791,9 +5824,21 @@ if(WIN32)
 
   # uses CMAKE_PROJECT_VERSION
   configure_file(packaging/wix/LICENSE.rtf.in packaging/wix/LICENSE.rtf @ONLY)
+
+  # Auto DJ 2.0 plus Video Mixing: one cabinet per component, so the stems
+  # engine never pushes a cabinet over the 2 GB limit.
+  set(CPACK_WIX_CAB_PER_COMPONENT ON)
 endif()
 
 include(CPack)
+
+if(MIXXX_STEMS_ENGINE_INSTALLED)
+  cpack_add_component(
+    StemsEngine
+    DISPLAY_NAME "Stem splitting engine"
+    DESCRIPTION "Splits songs into drums, bass, other and vocals (ONNX Runtime + Demucs model)."
+  )
+endif()
 
 if(APPLOCAL_COMPONENT_DEFINED)
   cpack_add_component(applocal HIDDEN REQUIRED)

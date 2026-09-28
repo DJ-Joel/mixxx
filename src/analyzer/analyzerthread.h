@@ -17,6 +17,8 @@
 #include "util/samplebuffer.h"
 #include "util/workerthread.h"
 
+class AnalyzerWaveform;
+
 enum AnalyzerModeFlags {
     None = 0x00,
     WithBeats = 0x01,
@@ -117,6 +119,11 @@ class AnalyzerThread : public WorkerThread {
     // run() by the worker thread.
 
     std::vector<AnalyzerWithState> m_analyzers;
+    /// Auto DJ 2.0 plus Video Mixing: the waveform analyzer (in
+    /// m_analyzers), for a second pass over the song's stem file.
+    AnalyzerWaveform* m_pWaveformAnalyzer = nullptr;
+    int m_waveformIndex = -1;
+    void analyzeStemWaveform(const mixxx::AudioSource::OpenParams& openParams);
 
     mixxx::SampleBuffer m_sampleBuffer;
 

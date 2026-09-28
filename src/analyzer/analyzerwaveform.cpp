@@ -1,5 +1,6 @@
 #include "analyzer/analyzerwaveform.h"
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -52,6 +53,7 @@ bool AnalyzerWaveform::initialize(const AnalyzerTrack& track,
     if (!shouldAnalyze(track.getTrack())) {
         return false;
     }
+    m_madeFromStemFile = m_fromStemFile;
 
     m_timer.start();
 
@@ -108,9 +110,10 @@ bool AnalyzerWaveform::shouldAnalyze(TrackPointer pTrack) const {
 #ifdef __STEM__
     // (A song that only plays from a stem file made by Mixxx is analysed
     // from its own file, which has no parts.)
-    bool isStemTrack = !pTrack->getStemInfo().isEmpty() &&
-            mixxx::StemInfoImporter::maybeStemFile(pTrack->getLocation()) &&
-            mixxx::StemInfoImporter::hasStemAtom(pTrack->getLocation());
+    bool isStemTrack = m_fromStemFile ||
+            (!pTrack->getStemInfo().isEmpty() &&
+                    mixxx::StemInfoImporter::maybeStemFile(pTrack->getLocation()) &&
+                    mixxx::StemInfoImporter::hasStemAtom(pTrack->getLocation()));
 #endif
 
     TrackId trackId = pTrack->getId();
@@ -120,6 +123,13 @@ bool AnalyzerWaveform::shouldAnalyze(TrackPointer pTrack) const {
     if (trackId.isValid() && (missingWaveform || missingWavesummary)) {
         QList<AnalysisDao::AnalysisInfo> analyses =
                 m_analysisDao.getAnalysesForTrack(trackId);
+        // Auto DJ 2.0 plus Video Mixing: the newest analysis first, so the
+        // latest waveform is the one kept (older ones are deleted below).
+        std::sort(analyses.begin(),
+                analyses.end(),
+                [](const AnalysisDao::AnalysisInfo& a, const AnalysisDao::AnalysisInfo& b) {
+                    return a.analysisId > b.analysisId;
+                });
 
         QListIterator<AnalysisDao::AnalysisInfo> it(analyses);
         while (it.hasNext()) {
@@ -154,12 +164,33 @@ bool AnalyzerWaveform::shouldAnalyze(TrackPointer pTrack) const {
 #ifdef __STEM__
     // If the waveform was generated without stem information but the track has
     // some, we need to regenerate the waveform.
-    const bool waveformHasStemData = (!pTrackWaveform.isNull() &&
-                                             pTrackWaveform->hasStem()) ||
-            (!pLoadedTrackWaveform.isNull() &&
-                    pLoadedTrackWaveform->hasStem());
+    // Auto DJ 2.0 plus Video Mixing: Windows used to read MP4 files as 8
+    // made-up channels, so their waveforms claim 4 "parts" that are not
+    // real. Parts only count from a real stem file, or when marked as made
+    // from the song's Mixxx stem file; any other waveform with parts is
+    // made again.
+    const auto realParts = [&](const ConstWaveformPointer& pWaveform) {
+        if (pWaveform.isNull() || !pWaveform->hasStem()) {
+            return false;
+        }
+        const bool marked = pWaveform->getDescription().endsWith(partsMarker());
+        return m_fromStemFile ? marked : (isStemTrack || marked);
+    };
+    const auto madeUpParts = [&](const ConstWaveformPointer& pWaveform) {
+        return !pWaveform.isNull() && pWaveform->hasStem() && !realParts(pWaveform);
+    };
+    const bool waveformHasStemData = realParts(pTrackWaveform) || realParts(pLoadedTrackWaveform);
     if (!missingWaveform && !waveformHasStemData && isStemTrack) {
         missingWaveform = true;
+    }
+    if (!m_fromStemFile) {
+        if (!missingWaveform && (madeUpParts(pTrackWaveform) || madeUpParts(pLoadedTrackWaveform))) {
+            missingWaveform = true;
+        }
+        if (!missingWavesummary &&
+                (madeUpParts(pTrackWaveformSummary) || madeUpParts(pLoadedTrackWaveformSummary))) {
+            missingWavesummary = true;
+        }
     }
 #endif
 
@@ -330,7 +361,8 @@ void AnalyzerWaveform::storeResults(TrackPointer pTrack) {
         m_waveform->setSaveState(Waveform::SaveState::SavePending);
         m_waveform->setCompletion(m_waveform->getDataSize());
         m_waveform->setVersion(WaveformFactory::currentWaveformVersion());
-        m_waveform->setDescription(WaveformFactory::currentWaveformDescription());
+        m_waveform->setDescription(WaveformFactory::currentWaveformDescription() +
+                (m_madeFromStemFile ? partsMarker() : QString()));
     }
 
     // Force completion to waveform size
@@ -338,7 +370,8 @@ void AnalyzerWaveform::storeResults(TrackPointer pTrack) {
         m_waveformSummary->setSaveState(Waveform::SaveState::SavePending);
         m_waveformSummary->setCompletion(m_waveformSummary->getDataSize());
         m_waveformSummary->setVersion(WaveformFactory::currentWaveformSummaryVersion());
-        m_waveformSummary->setDescription(WaveformFactory::currentWaveformSummaryDescription());
+        m_waveformSummary->setDescription(WaveformFactory::currentWaveformSummaryDescription() +
+                (m_madeFromStemFile ? partsMarker() : QString()));
     }
 
 #ifdef TEST_HEAT_MAP
