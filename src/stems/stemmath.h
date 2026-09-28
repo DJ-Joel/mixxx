@@ -73,6 +73,36 @@ void toInterleaved(const float* pPlanar, std::int64_t frames, float* pInterleave
 
 /// Good-quality sample rate conversion (windowed sinc) of one channel.
 std::vector<float> resample(const float* pIn, std::int64_t frames, int fromRate, int toRate);
+
+/// The same, piece by piece (the result is identical to resample()).
+class Resampler {
+  public:
+    Resampler(int fromRate, int toRate);
+    /// More input; appends every output sample that is complete.
+    void push(const float* pIn, std::int64_t count, std::vector<float>* pOut);
+    /// End of the input: appends the rest.
+    void finish(std::vector<float>* pOut);
+
+  private:
+    void makeFilter(double fraction, float* pTaps) const;
+    void produce(std::int64_t available, bool end, std::vector<float>* pOut);
+
+    int m_fromRate;
+    int m_toRate;
+    std::int64_t m_up = 1;
+    std::int64_t m_down = 1;
+    double m_cutoff = 0.5;
+    double m_halfWidth = 1.0;
+    int m_taps = 1;
+    int m_reach = 0;
+    double m_i0Beta = 1.0;
+    std::vector<float> m_table;
+    std::vector<float> m_scratch;
+    std::vector<float> m_in;      ///< input still needed
+    std::int64_t m_inStart = 0;   ///< input index of m_in[0]
+    std::int64_t m_totalIn = 0;
+    std::int64_t m_next = 0;      ///< next output index
+};
 /// Number of frames resample() returns.
 std::int64_t resampledLength(std::int64_t frames, int fromRate, int toRate);
 

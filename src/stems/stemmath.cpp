@@ -7,6 +7,7 @@
 #include <QtEndian>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <numeric>
 
 namespace stems {
@@ -175,78 +176,114 @@ std::int64_t resampledLength(std::int64_t frames, int fromRate, int toRate) {
     return (frames * toRate + fromRate - 1) / fromRate;
 }
 
-std::vector<float> resample(const float* pIn, std::int64_t frames, int fromRate, int toRate) {
-    if (fromRate == toRate) {
-        return std::vector<float>(pIn, pIn + frames);
-    }
+Resampler::Resampler(int fromRate, int toRate)
+        : m_fromRate(fromRate),
+          m_toRate(toRate) {
     const std::int64_t divisor = std::gcd(fromRate, toRate);
-    const std::int64_t up = toRate / divisor;  // output steps per ...
-    const std::int64_t down = fromRate / divisor; // ... this many input steps
+    m_up = toRate / divisor;     // output steps per ...
+    m_down = fromRate / divisor; // ... this many input steps
     // Cut-off in cycles per input sample.
-    const double cutoff = 0.5 * std::min(1.0, static_cast<double>(toRate) / fromRate) * kPassband;
-    const double halfWidth = kZeroCrossings / (2.0 * cutoff); // input samples
-    const int taps = static_cast<int>(std::ceil(halfWidth)) * 2 + 1;
-    const int reach = taps / 2;
-    const double i0Beta = besselI0(kKaiserBeta);
-
+    m_cutoff = 0.5 * std::min(1.0, static_cast<double>(toRate) / fromRate) * kPassband;
+    m_halfWidth = kZeroCrossings / (2.0 * m_cutoff); // input samples
+    m_taps = static_cast<int>(std::ceil(m_halfWidth)) * 2 + 1;
+    m_reach = m_taps / 2;
+    m_i0Beta = besselI0(kKaiserBeta);
     // One filter per output phase (the rates share a small common step).
-    const bool useTable = up <= 4096;
-    std::vector<float> table;
-    auto filter = [&](double fraction, float* pTaps) {
-        // Tap k sits at input sample (floor + k - reach); fraction = position
-        // of the output between floor and floor + 1.
-        double norm = 0.0;
-        for (int k = 0; k < taps; ++k) {
-            const double x = (k - reach) - fraction;
-            double value = 0.0;
-            if (std::abs(x) < halfWidth) {
-                const double arg = 2.0 * cutoff * x;
-                const double sinc = std::abs(arg) < 1e-12
-                        ? 1.0
-                        : std::sin(kPi * arg) / (kPi * arg);
-                const double r = x / halfWidth;
-                const double window = besselI0(kKaiserBeta * std::sqrt(1.0 - r * r)) / i0Beta;
-                value = 2.0 * cutoff * sinc * window;
-            }
-            pTaps[k] = static_cast<float>(value);
-            norm += value;
+    if (m_up <= 4096) {
+        m_table.resize(static_cast<std::size_t>(m_up) * m_taps);
+        for (std::int64_t phase = 0; phase < m_up; ++phase) {
+            makeFilter(static_cast<double>(phase) / m_up, m_table.data() + phase * m_taps);
         }
-        // Exactly unity gain for steady signals.
-        for (int k = 0; k < taps; ++k) {
-            pTaps[k] = static_cast<float>(pTaps[k] / norm);
-        }
-    };
-    if (useTable) {
-        table.resize(static_cast<std::size_t>(up) * taps);
-        for (std::int64_t phase = 0; phase < up; ++phase) {
-            filter(static_cast<double>(phase) / up, table.data() + phase * taps);
-        }
+    } else {
+        m_scratch.resize(m_taps);
     }
+}
 
-    const std::int64_t outFrames = resampledLength(frames, fromRate, toRate);
-    std::vector<float> out(outFrames);
-    std::vector<float> scratch(taps);
-    for (std::int64_t n = 0; n < outFrames; ++n) {
-        // Input position n * down / up = whole + phase / up.
-        const std::int64_t position = n * down;
-        const std::int64_t whole = position / up;
-        const std::int64_t phase = position % up;
+void Resampler::makeFilter(double fraction, float* pTaps) const {
+    // Tap k sits at input sample (whole + k - reach); `fraction` = where the
+    // output lies between whole and whole + 1.
+    double norm = 0.0;
+    std::vector<double> values(m_taps);
+    for (int k = 0; k < m_taps; ++k) {
+        const double x = (k - m_reach) - fraction;
+        double value = 0.0;
+        if (std::abs(x) < m_halfWidth) {
+            const double arg = 2.0 * m_cutoff * x;
+            const double sinc = std::abs(arg) < 1e-12 ? 1.0 : std::sin(kPi * arg) / (kPi * arg);
+            const double r = x / m_halfWidth;
+            const double window = besselI0(kKaiserBeta * std::sqrt(1.0 - r * r)) / m_i0Beta;
+            value = 2.0 * m_cutoff * sinc * window;
+        }
+        values[k] = value;
+        norm += value;
+    }
+    // Exactly unity gain for steady signals.
+    for (int k = 0; k < m_taps; ++k) {
+        pTaps[k] = static_cast<float>(values[k] / norm);
+    }
+}
+
+void Resampler::produce(std::int64_t available, bool end, std::vector<float>* pOut) {
+    const std::int64_t limit = end ? resampledLength(m_totalIn, m_fromRate, m_toRate)
+                                   : std::numeric_limits<std::int64_t>::max();
+    while (m_next < limit) {
+        const std::int64_t position = m_next * m_down;
+        const std::int64_t whole = position / m_up;
+        const std::int64_t phase = position % m_up;
+        const std::int64_t first = whole - m_reach;
+        if (!end && first + m_taps > available) {
+            break; // wait for more input
+        }
         const float* pTaps;
-        if (useTable) {
-            pTaps = table.data() + phase * taps;
+        if (!m_table.empty()) {
+            pTaps = m_table.data() + phase * m_taps;
         } else {
-            filter(static_cast<double>(phase) / up, scratch.data());
-            pTaps = scratch.data();
+            makeFilter(static_cast<double>(phase) / m_up, m_scratch.data());
+            pTaps = m_scratch.data();
         }
         double sum = 0.0;
-        const std::int64_t first = whole - reach;
         const int kFrom = static_cast<int>(std::max<std::int64_t>(0, -first));
-        const int kTo = static_cast<int>(std::min<std::int64_t>(taps, frames - first));
+        const int kTo = static_cast<int>(std::min<std::int64_t>(m_taps, m_totalIn - first));
         for (int k = kFrom; k < kTo; ++k) {
-            sum += pTaps[k] * pIn[first + k];
+            sum += pTaps[k] * m_in[static_cast<std::size_t>(first + k - m_inStart)];
         }
-        out[n] = static_cast<float>(sum);
+        pOut->push_back(static_cast<float>(sum));
+        ++m_next;
     }
+    // Forget input no later output needs.
+    const std::int64_t keepFrom = std::max<std::int64_t>(0, (m_next * m_down) / m_up - m_reach);
+    if (keepFrom > m_inStart) {
+        const std::int64_t drop = std::min<std::int64_t>(keepFrom - m_inStart,
+                static_cast<std::int64_t>(m_in.size()));
+        m_in.erase(m_in.begin(), m_in.begin() + drop);
+        m_inStart += drop;
+    }
+}
+
+void Resampler::push(const float* pIn, std::int64_t count, std::vector<float>* pOut) {
+    if (m_fromRate == m_toRate) {
+        pOut->insert(pOut->end(), pIn, pIn + count);
+        m_totalIn += count;
+        return;
+    }
+    m_in.insert(m_in.end(), pIn, pIn + count);
+    m_totalIn += count;
+    produce(m_totalIn, false, pOut);
+}
+
+void Resampler::finish(std::vector<float>* pOut) {
+    if (m_fromRate == m_toRate) {
+        return;
+    }
+    produce(m_totalIn, true, pOut);
+}
+
+std::vector<float> resample(const float* pIn, std::int64_t frames, int fromRate, int toRate) {
+    std::vector<float> out;
+    out.reserve(static_cast<std::size_t>(resampledLength(frames, fromRate, toRate)));
+    Resampler resampler(fromRate, toRate);
+    resampler.push(pIn, frames, &out);
+    resampler.finish(&out);
     return out;
 }
 

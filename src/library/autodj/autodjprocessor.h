@@ -205,6 +205,11 @@ class AutoDJProcessor : public QObject {
 
     bool nextTrackLoaded();
 
+    /// Auto DJ 2.0 plus Video Mixing: seconds until the next mix starts (the
+    /// outgoing song reaches its fade point); 0 while mixing; -1 when Auto
+    /// DJ is off or no mix is planned.
+    double secondsUntilMix();
+
     void setTransitionTime(int seconds);
 
     void setTransitionMode(TransitionMode newMode);

@@ -960,3 +960,15 @@ mixxx::AudioSourcePointer SoundSourceProxy::openAudioSource(
             m_pSoundSource->getStreamInfo());
     return mixxx::AudioSourceTrackProxy::create(m_pTrack, m_pSoundSource);
 }
+
+mixxx::AudioSourcePointer SoundSourceProxy::openAlternativeAudioSource(
+        const QString& filePath, const mixxx::AudioSource::OpenParams& params) {
+    VERIFY_OR_DEBUG_ASSERT(m_pTrack) {
+        return nullptr;
+    }
+    SoundSourceProxy alternative(QUrl::fromLocalFile(filePath));
+    if (!alternative.openSoundSource(params)) {
+        return nullptr;
+    }
+    return mixxx::AudioSourceTrackProxy::create(m_pTrack, alternative.m_pSoundSource);
+}

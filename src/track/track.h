@@ -355,6 +355,12 @@ class Track : public QObject {
         return m_stemInfo;
     }
     // Setter is only available internally. See setStemPointsWhileLocked
+    /// Auto DJ 2.0 plus Video Mixing: the deck plays this song from its
+    /// stem file (split by Mixxx), so it has these parts. Empty = none.
+    void setStemInfos(QList<StemInfo> stemInfos) {
+        const QMutexLocker lock(&m_qMutex);
+        m_stemInfo = std::move(stemInfos);
+    }
 
     bool hasStem() const {
         const QMutexLocker lock(&m_qMutex);

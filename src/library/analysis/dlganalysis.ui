@@ -162,6 +162,16 @@ Auto DJ 2.0 plus Video Mixing also measures each song's energy (1-10), finds whe
         </widget>
        </item>
        <item>
+        <widget class="QPushButton" name="pushButtonStemSplit">
+         <property name="focusPolicy">
+          <enum>Qt::NoFocus</enum>
+         </property>
+         <property name="text">
+          <string>Stem Split</string>
+         </property>
+        </widget>
+       </item>
+       <item>
         <widget class="QLabel" name="labelProgress">
          <property name="text">
           <string>Progress</string>

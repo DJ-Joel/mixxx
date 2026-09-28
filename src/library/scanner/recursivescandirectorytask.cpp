@@ -79,6 +79,11 @@ void RecursiveScanDirectoryTask::run() {
             }
         } else {
             // File is a directory
+            // Auto DJ 2.0 plus Video Mixing: stem files made by Mixxx are
+            // not songs of their own.
+            if (currentFileInfo.fileName() == QStringLiteral("Mixxx Stems")) {
+                continue;
+            }
             if (m_scannerGlobal->directoryBlacklisted(currentFile)) {
                 // Skip blacklisted directories like the iTunes Album
                 // Art Folder since it is probably a waste of time.

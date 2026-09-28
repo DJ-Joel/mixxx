@@ -127,4 +127,7 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     StemSplitter* m_pStems = nullptr;
     /// Splits the next songs of the Auto DJ queue ahead of time.
     void requestQueueStems();
+    /// A song's parts are ready: a stopped deck holding it reloads it, so
+    /// it plays from its parts (at the same position).
+    void useReadyStems(TrackId trackId);
 };

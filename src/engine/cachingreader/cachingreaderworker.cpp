@@ -2,10 +2,13 @@
 
 #include <QAtomicInt>
 #include <QtDebug>
+#include <cmath>
 
 #include "analyzer/analyzersilence.h"
 #include "moc_cachingreaderworker.cpp"
 #include "sources/soundsourceproxy.h"
+#include "stems/stemcache.h"
+#include "track/steminfoimporter.h"
 #include "track/track.h"
 #include "util/compatibility/qmutex.h"
 #include "util/event.h"
@@ -219,7 +222,48 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
 #ifdef __STEM__
     config.setStemMask(stemMask);
 #endif
+#ifdef __STEM__
+    // Auto DJ 2.0 plus Video Mixing: a song that has been split into parts
+    // plays from its stem file, so its parts can be mixed. Only in the
+    // decks, only when the stem file matches the song exactly.
+    bool playsFromStems = false;
+    // (Every MP4 "may" be a stem file; only one with the stem manifest is.)
+    const bool ownStemFile = mixxx::StemInfoImporter::maybeStemFile(pTrack->getLocation()) &&
+            mixxx::StemInfoImporter::hasStemAtom(pTrack->getLocation());
+    if (!ownStemFile && !stemMask && stems::StemCache::playbackEnabled() &&
+            m_group.startsWith(QStringLiteral("[Channel")) &&
+            m_maxSupportedChannel >= mixxx::audio::ChannelCount::stem()) {
+        const QString stemFile = stems::StemCache::readyFileFor(pTrack);
+        if (!stemFile.isEmpty()) {
+            m_pAudioSource = SoundSourceProxy(pTrack).openAlternativeAudioSource(stemFile, config);
+            const double trackSeconds = pTrack->getDuration();
+            const bool matches = m_pAudioSource &&
+                    m_pAudioSource->getSignalInfo().getSampleRate() == pTrack->getSampleRate() &&
+                    m_pAudioSource->getSignalInfo().getChannelCount() ==
+                            mixxx::audio::ChannelCount::stem() &&
+                    std::abs(m_pAudioSource->frameIndexRange().length() /
+                                    static_cast<double>(m_pAudioSource->getSignalInfo()
+                                                    .getSampleRate()) -
+                            trackSeconds) < 0.25;
+            if (matches) {
+                playsFromStems = true;
+                kLogger.info() << m_group << "Stems: playing from" << stemFile;
+            } else {
+                kLogger.info() << m_group << "Stems: stem file does not match the song, "
+                                              "playing the song itself";
+                m_pAudioSource.reset();
+            }
+        }
+    }
+    if (!ownStemFile) {
+        pTrack->setStemInfos(playsFromStems ? stems::StemCache::stemInfos() : QList<StemInfo>());
+    }
+    if (!playsFromStems) {
+        m_pAudioSource = SoundSourceProxy(pTrack).openAudioSource(config);
+    }
+#else
     m_pAudioSource = SoundSourceProxy(pTrack).openAudioSource(config);
+#endif
     if (!m_pAudioSource) {
         kLogger.warning()
                 << m_group

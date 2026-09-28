@@ -2,6 +2,8 @@
 
 #include <QActionGroup>
 #include <QDateTime>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QDir>
 #include <QFileInfo>
 #include <QStandardPaths>
@@ -28,6 +30,7 @@
 #include <QFileDialog>
 #include <QPushButton>
 #include <cmath>
+#include <memory>
 #include <QTableWidget>
 #include <QTimer>
 
@@ -486,6 +489,13 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     // and vocals in the background - the songs in the decks first, then
     // the next songs of the queue - so the parts are ready when needed.
     m_pStems = new StemSplitter(m_pConfig, this);
+    connect(m_pStems,
+            &StemSplitter::stemsReady,
+            this,
+            [this](TrackId trackId, const QString& path) {
+                Q_UNUSED(path);
+                useReadyStems(trackId);
+            });
     connect(&PlayerInfo::instance(),
             &PlayerInfo::trackChanged,
             this,
@@ -495,6 +505,73 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
                     m_pStems->request(pNewTrack, true);
                 }
             });
+    // The Stems menu: on/off and where the parts are saved (one folder -
+    // e.g. on a USB drive - or next to each song).
+    pushButtonStems->setText(tr("Stems"));
+    pushButtonStems->setToolTip(tr(
+            "Songs are split into drums, bass, other and vocals in the background\n"
+            "(on the graphics card when there is one), so their parts can be mixed.\n"
+            "Choose here where the parts are saved, for example on your USB drive.\n"
+            "They take about 7 MB per minute of music."));
+    auto* pStemMenu = new QMenu(pushButtonStems);
+    pStemMenu->setToolTipsVisible(true);
+    connect(pStemMenu, &QMenu::aboutToShow, this, [this, pStemMenu]() {
+        pStemMenu->clear();
+        QAction* pOn = pStemMenu->addAction(tr("Split songs into parts"));
+        pOn->setCheckable(true);
+        pOn->setChecked(m_pStems->isEnabled());
+        connect(pOn, &QAction::toggled, this, [this](bool on) {
+            m_pStems->setEnabled(on);
+        });
+        pStemMenu->addSection(tr("Save the parts"));
+        const QString folder = QDir::toNativeSeparators(
+                QDir(m_pStems->folder()).filePath(stems::StemCache::folderName()));
+        auto* pWhere = new QActionGroup(pStemMenu);
+        QAction* pOneFolder = pStemMenu->addAction(tr("In one folder: %1").arg(folder));
+        pOneFolder->setToolTip(tr("All parts in this folder. Use \"Choose the folder...\" "
+                                  "to put it on another drive."));
+        QAction* pNextToSongs = pStemMenu->addAction(
+                tr("Next to each song (in a \"%1\" folder)").arg(stems::StemCache::folderName()));
+        pNextToSongs->setToolTip(tr(
+                "The parts travel with your songs, for example on a USB drive.\n"
+                "Where that cannot be written (a read-only drive), they go to the folder above."));
+        for (QAction* pAction : {pOneFolder, pNextToSongs}) {
+            pAction->setCheckable(true);
+            pWhere->addAction(pAction);
+        }
+        const bool nextToSongs =
+                m_pStems->location() == stems::StemCache::Location::NextToSong;
+        pNextToSongs->setChecked(nextToSongs);
+        pOneFolder->setChecked(!nextToSongs);
+        connect(pOneFolder, &QAction::triggered, this, [this]() {
+            m_pStems->setLocation(stems::StemCache::Location::OneFolder);
+        });
+        connect(pNextToSongs, &QAction::triggered, this, [this]() {
+            m_pStems->setLocation(stems::StemCache::Location::NextToSong);
+        });
+        QAction* pChoose = pStemMenu->addAction(tr("Choose the folder..."));
+        connect(pChoose, &QAction::triggered, this, [this]() {
+            const QString chosen = QFileDialog::getExistingDirectory(this,
+                    tr("Where should the stem parts be saved?"),
+                    m_pStems->folder());
+            if (!chosen.isEmpty()) {
+                m_pStems->setFolder(chosen);
+                m_pStems->setLocation(stems::StemCache::Location::OneFolder);
+            }
+        });
+        QAction* pOpen = pStemMenu->addAction(tr("Open the stems folder"));
+        connect(pOpen, &QAction::triggered, this, [this]() {
+            const QString path = QDir(m_pStems->folder()).filePath(stems::StemCache::folderName());
+            QDir().mkpath(path);
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        });
+        pStemMenu->addSeparator();
+        QAction* pNote = pStemMenu->addAction(
+                tr("A new folder starts empty: songs are split again when needed."));
+        pNote->setEnabled(false);
+    });
+    pushButtonStems->setMenu(pStemMenu);
+
     auto* pStemQueueTimer = new QTimer(this);
     pStemQueueTimer->setSingleShot(true);
     pStemQueueTimer->setInterval(3000); // after the queue settles
@@ -1494,6 +1571,65 @@ void DlgAutoDJ::requestQueueStems() {
     for (int row = 0; row < rows; ++row) {
         m_pStems->request(m_pAutoDJTableModel->getTrack(m_pAutoDJTableModel->index(row, 0)),
                 false);
+    }
+}
+
+void DlgAutoDJ::useReadyStems(TrackId trackId) {
+    const int decks = static_cast<int>(ControlObject::get(ConfigKey("[App]", "num_decks")));
+    // With Auto DJ on, the waiting deck may still be reloaded while the
+    // next mix is far enough away (Auto DJ then plans the mix again, as for
+    // any newly loaded song). The time comes from Auto DJ's own plan, so it
+    // works the same on fast and slow computers.
+    constexpr double kReloadMarginSec = 10.0;
+    const double untilMix = m_pAutoDJProcessor->secondsUntilMix();
+    const bool autoDjAllowsReload = untilMix < 0.0 || untilMix > kReloadMarginSec;
+    if (untilMix >= 0.0) {
+        qInfo().noquote() << "Stems: next Auto DJ mix in"
+                          << QString::number(untilMix, 'f', 0) << "s";
+    }
+    for (int deck = 1; deck <= decks; ++deck) {
+        const QString group = QStringLiteral("[Channel%1]").arg(deck);
+        const TrackPointer pTrack = PlayerInfo::instance().getTrackInfo(group);
+        if (!pTrack || pTrack->getId() != trackId) {
+            continue;
+        }
+        if (ControlObject::get(ConfigKey(group, "play")) > 0.0 || !autoDjAllowsReload) {
+            // Never interrupt a playing song or a mix about to start: the
+            // parts are used the next time the song is loaded.
+            qInfo().noquote() << "Stems:" << group << "parts ready for" << pTrack->getInfo()
+                              << "- used the next time it is loaded";
+            continue;
+        }
+        const double position = ControlObject::get(ConfigKey(group, "playposition"));
+        qInfo().noquote() << "Stems:" << group << "reloading" << pTrack->getInfo()
+                          << "to play it from its parts";
+        auto pConnection = std::make_shared<QMetaObject::Connection>();
+        *pConnection = connect(&PlayerInfo::instance(),
+                &PlayerInfo::trackChanged,
+                this,
+                [this, pConnection, group, pTrack, position](const QString& changedGroup,
+                        TrackPointer pNewTrack,
+                        TrackPointer pOldTrack) {
+                    Q_UNUSED(pOldTrack);
+                    if (changedGroup != group || pNewTrack != pTrack) {
+                        return;
+                    }
+                    disconnect(*pConnection);
+                    if (position > 0.0) {
+                        QTimer::singleShot(250, this, [group, position]() {
+                            ControlObject::set(ConfigKey(group, "playposition"), position);
+                        });
+                    }
+                });
+        // Give up waiting after a while (e.g. the DJ loaded another song).
+        QTimer::singleShot(10000, this, [pConnection]() {
+            disconnect(*pConnection);
+        });
+#ifdef __STEM__
+        emit loadTrackToPlayer(pTrack, group, mixxx::StemChannelSelection(), false);
+#else
+        emit loadTrackToPlayer(pTrack, group, false);
+#endif
     }
 }
 

@@ -488,7 +488,8 @@ installed next to a normal Mixxx:
 
 ### 4.17 Stems: splitting songs into parts
 
-Work in progress (step 2 of 6: the splitting engine). Songs are split into
+Work in progress (steps 1-3 of 6 done: listening test, splitting engine,
+decks play the parts). Songs are split into
 four parts - drums, bass, other (synths, guitars, melody) and vocals - by
 Demucs v4 ("htdemucs", Meta, MIT license), the model the Mixxx project
 converted to ONNX (github.com/mixxxdj/demucs).
@@ -496,10 +497,40 @@ converted to ONNX (github.com/mixxxdj/demucs).
 - **When:** a song loaded into a deck is split at once, in the background;
   the next 3 songs of the Auto DJ queue are split ahead of time. One song at
   a time, on its own thread; the music is never held up.
-- **Where the parts go:** `<settings folder>/stems/Artist - Title
-  [code].stem.mp4`, the NI stem format Mixxx already plays (5 AAC tracks:
-  the mix, then the four parts, plus the stem manifest). The code changes
-  when the song file changes. Each song is split only once.
+- **Where the parts go:** `Artist - Title [code].stem.mp4` in a folder
+  named "Mixxx Stems", the NI stem format Mixxx already plays (5 AAC
+  tracks: the mix, then the four parts, plus the stem manifest). Auto DJ >
+  Stems chooses where: in one folder (default: the settings folder; "Choose
+  the folder..." for a big or USB drive) or next to each song (the parts
+  travel with the songs; if that folder cannot be written, the one folder is
+  used). The code comes from the song's file name, size and date - not its
+  path - so a USB drive with a new drive letter still finds its parts. Both
+  places are checked. The library scanner skips "Mixxx Stems" folders.
+  Each song is split only once.
+- **Decks play the parts** (`src/stems/stemcache.*`, `CachingReaderWorker`):
+  when a song is loaded and its stem file is ready, the deck reads the stem
+  file instead (only if sample rate and length match), so the LateNight
+  stem panel appears with a volume and mute per part. Cue points, beat grid
+  and loops stay where they are (the stem file keeps the song's own sample
+  rate; checked: 0 samples offset). If the parts finish while the song sits
+  in a stopped deck, it is reloaded at the same position; with Auto DJ on,
+  only when the next mix is more than 10 s away
+  (`AutoDJProcessor::secondsUntilMix`).
+- **STEM SPLIT** (Analyze page, next to Genre Scan, and right-click >
+  Analyze > Stem Split): splits the selected songs (or the whole list) in
+  the background, after the songs in the decks and the Auto DJ queue. It
+  first shows the time (from this computer's own measured speed) and the
+  disk space (about 120 KB per second of music) and refuses if the drive is
+  too full. The button shows "Stem Split n/N - time left"; click again to
+  stop (the song being split is dropped too). At the end, songs that could
+  not be split are listed with the reason.
+- **Safety:** each file is made in the Windows temp folder first and moved
+  (or copied) to its place when finished, so slow network shares, cloud
+  folders and USB drives do not slow the split. A song that takes more than
+  6 times the expected time (at least 3 minutes) is skipped, so one bad song
+  never blocks the others. Mono songs are split (the one channel on both
+  sides); songs that are not 44.1 or 48 kHz are skipped (the Windows AAC
+  encoder only takes those rates, and the parts must line up with the song).
 - **How:** the song is read exactly as the deck plays it, converted to
   44100 Hz if needed (windowed-sinc resampler), normalised, and cut into
   7.8 s pieces that overlap by a quarter; the model's answers are blended
@@ -541,7 +572,7 @@ converted to ONNX (github.com/mixxxdj/demucs).
 | `src/library/analysis/dlganalysis.*` | The Genre Scan button and review window on the Analyze page. |
 | `src/analyzer/energycalculator.*` | Energy score, song body, beat grid check (pure maths). |
 | `src/analyzer/analyzerenergy.*` | Runs the energy calculator during analysis, sets the automatic markers, reads beat grids and beat maps. |
-| `src/stems/` | Stems: splitting songs into drums, bass, other and vocals (maths, AI engine loader, stem file writer, background splitter). |
+| `src/stems/` | Stems: splitting songs into drums, bass, other and vocals (maths, AI engine loader, stem file writer, background splitter, where the stem files live). Also touched: `CachingReaderWorker` and `SoundSourceProxy` (decks read the stem file), `DlgAnalysis` and `WTrackMenu` (STEM SPLIT), `DlgAutoDJ` (Stems menu). |
 | `src/video/` | Video decoding (Windows decoder, FFmpeg), video mixing, video windows. |
 | `src/library/playlisttablemodel.*` | Small additions for reordering the Auto DJ queue. |
 | `src/util/cmdlineargs.cpp` | The separate settings folder on Windows. |
@@ -578,7 +609,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*
 ```
 
-146 tests. The energy and grid-check tests use synthetic drum loops (steady,
+147 tests. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -655,3 +686,11 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     next songs of the Auto DJ queue are split into drums, bass, other and
     vocals on the graphics card (Demucs v4 via ONNX Runtime + CUDA, loaded
     at run time) and kept as stem files.
+33. **Stems, step 3: decks play the parts.** Loaded songs switch to their
+    stem file (stem panel with mute/volume per part, markers kept); a
+    stopped deck reloads when its parts finish (dynamic: not within 10 s of
+    an Auto DJ mix). Choice of where the parts go (one folder or next to
+    each song, USB/network friendly). STEM SPLIT button and track menu item
+    for splitting many songs in the background with time and space check,
+    progress and stop. Made on this computer first, time limit per song,
+    mono songs supported, unusual sample rates skipped with a reason.

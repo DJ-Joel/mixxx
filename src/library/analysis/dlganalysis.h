@@ -48,6 +48,8 @@ class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual Libra
     void installEventFilter(QObject* pFilter);
     /// Auto DJ 2.0 plus Video Mixing Genre Scan: look up genres on MusicBrainz, then review.
     void slotGenreScan();
+    /// Auto DJ 2.0 plus Video Mixing: split songs into parts ahead of time.
+    void slotStemSplit();
     void slotGenreScanFinished(const QList<GenreScanner::Result>& results, bool cancelled);
 
   signals:
@@ -68,4 +70,5 @@ class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual Libra
     Library* m_pLibrary;
     GenreScanner* m_pGenreScanner;
     QProgressDialog* m_pGenreProgress = nullptr;
+    bool m_stemSplitConnected = false;
 };

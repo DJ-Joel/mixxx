@@ -195,6 +195,11 @@ class SoundSourceProxy {
     /// found.
     mixxx::AudioSourcePointer openAudioSource(
             const mixxx::AudioSource::OpenParams& params = mixxx::AudioSource::OpenParams());
+    /// Auto DJ 2.0 plus Video Mixing: plays this track from another file
+    /// (its stem file, made by Mixxx from the same song). The track's
+    /// stored audio properties are left as they are.
+    mixxx::AudioSourcePointer openAlternativeAudioSource(const QString& filePath,
+            const mixxx::AudioSource::OpenParams& params);
 
   private:
     static mixxx::SoundSourceProviderRegistry s_soundSourceProviders;

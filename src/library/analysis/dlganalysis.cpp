@@ -9,6 +9,9 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QProgressDialog>
+#include <QDir>
+#include <QFileInfo>
+#include <QStorageInfo>
 #include <QPushButton>
 #include <QTableWidget>
 #include <QVBoxLayout>
@@ -21,6 +24,8 @@
 #include "library/dao/trackschema.h"
 #include "library/library.h"
 #include "library/trackcollectionmanager.h"
+#include "stems/stemcache.h"
+#include "stems/stemsplitter.h"
 #include "track/track.h"
 #include "moc_dlganalysis.cpp"
 #include "util/assert.h"
@@ -124,6 +129,12 @@ DlgAnalysis::DlgAnalysis(WLibrary* parent,
             "selected songs, or for all songs in the list if none are selected.\n"
             "You review every suggestion before anything is changed."));
     connect(pushButtonGenreScan, &QPushButton::clicked, this, &DlgAnalysis::slotGenreScan);
+    pushButtonStemSplit->setToolTip(tr(
+            "Split the selected songs (or all songs in the list if none are selected)\n"
+            "into drums, bass, other and vocals now, in the background, so they load\n"
+            "with their parts ready. Songs you load into a deck meanwhile go first.\n"
+            "Click again to stop. Where the parts are saved: Auto DJ > Stems."));
+    connect(pushButtonStemSplit, &QPushButton::clicked, this, &DlgAnalysis::slotStemSplit);
     connect(m_pGenreScanner,
             &GenreScanner::finished,
             this,
@@ -224,6 +235,158 @@ void DlgAnalysis::analyze() {
         }
         emit analyzeTracks(tracks);
     }
+}
+
+namespace {
+
+QString hoursAndMinutes(double seconds) {
+    const int minutes = static_cast<int>(std::ceil(seconds / 60.0));
+    if (minutes < 60) {
+        return QObject::tr("%1 min").arg(std::max(1, minutes));
+    }
+    return QObject::tr("%1 h %2 min").arg(minutes / 60).arg(minutes % 60);
+}
+
+} // namespace
+
+void DlgAnalysis::slotStemSplit() {
+    StemSplitter* pSplitter = StemSplitter::instance();
+    if (!pSplitter) {
+        return;
+    }
+    if (!m_stemSplitConnected) {
+        m_stemSplitConnected = true;
+        connect(pSplitter,
+                &StemSplitter::batchProgress,
+                this,
+                [this](int done, int total, double secondsLeft) {
+                    if (total <= 0 || done >= total) {
+                        pushButtonStemSplit->setText(tr("Stem Split"));
+                        StemSplitter* pSplitter = StemSplitter::instance();
+                        const QStringList failures =
+                                pSplitter ? pSplitter->takeBatchFailures() : QStringList();
+                        if (!failures.isEmpty()) {
+                            QMessageBox::information(this,
+                                    tr("Stem Split"),
+                                    tr("%1 of the songs could not be split:\n\n%2")
+                                            .arg(failures.size())
+                                            .arg(failures.mid(0, 15).join(QStringLiteral("\n"))));
+                        }
+                        return;
+                    }
+                    pushButtonStemSplit->setText(tr("Stem Split %1/%2 - %3 left")
+                                    .arg(done)
+                                    .arg(total)
+                                    .arg(hoursAndMinutes(secondsLeft)));
+                });
+    }
+    if (pSplitter->batchRunning()) {
+        if (QMessageBox::question(this,
+                    tr("Stem Split"),
+                    tr("Stop splitting the songs of the list? Parts already made are kept.")) ==
+                QMessageBox::Yes) {
+            pSplitter->stopBatch();
+            pushButtonStemSplit->setText(tr("Stem Split"));
+        }
+        return;
+    }
+    if (!pSplitter->engineInstalled()) {
+        QMessageBox::information(this,
+                tr("Stem Split"),
+                tr("The stems engine is not installed, so songs cannot be split into "
+                   "parts.\n\nIt belongs in:\n%1")
+                        .arg(QDir::toNativeSeparators(pSplitter->engineFolder())));
+        return;
+    }
+    if (!pSplitter->isEnabled()) {
+        QMessageBox::information(this,
+                tr("Stem Split"),
+                tr("Splitting songs into parts is switched off (Auto DJ > Stems)."));
+        return;
+    }
+    // The selected songs, or every song in the list.
+    QModelIndexList rows = m_pAnalysisLibraryTableView->selectionModel()->selectedRows();
+    if (rows.isEmpty()) {
+        for (int row = 0; row < m_pAnalysisLibraryTableModel->rowCount(); ++row) {
+            rows.append(m_pAnalysisLibraryTableModel->index(row, 0));
+        }
+    }
+    QList<TrackPointer> tracks;
+    double seconds = 0.0;
+    for (const QModelIndex& index : std::as_const(rows)) {
+        TrackPointer pTrack = m_pAnalysisLibraryTableModel->getTrack(index);
+        if (StemSplitter::needsSplit(pTrack)) {
+            seconds += std::max(0.0, pTrack->getDuration());
+            tracks.append(pTrack);
+        }
+    }
+    if (tracks.isEmpty()) {
+        QMessageBox::information(this,
+                tr("Stem Split"),
+                tr("Nothing to split: these %1 songs already have their parts, or cannot "
+                   "be split (only 44.1 and 48 kHz songs can).")
+                        .arg(rows.size()));
+        return;
+    }
+    // Time and space, from this computer's own speed when known.
+    double speed = pSplitter->speed();
+    if (speed <= 0.0) {
+        speed = QDir(QDir(pSplitter->engineFolder()).filePath(QStringLiteral("cuda"))).exists()
+                ? 15.0
+                : 3.0;
+    }
+    constexpr double kBytesPerSecond = 5 * 24000.0; // five AAC tracks of 192 kbit/s
+    const double bytes = seconds * kBytesPerSecond;
+    const QString target = stems::StemCache::fileFor(tracks.first());
+    QString drive = QFileInfo(target).absolutePath();
+    while (!drive.isEmpty() && !QFileInfo::exists(drive)) {
+        drive = QFileInfo(drive).absolutePath() == drive ? QString() : QFileInfo(drive).absolutePath();
+    }
+    const QStorageInfo storage(drive);
+    const double freeBytes = storage.isValid() ? static_cast<double>(storage.bytesAvailable()) : -1.0;
+    const QString where = stems::StemCache::location() == stems::StemCache::Location::NextToSong
+            ? tr("next to each song")
+            : QDir::toNativeSeparators(QFileInfo(target).absolutePath());
+    if (freeBytes >= 0.0 && bytes > freeBytes * 0.95) {
+        QMessageBox::warning(this,
+                tr("Stem Split"),
+                tr("The parts of these %1 songs need about %2 GB, but only %3 GB is free "
+                   "there (%4).\n\nChoose another folder in Auto DJ > Stems, or select "
+                   "fewer songs.")
+                        .arg(tracks.size())
+                        .arg(bytes / 1e9, 0, 'f', 1)
+                        .arg(freeBytes / 1e9, 0, 'f', 1)
+                        .arg(where));
+        return;
+    }
+    const QString question =
+            tr("Stem Split will split %1 songs (%2 of music) into drums, bass, other and "
+               "vocals.\n\nIt takes about %3 and needs about %4 GB%5.\nSaved: %6\n\n"
+               "You can keep using Mixxx meanwhile; songs you load into a deck go first. "
+               "Click Stem Split again to stop.")
+                    .arg(tracks.size())
+                    .arg(hoursAndMinutes(seconds))
+                    .arg(hoursAndMinutes(seconds / speed))
+                    .arg(bytes / 1e9, 0, 'f', 1)
+                    .arg(freeBytes >= 0.0
+                                    ? tr(" (%1 GB free)").arg(freeBytes / 1e9, 0, 'f', 1)
+                                    : QString())
+                    .arg(where);
+    if (QMessageBox::question(this, tr("Stem Split"), question) != QMessageBox::Yes) {
+        return;
+    }
+    const int added = pSplitter->splitBatch(tracks);
+    qInfo().noquote() << "Stems: Stem Split started for" << added << "songs";
+    if (added <= 0) {
+        // Already being split (loaded in a deck, from the track menu, ...).
+        QMessageBox::information(this,
+                tr("Stem Split"),
+                tr("These songs are already being split. Their parts will be ready soon."));
+        return;
+    }
+    pushButtonStemSplit->setText(tr("Stem Split 0/%1 - %2 left")
+                    .arg(added)
+                    .arg(hoursAndMinutes(seconds / speed)));
 }
 
 void DlgAnalysis::slotGenreScan() {

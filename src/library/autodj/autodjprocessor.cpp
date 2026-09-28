@@ -3361,6 +3361,27 @@ DeckAttributes* AutoDJProcessor::getFromDeck() {
     return nullptr;
 }
 
+double AutoDJProcessor::secondsUntilMix() {
+    if (m_eState == ADJ_DISABLED) {
+        return -1.0;
+    }
+    if (m_eState == ADJ_LEFT_FADING || m_eState == ADJ_RIGHT_FADING) {
+        return 0.0;
+    }
+    DeckAttributes* pFromDeck = getFromDeck();
+    if (!pFromDeck || !pFromDeck->isPlaying()) {
+        return -1.0;
+    }
+    const mixxx::audio::SampleRate sampleRate = pFromDeck->sampleRate();
+    const mixxx::audio::FramePos end = pFromDeck->trackEndPosition();
+    if (!sampleRate.isValid() || !end.isValid() || pFromDeck->fadeBeginPos > 1.0) {
+        return -1.0;
+    }
+    // fadeBeginPos is a fraction of the track once the mix is planned.
+    const double durationSec = end.value() / sampleRate;
+    return std::max(0.0, (pFromDeck->fadeBeginPos - pFromDeck->playPosition()) * durationSec);
+}
+
 bool AutoDJProcessor::nextTrackLoaded() {
     if (m_eState == ADJ_DISABLED) {
         // AutoDJ always loads the top track (again) if enabled

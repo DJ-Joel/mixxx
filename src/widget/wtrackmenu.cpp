@@ -1,6 +1,8 @@
 #include "widget/wtrackmenu.h"
 
 #include <QCheckBox>
+#include <QDir>
+#include <QMessageBox>
 #include <QDialogButtonBox>
 #include <QInputDialog>
 #include <QList>
@@ -35,6 +37,7 @@
 #include "preferences/configobject.h"
 #include "preferences/dialog/dlgprefdeck.h"
 #include "sources/soundsourceproxy.h"
+#include "stems/stemsplitter.h"
 #include "track/track.h"
 #include "util/defs.h"
 #include "util/desktophelper.h"
@@ -587,6 +590,13 @@ void WTrackMenu::createActions() {
                 this,
                 &WTrackMenu::slotReanalyzeWithFixedTempo);
 
+        // Auto DJ 2.0 plus Video Mixing: split into drums, bass, other and
+        // vocals in the background (after songs in the decks and the queue).
+        m_pStemSplitAction = make_parented<QAction>(tr("Stem Split"), this);
+        m_pStemSplitAction->setToolTip(tr("Split into drums, bass, other and vocals now, "
+                                          "in the background."));
+        connect(m_pStemSplitAction, &QAction::triggered, this, &WTrackMenu::slotStemSplit);
+
         m_pReanalyzeVarBpmAction = make_parented<QAction>(tr("Reanalyze (variable BPM)"), this);
         connect(m_pReanalyzeVarBpmAction,
                 &QAction::triggered,
@@ -767,6 +777,8 @@ void WTrackMenu::setupActions() {
         m_pAnalyzeMenu->addAction(m_pReanalyzeAction);
         m_pAnalyzeMenu->addAction(m_pReanalyzeConstBpmAction);
         m_pAnalyzeMenu->addAction(m_pReanalyzeVarBpmAction);
+        m_pAnalyzeMenu->addSeparator();
+        m_pAnalyzeMenu->addAction(m_pStemSplitAction);
         addMenu(m_pAnalyzeMenu);
     }
 
@@ -1803,6 +1815,37 @@ void WTrackMenu::addToAnalysis(AnalyzerTrack::Options options) {
 
 void WTrackMenu::slotAnalyze() {
     addToAnalysis();
+}
+
+void WTrackMenu::slotStemSplit() {
+    StemSplitter* pSplitter = StemSplitter::instance();
+    if (!pSplitter) {
+        return;
+    }
+    if (!pSplitter->engineInstalled()) {
+        QMessageBox::information(nullptr,
+                tr("Stem Split"),
+                tr("The stems engine is not installed, so songs cannot be split into "
+                   "parts.\n\nIt belongs in:\n%1")
+                        .arg(QDir::toNativeSeparators(pSplitter->engineFolder())));
+        return;
+    }
+    if (!pSplitter->isEnabled()) {
+        QMessageBox::information(nullptr,
+                tr("Stem Split"),
+                tr("Splitting songs into parts is switched off (Auto DJ > Stems)."));
+        return;
+    }
+    const TrackPointerList tracks = getTrackPointers();
+    const int added = pSplitter->splitBatch(tracks);
+    qInfo().noquote() << "Stems: Stem Split from the track menu:" << added << "of"
+                      << tracks.size() << "songs added";
+    if (added == 0) {
+        QMessageBox::information(nullptr,
+                tr("Stem Split"),
+                tracks.size() == 1 ? tr("This song already has its parts.")
+                                   : tr("These songs already have their parts."));
+    }
 }
 
 void WTrackMenu::slotReanalyze() {

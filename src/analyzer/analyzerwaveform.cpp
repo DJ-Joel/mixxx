@@ -6,6 +6,7 @@
 #include "analyzer/analyzertrack.h"
 #include "analyzer/constants.h"
 #include "engine/filters/enginefilterbessel4.h"
+#include "track/steminfoimporter.h"
 #include "track/track.h"
 #include "util/logger.h"
 #include "waveform/waveform.h"
@@ -105,7 +106,11 @@ bool AnalyzerWaveform::shouldAnalyze(TrackPointer pTrack) const {
     ConstWaveformPointer pLoadedTrackWaveform;
     ConstWaveformPointer pLoadedTrackWaveformSummary;
 #ifdef __STEM__
-    bool isStemTrack = !pTrack->getStemInfo().isEmpty();
+    // (A song that only plays from a stem file made by Mixxx is analysed
+    // from its own file, which has no parts.)
+    bool isStemTrack = !pTrack->getStemInfo().isEmpty() &&
+            mixxx::StemInfoImporter::maybeStemFile(pTrack->getLocation()) &&
+            mixxx::StemInfoImporter::hasStemAtom(pTrack->getLocation());
 #endif
 
     TrackId trackId = pTrack->getId();

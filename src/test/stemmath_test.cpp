@@ -178,3 +178,29 @@ TEST(StemMathTest, ManifestIsAddedToTheMoovBox) {
     // Not a moov box: nothing.
     EXPECT_TRUE(stems::moovWithManifest(box("free", "x"), manifest).isEmpty());
 }
+
+TEST(StemMathTest, ResamplingPieceByPieceIsTheSame) {
+    // The splitter converts the parts back in pieces as they are finished.
+    std::vector<float> sound(100000);
+    for (std::size_t i = 0; i < sound.size(); ++i) {
+        sound[i] = static_cast<float>(std::sin(i * 0.05) * 0.5 + std::sin(i * 0.31) * 0.2);
+    }
+    for (const auto& rates : {std::pair<int, int>{44100, 48000}, {48000, 44100}}) {
+        const auto whole = stems::resample(sound.data(), sound.size(), rates.first, rates.second);
+        stems::Resampler resampler(rates.first, rates.second);
+        std::vector<float> pieces;
+        std::size_t at = 0;
+        std::size_t step = 1;
+        while (at < sound.size()) {
+            const std::size_t count = std::min(step, sound.size() - at);
+            resampler.push(sound.data() + at, count, &pieces);
+            at += count;
+            step = step * 3 + 7; // uneven piece sizes
+        }
+        resampler.finish(&pieces);
+        ASSERT_EQ(whole.size(), pieces.size());
+        for (std::size_t i = 0; i < whole.size(); ++i) {
+            ASSERT_FLOAT_EQ(whole[i], pieces[i]) << i;
+        }
+    }
+}
