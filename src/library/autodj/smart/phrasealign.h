@@ -43,9 +43,16 @@ struct Grid {
     double beatTime(double n) const;
     /// Beat number at time `sec` (fractional): the inverse of beatTime().
     double beatAt(double sec) const;
-    /// Length of a beat around time `sec` (the average of the `span` beats
-    /// before and after it). For a steady grid simply beatSec.
+    /// Length of a beat around time `sec` (the middle one of the `span`
+    /// beats before and after it). For a steady grid simply beatSec.
     double beatSecAt(double sec, int span = 4) const;
+    /// Like beatSecAt, but not fooled by a beat map that goes wrong where
+    /// the music stops (seen at the end of real songs: 120 BPM, then 159,
+    /// then 235 BPM "beats" in the fade-out). The local beat counts when it
+    /// is within 10% of the song's main tempo, or when it has held for 64
+    /// beats (a real tempo change); otherwise the last one before it that
+    /// does, or the main tempo.
+    double steadyBeatSecAt(double sec) const;
     /// The same grid for a deck playing at `rateRatio` (1 = own speed),
     /// in real seconds.
     Grid atSpeed(double rateRatio) const;
@@ -104,7 +111,12 @@ std::optional<Plan> plan(const Grid& from,
         double toEarliestSec,
         int bars,
         double toBodyStartSec = -1.0,
-        bool toBodyMarked = false);
+        bool toBodyMarked = false,
+        double entryAt = 0.5);
+/// `entryAt`: where in the fade the incoming beat kicks in: 0.5 = the
+/// middle (at the bass swap, the classic Auto DJ 2.0 mix), 0 = the start
+/// (the incoming song starts on its first downbeat, so its full sound
+/// comes in gradually over the whole fade; its intro is skipped).
 
 /// Fade Now: the "must be over by" limit that makes plan() start the fade
 /// at the NEXT phrase start at least `minLeadSec` from now (time to cue the

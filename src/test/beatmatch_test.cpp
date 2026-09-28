@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 #include "library/autodj/smart/beatmatch.h"
 
@@ -181,4 +182,79 @@ TEST(BeatmatchTest, BeatLockFollowsADrummerWhoSpeedsUp) {
     }
     // Never more than 2% of a beat apart (10 ms): nobody hears that.
     EXPECT_LT(worst, 0.02);
+}
+
+TEST(BeatmatchTest, StemBlendCanFadeTheDrums) {
+    // The drums cross over gradually; the bass still swaps in the middle.
+    double lastTo = -1.0;
+    for (double p = 0.0; p <= 1.0; p += 0.05) {
+        const beatmatch::StemBlend s = beatmatch::stemBlend(p, true);
+        EXPECT_GE(s.toDrums, lastTo);
+        lastTo = s.toDrums;
+        EXPECT_EQ(p < 0.5 ? 0.0 : 1.0, s.toBass);
+        EXPECT_EQ(p < 0.5 ? 1.0 : 0.0, s.fromBass);
+    }
+    EXPECT_DOUBLE_EQ(0.0, beatmatch::stemBlend(0.0, true).toDrums);
+    EXPECT_NEAR(0.707, beatmatch::stemBlend(0.25, true).toDrums, 0.001);
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::stemBlend(0.25, true).fromDrums);
+    EXPECT_NEAR(0.707, beatmatch::stemBlend(0.75, true).fromDrums, 0.001);
+    EXPECT_NEAR(0.0, beatmatch::stemBlend(1.0, true).fromDrums, 1e-9);
+    // Without it: the old hard swap.
+    EXPECT_DOUBLE_EQ(0.0, beatmatch::stemBlend(0.25).toDrums);
+    // With singing detection too.
+    const beatmatch::VocalPlan plan;
+    EXPECT_NEAR(0.707, beatmatch::stemBlend(0.25, plan, true).toDrums, 0.001);
+}
+
+namespace {
+/// A drum part: a kick `kickAfter` seconds after every beat line (0.5 s
+/// apart), 441 level values per second, like the waveform.
+std::vector<float> drumLevel(double kickAfter, std::vector<double>* pBeats) {
+    constexpr double kRate = 441.0;
+    std::vector<float> level(static_cast<int>(40.0 * kRate), 0.03f);
+    for (double t = 1.0; t < 38.0; t += 0.5) {
+        pBeats->push_back(t);
+        const double start = t + kickAfter;
+        for (int i = static_cast<int>(start * kRate); i < static_cast<int>(level.size()); ++i) {
+            const double since = i / kRate - start;
+            if (since > 0.2) {
+                break;
+            }
+            level[i] = std::max(level[i], static_cast<float>(0.9 * std::exp(-since / 0.05)));
+        }
+    }
+    return level;
+}
+} // namespace
+
+TEST(BeatmatchTest, KickOffsetFindsWhereTheKickStarts) {
+    // Two songs, kicks 8 ms and 41 ms after their lines (Pretty Boys and
+    // Tell Me Why): measured within the waveform's resolution (2.3 ms).
+    std::vector<double> beatsA;
+    const auto a = beatmatch::kickOffset(drumLevel(0.008, &beatsA), 441.0, beatsA);
+    std::vector<double> beatsB;
+    const auto b = beatmatch::kickOffset(drumLevel(0.041, &beatsB), 441.0, beatsB);
+    ASSERT_TRUE(a.has_value());
+    ASSERT_TRUE(b.has_value());
+    EXPECT_NEAR(0.008, *a, 0.003);
+    EXPECT_NEAR(0.041, *b, 0.003);
+    EXPECT_NEAR(0.033, *b - *a, 0.003);
+    // A kick just before the line.
+    std::vector<double> beatsC;
+    const auto c = beatmatch::kickOffset(drumLevel(-0.015, &beatsC), 441.0, beatsC);
+    ASSERT_TRUE(c.has_value());
+    EXPECT_NEAR(-0.015, *c, 0.003);
+}
+
+TEST(BeatmatchTest, KickOffsetNeedsDrums) {
+    // No drums (a quiet, flat level): no answer.
+    std::vector<double> beats;
+    for (double t = 1.0; t < 38.0; t += 0.5) {
+        beats.push_back(t);
+    }
+    EXPECT_FALSE(beatmatch::kickOffset(std::vector<float>(17640, 0.01f), 441.0, beats));
+    // Too few beats.
+    std::vector<double> few(beats.begin(), beats.begin() + 10);
+    std::vector<double> ignored;
+    EXPECT_FALSE(beatmatch::kickOffset(drumLevel(0.01, &ignored), 441.0, few));
 }

@@ -138,6 +138,45 @@ std::optional<std::vector<vocalmap::Section>> singingOf(const TrackPointer& pTra
     return vocalmap::find(vocal, rest, frames / seconds);
 }
 
+/// Where the kick starts after the track's beat lines, in seconds at its
+/// own speed: from its drum part, or the low band of songs without parts.
+/// 0 when unclear.
+double kickOffsetOf(const TrackPointer& pTrack, const phrasealign::Grid& grid) {
+    if (!pTrack || !grid.isValid()) {
+        return 0.0;
+    }
+    const ConstWaveformPointer pWaveform = pTrack->getWaveform();
+    const double seconds = pTrack->getDuration();
+    if (!pWaveform || !(seconds > 0.0)) {
+        return 0.0;
+    }
+    const int frames = pWaveform->getDataSize() / 2; // left and right
+    if (frames < 100) {
+        return 0.0;
+    }
+    const bool drums = pWaveform->hasStem() && pTrack->getStemInfo().size() >= 4;
+    const WaveformData* pData = pWaveform->data();
+    std::vector<float> level(frames);
+    for (int f = 0; f < frames; ++f) {
+        const WaveformData& l = pData[2 * f];
+        const WaveformData& r = pData[2 * f + 1];
+        level[f] = (drums ? std::max(l.stems[0], r.stems[0])
+                          : std::max(l.filtered.low, r.filtered.low)) /
+                255.0f;
+    }
+    std::vector<double> beats;
+    for (int n = 0; n < 20000; ++n) {
+        const double t = grid.beatTime(n);
+        if (t > seconds) {
+            break;
+        }
+        if (t >= 0.0) {
+            beats.push_back(t);
+        }
+    }
+    return beatmatch::kickOffset(level, frames / seconds, beats).value_or(0.0);
+}
+
 QString minutesText(double seconds) {
     const int s = static_cast<int>(std::lround(std::max(0.0, seconds)));
     return QStringLiteral("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QLatin1Char('0'));
@@ -584,6 +623,17 @@ int AutoDJProcessor::keyMorphLimit() const {
             kKeyMorphMax);
 }
 
+bool AutoDJProcessor::beatEntryAtStart() const {
+    return m_pConfig->getValue(ConfigKey(kPreferenceGroup, QStringLiteral("BeatEntryAtStart")),
+            true);
+}
+
+void AutoDJProcessor::setBeatEntryAtStart(bool atStart) {
+    m_pConfig->setValue(ConfigKey(kPreferenceGroup, QStringLiteral("BeatEntryAtStart")), atStart);
+    kLogger.info() << "The new song's beat comes in at the"
+                   << (atStart ? "start" : "middle") << "of the mix";
+}
+
 void AutoDJProcessor::setKeyMorphLimit(int semitones) {
     m_pConfig->setValue(ConfigKey(kPreferenceGroup, kKeyMorphPreference),
             std::clamp(semitones, 0, kKeyMorphMax));
@@ -764,7 +814,7 @@ void AutoDJProcessor::beginSmartTransition(
     const phrasealign::Grid toGrid = AnalyzerEnergy::beatGrid(pToTrack);
     const double toStartSec = trackSecond(pToDeck);
     const double toTrackBpm = toGrid.isValid() && toStartSec >= 0.0
-            ? 60.0 / toGrid.beatSecAt(toStartSec)
+            ? 60.0 / toGrid.steadyBeatSecAt(toStartSec)
             : (pToTrack ? pToTrack->getBpm() : 0.0);
     std::optional<double> ratio;
     if (!std::isnan(fromBpm)) {
@@ -783,7 +833,16 @@ void AutoDJProcessor::beginSmartTransition(
             pToTrack && m_plannedMix.fromId == pFromTrackNow->getId() &&
             m_plannedMix.toId == pToTrack->getId();
     if (plannedSwitch && ratio) {
-        ratio.reset();
+        // The plan was made earlier, from tempos measured then. If the two
+        // songs are now clearly within the 5% rule (under 4%, so the plan
+        // and the mix do not flip-flop at the limit), beatmatch after all.
+        if (gridsOk && std::fabs(*ratio - 1.0) < 0.04) {
+            kLogger.info() << "Beatmatch after all" << pToDeck->group
+                           << ": the plan chose a switch, but the tempos are now"
+                           << toTrackBpm << "vs" << fromBpm << "BPM";
+        } else {
+            ratio.reset();
+        }
     }
     if (!gridsOk) {
         ratio.reset();
@@ -813,6 +872,29 @@ void AutoDJProcessor::beginSmartTransition(
                 std::fabs(*ratio * toTrackBpm / fromBpm - 1.0) < 0.1;
         m_smart.beatLock = oneToOne && m_smart.fromGrid.isValid() && m_smart.toGrid.isValid() &&
                 (m_smart.fromGrid.isMap() || m_smart.toGrid.isMap());
+        // Kick line-up: beat analysis puts some songs' lines at the start
+        // of the kick and others 30-40 ms before it. Lock the kicks.
+        if (oneToOne && m_smart.fromGrid.isValid() && m_smart.toGrid.isValid()) {
+            const double fromSecNow = trackSecond(pFromDeck);
+            const double fromKick = kickOffsetOf(pFromDeck->getLoadedTrack(), m_smart.fromGrid);
+            const double toKick = kickOffsetOf(pToTrack, m_smart.toGrid);
+            auto inBeats = [](double sec, double beatSec) {
+                const double beats = beatSec > 0.0 ? sec / beatSec : 0.0;
+                return std::fabs(beats) <= 0.15 ? beats : 0.0; // more: not a kick
+            };
+            const double fromBeats = inBeats(fromKick,
+                    m_smart.fromGrid.beatSecAt(std::max(0.0, fromSecNow)));
+            const double toBeats = inBeats(toKick,
+                    m_smart.toGrid.beatSecAt(std::max(0.0, toStartSec)));
+            m_smart.kickShiftBeats = toBeats - fromBeats;
+            kLogger.info() << "Kick line-up: outgoing kick" << std::lround(fromKick * 1000.0)
+                           << "ms after its beat lines, incoming"
+                           << std::lround(toKick * 1000.0) << "ms: incoming lines"
+                           << m_smart.kickShiftBeats << "beats ahead";
+            if (std::fabs(m_smart.kickShiftBeats) > beatmatch::kLockDeadBeats) {
+                m_smart.beatLock = true;
+            }
+        }
         if (m_smart.beatLock) {
             kLogger.info() << "Beat lock" << pToDeck->group
                            << ": a beat map bends the tempo"
@@ -883,9 +965,14 @@ void AutoDJProcessor::beginSmartTransition(
                 writeStem(g, "stem_instrumental_kill", 0.0);
                 writeStem(g, "stem_drums_kill", 0.0);
             }
+            m_smart.fadeDrums = m_pConfig->getValue(
+                    ConfigKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJFadeDrums")), true);
             kLogger.info() << "Stem mix" << pFromDeck->group << "->" << pToDeck->group
-                           << ": instrumental first, drums + bass swap in the middle, "
-                              "vocals never together";
+                           << (m_smart.fadeDrums
+                                              ? ": instrumental first, drums fade across, bass "
+                                                "swaps in the middle, vocals never together"
+                                              : ": instrumental first, drums + bass swap in "
+                                                "the middle, vocals never together");
             if (stemMixMode(m_pConfig) == kStemMixSinging) {
                 planVocals(pFromDeck, pToDeck);
             }
@@ -987,8 +1074,8 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     if (m_smart.stems) {
         // The parts cross over (the EQ stays as the DJ set it).
         const beatmatch::StemBlend b = m_smart.vocalPlanned
-                ? beatmatch::stemBlend(progress, m_smart.vocalPlan)
-                : beatmatch::stemBlend(progress);
+                ? beatmatch::stemBlend(progress, m_smart.vocalPlan, m_smart.fadeDrums)
+                : beatmatch::stemBlend(progress, m_smart.fadeDrums);
         auto level = [](double knob, double kill) {
             return kill > 0.5 ? 0.0 : knob;
         };
@@ -1091,45 +1178,97 @@ void AutoDJProcessor::followBeats() {
     if (fromSec < 0.0 || toSec < 0.0 || !(fromRatio > 0.0)) {
         return;
     }
+    // Jump watch: each deck should have moved on by the time passed times
+    // its speed. A bigger difference means something moved it.
+    if (!m_smart.lockClock.isValid()) {
+        m_smart.lockClock.start();
+    }
+    const qint64 nowMs = m_smart.lockClock.elapsed();
+    bool glitch = false;
+    if (m_smart.lastMs >= 0) {
+        const double passed = (nowMs - m_smart.lastMs) / 1000.0;
+        const double fromJump =
+                (fromSec - m_smart.lastFromSec) - passed * fromRatio;
+        const double toJump =
+                (toSec - m_smart.lastToSec) - passed * m_smart.pTo->rateRatio();
+        // A late update (the screen thread was busy) or a position that
+        // jumped: the positions read now may not be from the same moment,
+        // so they are not acted on for a moment (in real mixes this came
+        // about 3 s into the mix and made a good lock jump out of line).
+        if (passed > 0.25 || std::fabs(fromJump) > 0.04 || std::fabs(toJump) > 0.04) {
+            glitch = true;
+        }
+        if (std::fabs(fromJump) > 0.04 || std::fabs(toJump) > 0.04) {
+            kLogger.info() << "Beat lock jump watch: after" << passed * 1000.0
+                           << "ms" << m_smart.pFrom->group << "moved"
+                           << std::lround(fromJump * 1000.0) << "ms extra,"
+                           << m_smart.pTo->group << "moved"
+                           << std::lround(toJump * 1000.0) << "ms extra (at"
+                           << fromSec << "s /" << toSec << "s)";
+        }
+    }
+    m_smart.lastMs = nowMs;
+    m_smart.lastFromSec = fromSec;
+    m_smart.lastToSec = toSec;
+    // Lines: how far the two songs' beat lines are apart. Slip: how far
+    // their kicks are apart (the lines plus the kick line-up).
+    const double fromBeat = m_smart.fromGrid.beatAt(fromSec);
+    const double toBeat = m_smart.toGrid.beatAt(toSec);
+    double lineSlip = fromBeat - toBeat;
+    lineSlip -= std::round(lineSlip);
     double slip = 0.0;
-    const double ratio = beatmatch::followRatio(m_smart.fromGrid.beatAt(fromSec),
+    const double ratio = beatmatch::followRatio(fromBeat + m_smart.kickShiftBeats,
             m_smart.fromGrid.beatSecAt(fromSec) / fromRatio,
-            m_smart.toGrid.beatAt(toSec),
+            toBeat,
             m_smart.toGrid.beatSecAt(toSec),
             &slip);
+    ++m_smart.lockUpdates;
+    if (glitch) {
+        m_smart.distrustUntil = m_smart.lockUpdates + 5;
+        m_smart.bigSlipCount = 0;
+    }
+    const bool trusted = m_smart.lockUpdates > m_smart.distrustUntil;
     // The first second is the phase sync settling in; not counted.
-    if (++m_smart.lockUpdates > 50) {
+    if (trusted && m_smart.lockUpdates > 50) {
         m_smart.worstSlipBeats = std::max(m_smart.worstSlipBeats, std::fabs(slip));
     }
+    if (!trusted) {
+        return; // keep the speed as it is until the readings are steady
+    }
+    if (std::fabs(lineSlip) > beatmatch::kResyncBeats &&
+            std::fabs(slip) > beatmatch::kResyncBeats) {
+        ++m_smart.bigSlipCount;
+    } else {
+        m_smart.bigSlipCount = 0;
+    }
     // The slip once per bar in the log, so a drift can be traced afterwards.
-    const int bar = static_cast<int>(std::floor(m_smart.fromGrid.beatAt(fromSec) / 4.0));
+    const int bar = static_cast<int>(std::floor(fromBeat / 4.0));
     if (bar != m_smart.loggedBar) {
         m_smart.loggedBar = bar;
         kLogger.info() << "Beat lock" << m_smart.pTo->group << "bar" << bar
-                       << ": slip" << slip << "beats, ratio" << m_smart.toRatio;
+                       << ": kick slip" << slip << "beats (lines" << lineSlip
+                       << "), ratio" << m_smart.toRatio;
     }
-    // Clearly off early in the mix, while the incoming song is still quiet:
-    // jump it in line now instead of pulling it back slowly (heard as a
-    // clash for several beats). A few times at most, never back to back.
-    if (std::fabs(slip) > beatmatch::kResyncBeats && m_smart.progress < 0.3 &&
+    // The lines clearly off early in the mix, while the incoming song is
+    // still quiet: line them up now instead of pulling back slowly (heard
+    // as a clash for several beats). The engine does the jump itself, at
+    // the exact moment (reading the position here and jumping from here
+    // came up to one audio buffer late). The kick line-up, a few ms, is
+    // then done by the speed. A few times at most, never back to back.
+    // Only when it is off in 5 readings in a row: one odd reading is not
+    // a reason to move the song.
+    if (m_smart.bigSlipCount >= 5 && m_smart.progress < 0.3 &&
             m_smart.resyncs < 3 && m_smart.lockUpdates > 5 &&
             m_smart.lockUpdates - m_smart.lastResyncUpdate > 25) {
-        const mixxx::audio::SampleRate sampleRate = m_smart.pTo->sampleRate();
-        const mixxx::audio::FramePos end = m_smart.pTo->trackEndPosition();
-        const double newSec =
-                m_smart.toGrid.beatTime(m_smart.toGrid.beatAt(toSec) + slip);
-        if (sampleRate.isValid() && end.isValid() && end.value() > 0.0 && newSec > 0.0) {
-            // Exactly there: quantize would move it to Mixxx's own idea of
-            // the beat instead (put back after the mix).
-            ControlObject::set(ConfigKey(m_smart.pTo->group, QStringLiteral("quantize")), 0.0);
-            ControlObject::set(ConfigKey(m_smart.pTo->group, QStringLiteral("playposition")),
-                    newSec * sampleRate.value() / end.value());
-            ++m_smart.resyncs;
-            m_smart.lastResyncUpdate = m_smart.lockUpdates;
-            kLogger.info() << "Beat lock" << m_smart.pTo->group << ": slip" << slip
-                           << "beats early in the mix, jumped back in line";
-            return;
-        }
+        const ConfigKey phaseKey(m_smart.pTo->group, QStringLiteral("beatsync_phase"));
+        writeControl(phaseKey, 1.0);
+        writeControl(phaseKey, 0.0);
+        ++m_smart.resyncs;
+        m_smart.lastResyncUpdate = m_smart.lockUpdates;
+        m_smart.bigSlipCount = 0;
+        kLogger.info() << "Beat lock" << m_smart.pTo->group << ": lines" << lineSlip
+                       << "beats apart early in the mix, lined up again";
+        return;
     }
     // Safety: never more than 10% off the track's own speed.
     if (std::fabs(ratio - 1.0) > 0.1 || std::fabs(ratio - m_smart.toRatio) < 1e-5) {
@@ -1362,15 +1501,19 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     const double toEarliestSec = toBodyStartSec >= 0.0
             ? std::max(0.0, getIntroStartSecond(pToDeck))
             : pToDeck->startPos;
-    const int bars = phrasealign::barsForSeconds(wantedSec, from.beatSecAt(fromLimitSec));
+    const int bars = phrasealign::barsForSeconds(wantedSec, from.steadyBeatSecAt(fromLimitSec));
     // Beatmatched only within the 5% rule, compared at the tempo each track
     // has where the mix happens (a beat map may bend away from its average).
     // An outgoing deck still easing back to its own tempo after the previous
     // mix will be there by the time this mix starts.
     const double fromMixRatio = m_glide.pDeck == pFromDeck ? 1.0 : fromRatio;
-    const double fromMixBpm = 60.0 / from.beatSecAt(fromLimitSec) * fromMixRatio / fromRatio;
+    // The steady tempo there: a beat map often goes wrong where the music
+    // stops (Xymox "A Million Things": 159 and 235 BPM in its fade-out),
+    // which made mixes of songs 2-4% apart quick switches.
+    const double fromMixBpm =
+            60.0 / from.steadyBeatSecAt(fromLimitSec) * fromMixRatio / fromRatio;
     const double toMixBpm = to.isValid()
-            ? 60.0 / (to.beatSecAt(toBodyStartSec >= 0.0 ? toBodyStartSec : toEarliestSec) *
+            ? 60.0 / (to.steadyBeatSecAt(toBodyStartSec >= 0.0 ? toBodyStartSec : toEarliestSec) *
                              toRatio)
             : 0.0;
     const bool matched = gridsOk && toHasGrid && to.isValid() &&
@@ -1389,7 +1532,8 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                       toEarliestSec,
                       bars,
                       toBodyStartSec,
-                      true) // body start is precise (analysis v5)
+                      true, // body start is precise (analysis v5)
+                      beatEntryAtStart() ? 0.0 : 0.5)
             : phrasealign::planUnmatched(from,
                       to,
                       fromDeckPositionSec,

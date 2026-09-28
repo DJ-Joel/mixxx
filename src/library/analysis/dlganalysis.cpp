@@ -313,12 +313,22 @@ void DlgAnalysis::slotStemSplit() {
     }
     QList<TrackPointer> tracks;
     double seconds = 0.0;
+    int longSkipped = 0;
     for (const QModelIndex& index : std::as_const(rows)) {
         TrackPointer pTrack = m_pAnalysisLibraryTableModel->getTrack(index);
         if (StemSplitter::needsSplit(pTrack)) {
+            // A whole DJ mix (over 20 minutes) only when chosen on its own.
+            if (rows.size() > 1 && StemSplitter::isLong(pTrack)) {
+                ++longSkipped;
+                continue;
+            }
             seconds += std::max(0.0, pTrack->getDuration());
             tracks.append(pTrack);
         }
+    }
+    if (longSkipped > 0) {
+        qInfo().noquote() << "Stems: Stem Split skips" << longSkipped
+                          << "songs longer than 20 minutes";
     }
     if (tracks.isEmpty()) {
         QMessageBox::information(this,
@@ -363,7 +373,7 @@ void DlgAnalysis::slotStemSplit() {
             tr("Stem Split will split %1 songs (%2 of music) into drums, bass, other and "
                "vocals.\n\nIt takes about %3 and needs about %4 GB%5.\nSaved: %6\n\n"
                "You can keep using Mixxx meanwhile; songs you load into a deck go first. "
-               "Click Stem Split again to stop.")
+               "Click Stem Split again to stop.%7")
                     .arg(tracks.size())
                     .arg(hoursAndMinutes(seconds))
                     .arg(hoursAndMinutes(seconds / speed))
@@ -371,7 +381,12 @@ void DlgAnalysis::slotStemSplit() {
                     .arg(freeBytes >= 0.0
                                     ? tr(" (%1 GB free)").arg(freeBytes / 1e9, 0, 'f', 1)
                                     : QString())
-                    .arg(where);
+                    .arg(where)
+                    .arg(longSkipped > 0
+                                    ? tr("\n\n%1 songs longer than 20 minutes (DJ mixes?) are "
+                                         "left out; select one on its own to split it.")
+                                              .arg(longSkipped)
+                                    : QString());
     if (QMessageBox::question(this, tr("Stem Split"), question) != QMessageBox::Yes) {
         return;
     }

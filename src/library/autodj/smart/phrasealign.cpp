@@ -68,6 +68,41 @@ double Grid::beatSecAt(double sec, int span) const {
     return 0.5 * (lower + upper);
 }
 
+double Grid::steadyBeatSecAt(double sec) const {
+    if (!isMap()) {
+        return beatSec;
+    }
+    const int last = static_cast<int>(beats.size()) - 1;
+    if (last < 17) {
+        return beatSecAt(sec);
+    }
+    // The middle beat length from beat `a` to beat `b`.
+    auto middle = [this](int a, int b) {
+        std::vector<double> lengths;
+        for (int i = a; i < b; ++i) {
+            lengths.push_back(beats[i + 1] - beats[i]);
+        }
+        const std::size_t mid = lengths.size() / 2;
+        std::nth_element(lengths.begin(), lengths.begin() + mid, lengths.end());
+        return lengths[mid];
+    };
+    const double main = middle(0, last);
+    const int centre = static_cast<int>(std::lround(std::clamp(beatAt(sec), 0.0, 1.0 * last)));
+    for (int back = 0; back <= 128; back += 4) {
+        const int i = centre - back;
+        if (i - 8 < 0) {
+            break;
+        }
+        const double local = middle(i - 8, std::min(last, i + 8));
+        const bool nearMain = std::fabs(local / main - 1.0) <= 0.1;
+        const bool held = i - 64 >= 0 && std::fabs(middle(i - 64, i - 8) / local - 1.0) <= 0.03;
+        if (nearMain || held) {
+            return local;
+        }
+    }
+    return main;
+}
+
 Grid Grid::atSpeed(double rateRatio) const {
     Grid g = *this;
     if (!(rateRatio > 0.0)) {
@@ -141,7 +176,8 @@ std::optional<Plan> plan(const Grid& from,
         double toEarliestSec,
         int bars,
         double toBodyStartSec,
-        bool toBodyMarked) {
+        bool toBodyMarked,
+        double entryAt) {
     if (!from.isValid() || !to.isValid() || bars <= 0) {
         return std::nullopt;
     }
@@ -178,9 +214,13 @@ std::optional<Plan> plan(const Grid& from,
     if (toBodyStartSec >= 0.0) {
         // Where the beat kicks in, snapped to the grid.
         const double entry = entryBeat(to, toBodyStartSec, toBodyMarked);
-        // Start half a fade before it, so the beat kicks in at the bass swap.
+        // Start that part of the fade before it (half: the beat kicks in at
+        // the bass swap; none: the song starts on it). Whole bars only.
         // Never earlier than the intro start found above.
-        toPhraseBeat = std::max(toPhraseBeat, entry - fadeBeats / 2.0);
+        const double leadBeats =
+                std::round(std::clamp(entryAt, 0.0, 1.0) * fadeBeats / kBeatsPerBar) *
+                kBeatsPerBar;
+        toPhraseBeat = std::max(toPhraseBeat, entry - leadBeats);
     }
 
     Plan p;

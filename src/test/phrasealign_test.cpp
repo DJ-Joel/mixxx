@@ -85,6 +85,19 @@ TEST(PhraseAlignTest, IncomingBeatKicksInAtTheBassSwap) {
     EXPECT_DOUBLE_EQ(56.0, p2->toStartSec);
 }
 
+TEST(PhraseAlignTest, IncomingBeatCanComeInAtTheStart) {
+    // The DJ's choice: the new song starts on its first downbeat (64 s), so
+    // its full sound comes in over the whole fade; the intro is skipped.
+    const auto p = phrasealign::plan(k120, k120, 0.0, 200.0, 0.0, 8, 64.0, false, 0.0);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(64.0, p->toStartSec);
+    // The outgoing side does not change.
+    const auto middle = phrasealign::plan(k120, k120, 0.0, 200.0, 0.0, 8, 64.0, false, 0.5);
+    ASSERT_TRUE(middle.has_value());
+    EXPECT_DOUBLE_EQ(middle->fromFadeBeginSec, p->fromFadeBeginSec);
+    EXPECT_DOUBLE_EQ(56.0, middle->toStartSec);
+}
+
 TEST(PhraseAlignTest, ShortIntroStartsAtTheBeginning) {
     // Beat kicks in at 6 s, before the swap point: start at the first beat.
     const auto p = phrasealign::plan(k120, k120, 0.0, 200.0, 0.0, 8, 6.0);
@@ -283,6 +296,37 @@ TEST(PhraseAlignTest, BeatMapFindsItsBeats) {
     const Grid withPickup = Grid::fromBeats(pickup);
     EXPECT_NEAR(0.572, withPickup.beatSecAt(0.041), 1e-9);
     EXPECT_NEAR(0.572, withPickup.beatSecAt(3.0), 1e-9);
+}
+
+TEST(PhraseAlignTest, SteadyTempoIgnoresAWrongMapInTheFadeOut) {
+    // Xymox "A Million Things": 120 BPM, then the beat map goes wrong where
+    // the music stops (8 "beats" at 159 BPM, then 40 at 235 BPM).
+    std::vector<double> times{1.0};
+    auto add = [&times](int count, double bpm) {
+        for (int n = 0; n < count; ++n) {
+            times.push_back(times.back() + 60.0 / bpm);
+        }
+    };
+    add(400, 120.0);
+    add(8, 159.0);
+    add(40, 235.0);
+    const Grid map = Grid::fromBeats(times);
+    const double end = times.back() - 2.0;
+    EXPECT_GT(60.0 / map.beatSecAt(end), 200.0); // the plain one is fooled
+    EXPECT_NEAR(0.5, map.steadyBeatSecAt(end), 1e-6);
+    EXPECT_NEAR(0.5, map.steadyBeatSecAt(times[100]), 1e-6);
+    // A real tempo change that holds (100 then 120 BPM for 200 beats each)
+    // is followed.
+    std::vector<double> change{0.0};
+    for (int n = 0; n < 200; ++n) {
+        change.push_back(change.back() + 0.6);
+    }
+    for (int n = 0; n < 200; ++n) {
+        change.push_back(change.back() + 0.5);
+    }
+    const Grid changing = Grid::fromBeats(change);
+    EXPECT_NEAR(0.5, changing.steadyBeatSecAt(change[380]), 1e-6);
+    EXPECT_NEAR(0.6, changing.steadyBeatSecAt(change[50]), 1e-6);
     // At another speed, everything is scaled in time.
     const Grid fast = map.atSpeed(1.25);
     EXPECT_NEAR(times[64] / 1.25, fast.beatTime(64), 1e-9);

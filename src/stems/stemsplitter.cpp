@@ -100,6 +100,61 @@ bool StemSplitter::canSplit(const TrackPointer& pTrack) {
     return pTrack && (!rate.isValid() || rate.value() == 44100 || rate.value() == 48000);
 }
 
+bool StemSplitter::isLong(const TrackPointer& pTrack) {
+    return pTrack && pTrack->getDuration() > kLongSongSec;
+}
+
+void StemSplitter::cancelTracks(const QSet<TrackId>& trackIds) {
+    if (trackIds.isEmpty()) {
+        return;
+    }
+    bool current = false;
+    bool progress = false;
+    int batchDone = 0;
+    int batchTotal = 0;
+    double secondsLeft = 0.0;
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        auto gone = [&trackIds](const Job& job) {
+            return job.track && trackIds.contains(job.track->getId());
+        };
+        m_jobs.erase(std::remove_if(m_jobs.begin(), m_jobs.end(), gone), m_jobs.end());
+        int removed = 0;
+        for (auto it = m_batch.begin(); it != m_batch.end();) {
+            if (gone(*it)) {
+                m_batchSeconds = std::max(0.0, m_batchSeconds - it->track->getDuration());
+                it = m_batch.erase(it);
+                ++removed;
+            } else {
+                ++it;
+            }
+        }
+        if (removed > 0 && m_batchTotal > 0) {
+            m_batchTotal = std::max(0, m_batchTotal - removed);
+            if (m_batchTotal <= m_batchDone && !m_currentFromBatch) {
+                m_batchTotal = 0;
+                m_batchDone = 0;
+                m_batchSeconds = 0.0;
+            }
+            progress = true;
+            batchDone = m_batchDone;
+            batchTotal = m_batchTotal;
+            secondsLeft = m_speedShared > 0.0 ? m_batchSeconds / m_speedShared : 0.0;
+        }
+        if (m_currentId.isValid() && trackIds.contains(m_currentId)) {
+            m_cancel = true;
+            current = true;
+        }
+    }
+    if (current) {
+        qInfo().noquote() << "Stems: the song being split was removed from the library - "
+                             "split stopped";
+    }
+    if (progress) {
+        emit batchProgress(batchDone, batchTotal, secondsLeft);
+    }
+}
+
 bool StemSplitter::needsSplit(const TrackPointer& pTrack) {
     if (!canSplit(pTrack)) {
         return false;
@@ -127,6 +182,12 @@ int StemSplitter::splitBatch(const QList<TrackPointer>& tracks) {
         }
         for (const TrackPointer& pTrack : tracks) {
             if (!needsSplit(pTrack)) {
+                continue;
+            }
+            if (tracks.size() > 1 && isLong(pTrack)) {
+                m_batchFailures.append(pTrack->getInfo() +
+                        QStringLiteral(": longer than 20 minutes (a DJ mix?), skipped - "
+                                       "select it on its own to split it"));
                 continue;
             }
             const QString target = targetFor(pTrack);
@@ -234,6 +295,9 @@ void StemSplitter::request(const TrackPointer& pTrack, bool urgent) {
     if (!stems::StemCache::readyFileFor(pTrack).isEmpty()) {
         return; // split before
     }
+    if (!urgent && isLong(pTrack)) {
+        return; // a whole DJ mix in the queue: only when it is loaded
+    }
     const QString target = targetFor(pTrack);
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -281,6 +345,7 @@ void StemSplitter::run() {
             job = std::move(from.front());
             from.pop_front();
             m_current = job.target;
+            m_currentId = job.track ? job.track->getId() : TrackId();
             m_currentFromBatch = fromBatch;
             m_cancel = false;
         }
@@ -294,6 +359,7 @@ void StemSplitter::run() {
         {
             std::lock_guard<std::mutex> lock(m_mutex);
             m_current.clear();
+            m_currentId = TrackId();
             m_currentFromBatch = false;
             m_speedShared = m_speed;
             if (fromBatch && m_batchTotal > 0) {

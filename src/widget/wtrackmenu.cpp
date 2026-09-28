@@ -1843,8 +1843,10 @@ void WTrackMenu::slotStemSplit() {
     if (added == 0) {
         QMessageBox::information(nullptr,
                 tr("Stem Split"),
-                tracks.size() == 1 ? tr("This song already has its parts.")
-                                   : tr("These songs already have their parts."));
+                tracks.size() == 1
+                        ? tr("This song already has its parts.")
+                        : tr("These songs already have their parts, or are longer than "
+                             "20 minutes (DJ mixes: select one on its own to split it)."));
     }
 }
 

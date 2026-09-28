@@ -375,9 +375,15 @@ the middle of a phrase sounds wrong even when the beats match.
 - picks, on the outgoing song, the **last** phrase start from which a whole
   fade still ends before its energy drops (Outro Start marker, or the end of
   the body);
-- starts the incoming song so that its beat kicks in (Intro End marker) at
-  the **middle** of the fade, exactly when the bass swaps, so the outgoing
-  beat hands over straight to the incoming beat;
+- starts the incoming song on its first downbeat (Intro End marker), so its
+  full sound comes in gradually over the whole fade (the default); or, the
+  DJ's choice (right-click Beatmatch), so that its beat kicks in at the
+  **middle** of the fade, exactly when the bass swaps;
+- measures the outgoing tempo with `Grid::steadyBeatSecAt`, which ignores a
+  beat map that goes wrong where the music stops (a fade-out read as 159 or
+  235 BPM made mixes of songs 2-4% apart quick switches); and at mix time a
+  planned switch is beatmatched after all when the tempos are under 4%
+  apart;
 - makes the fade a whole number of phrases (about the fade time the DJ set);
 - is planned again when something changes (a tempo step, the DJ moving a
   marker, an analysis finishing).
@@ -720,7 +726,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*
 ```
 
-158 tests. The energy and grid-check tests use synthetic drum loops (steady,
+163 tests. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -831,3 +837,13 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     length (a false first beat made The Smiths start 6% fast), a stronger
     catch-up (6%), a jump into line early in the mix, and the slip logged
     per bar.
+38. **Smoother, tighter mixes.** Stem mixes fade the drums across (new
+    drums rise over the first half, old drums fall over the second; the
+    bass still swaps in the middle), and the new song starts on its first
+    downbeat, so it builds up over the whole mix (both switchable). Beat
+    lock: lines up the kicks (measured from the drum part), the engine does
+    the early jump into line, and a stale position reading (the screen
+    thread busy, about 3 s into the mix) is no longer acted on - it had
+    pushed good mixes out of line. Tempo planning ignores wrong beats in a
+    fade-out. Stem Split: a song removed from the library is no longer
+    split, and songs over 20 minutes (DJ mixes) are only split on their own.

@@ -238,6 +238,10 @@ class AutoDJProcessor : public QObject {
     // many semitones (0 = off) when its key clashes with the outgoing one.
     int keyMorphLimit() const;
     void setKeyMorphLimit(int semitones);
+    /// Where the new song's beat comes in: at the start of the mix (true,
+    /// the default) or at its middle, with the bass swap (false).
+    bool beatEntryAtStart() const;
+    void setBeatEntryAtStart(bool atStart);
 
     // Auto DJ 2.0 plus Video Mixing Live Assistant: the best next tracks for the deck that is
     // playing live (the one heard most), from the whole library.
@@ -481,10 +485,22 @@ class AutoDJProcessor : public QObject {
         int resyncs = 0;             // jumps back in line (early in the mix)
         int lastResyncUpdate = -1000;
         int loggedBar = -1000;       // the slip is logged once per bar
+        // Kick line-up: how many beats the incoming lines stay ahead of the
+        // outgoing ones so the kicks (not the lines) play together.
+        double kickShiftBeats = 0.0;
+        // Jump watch: where each deck was at the last update, to spot a
+        // deck that suddenly jumps (logged, to find what moves it).
+        QElapsedTimer lockClock;
+        qint64 lastMs = -1;
+        double lastFromSec = -1.0;
+        double lastToSec = -1.0;
+        int distrustUntil = 0;  // updates up to this one are not acted on
+        int bigSlipCount = 0;   // updates in a row with the lines clearly off
         // Stem mix: both songs have their parts, so the parts cross over
         // instead of the EQ (drums + bass swap, vocals never together). The
         // DJ's own part levels, put back afterwards.
         bool stems = false;
+        bool fadeDrums = false; // drums cross over gradually (not swapped)
         struct StemLevels {
             double vocals = 1.0;
             double instrumental = 1.0;

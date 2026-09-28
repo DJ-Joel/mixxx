@@ -2,6 +2,7 @@
 
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <atomic>
@@ -59,6 +60,14 @@ class StemSplitter : public QObject {
     static bool needsSplit(const TrackPointer& pTrack);
     /// 44.1 or 48 kHz (or not known yet).
     static bool canSplit(const TrackPointer& pTrack);
+    /// Longer than 20 minutes (a whole DJ mix, say): not split with other
+    /// songs or ahead for the Auto DJ queue, only when loaded in a deck or
+    /// chosen on its own (an 80-minute mix took 7 minutes).
+    static constexpr double kLongSongSec = 20.0 * 60.0;
+    static bool isLong(const TrackPointer& pTrack);
+    /// These songs were removed from the library: drop them from the waiting
+    /// lists and stop the one being split.
+    void cancelTracks(const QSet<TrackId>& trackIds);
     /// Songs of the STEM SPLIT list that could not be split ("title: why"),
     /// cleared by reading.
     QStringList takeBatchFailures();
@@ -105,6 +114,7 @@ class StemSplitter : public QObject {
     double m_batchSeconds = 0.0; ///< music still to split in the list
     double m_speedShared = 0.0;  ///< m_speed for other threads
     QString m_current; ///< target being split now
+    TrackId m_currentId; ///< its song
     std::atomic<bool> m_stop{false};
     std::atomic<bool> m_cancel{false}; ///< STOP pressed: drop the song being split
     bool m_currentFromBatch = false;   ///< the song being split is from the list

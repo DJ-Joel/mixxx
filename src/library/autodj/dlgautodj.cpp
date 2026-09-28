@@ -44,6 +44,8 @@
 #include "stems/stemsplitter.h"
 #endif
 #include "library/library.h"
+#include "library/trackcollection.h"
+#include "library/trackcollectionmanager.h"
 #include "library/playlisttablemodel.h"
 #include "moc_dlgautodj.cpp"
 #include "track/track.h"
@@ -206,6 +208,29 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
                         m_pAutoDJProcessor->setKeyMorphLimit(value);
                     });
                 }
+                // Where the new song's beat comes in.
+                menu.addSection(tr("The new song's beat comes in"));
+                auto* pEntry = new QActionGroup(&menu);
+                const bool atStart = m_pAutoDJProcessor->beatEntryAtStart();
+                QAction* pStart = menu.addAction(tr("At the start of the mix"));
+                pStart->setToolTip(tr("The new song starts on its first downbeat (its intro "
+                                      "is skipped), so its full sound comes in gradually."));
+                QAction* pMiddle = menu.addAction(tr("At the middle of the mix (bass swap)"));
+                pMiddle->setToolTip(tr("Its intro plays over the first half; its beat kicks "
+                                       "in at the bass swap."));
+                for (QAction* pAction : {pStart, pMiddle}) {
+                    pAction->setCheckable(true);
+                    pEntry->addAction(pAction);
+                }
+                pStart->setChecked(atStart);
+                pMiddle->setChecked(!atStart);
+                connect(pStart, &QAction::triggered, this, [this]() {
+                    m_pAutoDJProcessor->setBeatEntryAtStart(true);
+                });
+                connect(pMiddle, &QAction::triggered, this, [this]() {
+                    m_pAutoDJProcessor->setBeatEntryAtStart(false);
+                });
+                menu.setToolTipsVisible(true);
                 menu.exec(pushButtonBeatmatch->mapToGlobal(pos));
             });
 
@@ -489,6 +514,15 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
     // and vocals in the background - the songs in the decks first, then
     // the next songs of the queue - so the parts are ready when needed.
     m_pStems = new StemSplitter(m_pConfig, this);
+    // A song removed from the library is not split any more (an 80-minute
+    // mix removed while being split carried on for 7 minutes).
+    if (pLibrary && pLibrary->trackCollectionManager() &&
+            pLibrary->trackCollectionManager()->internalCollection()) {
+        connect(pLibrary->trackCollectionManager()->internalCollection(),
+                &TrackCollection::tracksRemoved,
+                m_pStems,
+                &StemSplitter::cancelTracks);
+    }
     connect(m_pStems,
             &StemSplitter::stemsReady,
             this,
@@ -564,6 +598,20 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             const int value = m.mode;
             connect(pAction, &QAction::triggered, this, [this, modeKey, value]() {
                 m_pConfig->setValue(modeKey, value);
+            });
+        }
+        // Drums in a stem mix: fade across, or swap on one beat.
+        {
+            const ConfigKey drumsKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJFadeDrums"));
+            QAction* pFade = pStemMenu->addAction(tr("Fade the drums across (not one swap)"));
+            pFade->setCheckable(true);
+            pFade->setChecked(m_pConfig->getValue(drumsKey, true));
+            pFade->setToolTip(tr("On: the new drums rise over the first half of the mix and the "
+                                 "old drums fall over the second half.\nOff: the drums swap on "
+                                 "one beat in the middle, with the bass.\nThe bass always "
+                                 "swaps in the middle (two basslines clash)."));
+            connect(pFade, &QAction::toggled, this, [this, drumsKey](bool on) {
+                m_pConfig->setValue(drumsKey, on);
             });
         }
         pStemMenu->addSection(tr("Save the parts"));

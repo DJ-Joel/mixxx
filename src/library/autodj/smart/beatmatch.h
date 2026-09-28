@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
 /// Auto DJ 2.0 plus Video Mixing, phase 2: the maths of a beatmatched transition.
 /// Pure functions, no Mixxx controls, so they can be unit-tested.
@@ -59,7 +60,10 @@ struct StemBlend {
     double toDrums = 0.0;
     double toBass = 0.0;
 };
-StemBlend stemBlend(double progress);
+/// `fadeDrums`: the drums cross over gradually instead (incoming drums rise
+/// over the first half, outgoing drums fall over the second half); the bass
+/// still swaps at the middle (two basslines clash).
+StemBlend stemBlend(double progress, bool fadeDrums = false);
 
 /// Singing detection: who sings during the mix, and when the outgoing
 /// singer ends a line (as mix progress 0..1).
@@ -72,7 +76,7 @@ struct VocalPlan {
 /// sing during the mix keeps its vocals with its instrumental (untouched);
 /// only when both sing are the vocals handed over, at `swapAt`, never
 /// together.
-StemBlend stemBlend(double progress, const VocalPlan& plan);
+StemBlend stemBlend(double progress, const VocalPlan& plan, bool fadeDrums = false);
 
 /// Beat lock, for a track whose tempo bends (a beat map): during the mix
 /// the incoming speed is set again and again so that its beats stay on the
@@ -99,5 +103,20 @@ double followRatio(double fromBeat,
         double toBeat,
         double toBeatTrackSec,
         double* pSlipBeats = nullptr);
+
+/// Where the kick really starts after a song's beat lines. Beat analysis
+/// does not put every song's lines at the same point of the kick: in real
+/// songs the kick started 8 to 41 ms after the line. Two songs whose lines
+/// are locked can then still have their kicks 30 ms apart (heard as a
+/// clash), so beat lock lines up the kicks instead.
+///
+/// @param level the drum level (0..1), `rate` values per second (the
+///        waveform: about 441 per second)
+/// @param beatTimes the song's beat lines, in seconds
+/// @return the middle offset in seconds (kick after the line = positive),
+///         or nothing when fewer than 16 beats have a clear hit
+std::optional<double> kickOffset(const std::vector<float>& level,
+        double rate,
+        const std::vector<double>& beatTimes);
 
 } // namespace beatmatch
