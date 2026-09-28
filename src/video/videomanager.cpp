@@ -268,8 +268,19 @@ void VideoManager::setTransition(Transition transition) {
 }
 
 void VideoManager::setShowTitles(bool show) {
+    if (show == m_showTitles) {
+        return;
+    }
     m_showTitles = show;
+    // The cover card of a song without video carries the title too:
+    // redraw the cards of the songs that are loaded now.
+    for (const auto& pDeck : m_decks) {
+        if (pDeck->track) {
+            pDeck->still = stillFor(pDeck->track);
+        }
+    }
     m_lastMixKey.clear();
+    qInfo() << "Video: song titles" << (show ? "on" : "off");
 }
 
 void VideoManager::setMovingPictures(bool moving) {
@@ -348,11 +359,17 @@ QImage VideoManager::stillFor(const TrackPointer& pTrack) const {
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.setRenderHint(QPainter::Antialiasing);
     const QImage cover = pTrack->getCoverInfoWithLocation().loadImage(pTrack).image;
-    const QRect coverArea(0, 60, kCanvasWidth, 760);
+    // With song titles off the card is the cover art alone, larger.
+    const QRect coverArea = m_showTitles
+            ? QRect(0, 60, kCanvasWidth, 760)
+            : QRect(0, 60, kCanvasWidth, kCanvasHeight - 120);
     if (!cover.isNull()) {
         QRect r = videomix::fitRect(cover.size(), coverArea.size());
         r.translate(coverArea.topLeft());
         painter.drawImage(r, cover);
+    }
+    if (!m_showTitles) {
+        return still;
     }
     QFont font = painter.font();
     font.setPixelSize(64);
