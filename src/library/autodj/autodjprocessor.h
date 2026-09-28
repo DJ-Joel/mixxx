@@ -15,6 +15,7 @@
 #include "control/pollingcontrolproxy.h"
 #include "engine/channels/enginechannel.h"
 #include "library/playlisttablemodel.h"
+#include "library/autodj/smart/beatmatch.h"
 #include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/phrasealign.h"
 #include "library/autodj/smart/smartsequencer.h"
@@ -440,6 +441,11 @@ class AutoDJProcessor : public QObject {
 
     // Auto DJ 2.0 plus Video Mixing, phase 2: beatmatch + bass swap during a fade.
     void beginSmartTransition(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
+    /// Singing detection: does the outgoing song sing during the mix? (true
+    /// when not known or not in that mode)
+    bool outgoingSingsInMix(DeckAttributes* pFromDeck);
+    /// Singing detection: plan the vocals of a stem mix (m_smart.vocalPlan).
+    void planVocals(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
     void afterToDeckStarted();
     void updateSmartTransition(double progress);
     void followBeats();
@@ -471,6 +477,10 @@ class AutoDJProcessor : public QObject {
         phrasealign::Grid toGrid;
         int lockUpdates = 0;
         double worstSlipBeats = 0.0;
+        double progress = 0.0;       // how far the mix is (0..1)
+        int resyncs = 0;             // jumps back in line (early in the mix)
+        int lastResyncUpdate = -1000;
+        int loggedBar = -1000;       // the slip is logged once per bar
         // Stem mix: both songs have their parts, so the parts cross over
         // instead of the EQ (drums + bass swap, vocals never together). The
         // DJ's own part levels, put back afterwards.
@@ -486,6 +496,9 @@ class AutoDJProcessor : public QObject {
         };
         StemLevels fromStems;
         StemLevels toStems;
+        // Singing detection: who sings during the mix (planVocals).
+        bool vocalPlanned = false;
+        beatmatch::VocalPlan vocalPlan;
     };
     SmartTransition m_smart;
     // The queue ran empty while a song was playing (logged once).

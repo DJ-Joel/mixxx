@@ -61,6 +61,19 @@ struct StemBlend {
 };
 StemBlend stemBlend(double progress);
 
+/// Singing detection: who sings during the mix, and when the outgoing
+/// singer ends a line (as mix progress 0..1).
+struct VocalPlan {
+    bool fromSings = true;
+    bool toSings = true;
+    double swapAt = 0.5;
+};
+/// The stem mix with the vocals timed by the singing: a song that does not
+/// sing during the mix keeps its vocals with its instrumental (untouched);
+/// only when both sing are the vocals handed over, at `swapAt`, never
+/// together.
+StemBlend stemBlend(double progress, const VocalPlan& plan);
+
 /// Beat lock, for a track whose tempo bends (a beat map): during the mix
 /// the incoming speed is set again and again so that its beats stay on the
 /// outgoing beats, like a DJ riding the pitch fader.
@@ -75,9 +88,12 @@ StemBlend stemBlend(double progress);
 ///         length, nudged by up to kMaxLockNudge to pull a beat that has
 ///         slipped back in line within about kLockBeats beats. A slip of
 ///         less than kLockDeadBeats is left alone (no needless wobble).
-constexpr double kLockBeats = 4.0;
-constexpr double kMaxLockNudge = 0.02; // 2 %
+constexpr double kLockBeats = 2.0;
+constexpr double kMaxLockNudge = 0.06; // 6 % (key lock keeps the pitch)
 constexpr double kLockDeadBeats = 0.01; // 5 ms at 120 BPM
+/// Early in the mix (the incoming song still quiet), a slip bigger than
+/// this is not pulled back slowly: the incoming song jumps in line.
+constexpr double kResyncBeats = 0.05;
 double followRatio(double fromBeat,
         double fromBeatRealSec,
         double toBeat,

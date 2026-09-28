@@ -141,15 +141,20 @@ TEST(BeatmatchTest, BeatLockKeepsTheSameBeatLength) {
 }
 
 TEST(BeatmatchTest, BeatLockPullsASlippedBeatBack) {
-    // The incoming beat is 0.1 beat late: a bit faster (2.5 %, capped at 2 %).
+    // The incoming beat is 0.1 beat late: faster (5 %), back in line in
+    // about 2 beats.
     double slip = 0.0;
     const double faster = beatmatch::followRatio(100.1, 0.5, 7.0, 0.5, &slip);
     EXPECT_NEAR(0.1, slip, 1e-9);
-    EXPECT_NEAR(1.0 + beatmatch::kMaxLockNudge, faster, 1e-9);
-    // 0.04 beat early: 1 % slower.
-    EXPECT_NEAR(0.99, beatmatch::followRatio(100.96, 0.5, 8.0, 0.5), 1e-9);
+    EXPECT_NEAR(1.05, faster, 1e-9);
+    // A big slip (0.3 beat late): capped at 6 %.
+    EXPECT_NEAR(1.0 + beatmatch::kMaxLockNudge,
+            beatmatch::followRatio(100.3, 0.5, 7.0, 0.5),
+            1e-9);
+    // 0.04 beat early: 2 % slower.
+    EXPECT_NEAR(0.98, beatmatch::followRatio(100.96, 0.5, 8.0, 0.5), 1e-9);
     // Beat numbers far apart do not matter, only where in the beat.
-    EXPECT_NEAR(0.99, beatmatch::followRatio(5.96, 0.5, 300.0, 0.5), 1e-9);
+    EXPECT_NEAR(0.98, beatmatch::followRatio(5.96, 0.5, 300.0, 0.5), 1e-9);
     // Unknown beat lengths: leave the speed alone.
     EXPECT_DOUBLE_EQ(1.0, beatmatch::followRatio(1.0, 0.0, 1.0, 0.5));
 }

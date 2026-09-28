@@ -15,6 +15,8 @@
 #include "engine/channels/enginedeck.h"
 #include "control/controlobject.h"
 #include "library/autodj/smart/beatmatch.h"
+#include "library/autodj/smart/vocalmap.h"
+#include "waveform/waveform.h"
 #include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/phrasealign.h"
 #include "library/autodj/smart/energystore.h"
@@ -84,8 +86,61 @@ void writeControl(const ConfigKey& key, double value) {
 // Auto DJ 2.0 plus Video Mixing: stem mixes. The deck's stem controls
 // (src/stems/stemcontrols.*) set the part volumes of a song that plays from
 // its stem file; [ChannelN],stem_ready says whether it does.
+// Auto DJ > Stems: 0 = original mix (never the parts), 1 = stem mix,
+// 2 = stem mix with singing detection (default). Older settings only had
+// the on/off switch AutoDJStems.
+constexpr int kStemMixOriginal = 0;
+constexpr int kStemMixSinging = 2;
+int stemMixMode(const UserSettingsPointer& pConfig) {
+    const int mode = pConfig->getValue(
+            ConfigKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStemMode")), -1);
+    if (mode >= kStemMixOriginal && mode <= kStemMixSinging) {
+        return mode;
+    }
+    return pConfig->getValue(ConfigKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStems")), true)
+            ? kStemMixSinging
+            : kStemMixOriginal;
+}
+
 bool stemMixesEnabled(const UserSettingsPointer& pConfig) {
-    return pConfig->getValue(ConfigKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStems")), true);
+    return stemMixMode(pConfig) != kStemMixOriginal;
+}
+
+// Singing detection: where the song sings, from its waveform with parts
+// (made from its stem file; parts in the order drums, bass, other,
+// vocals). Nothing when that waveform is not there (yet).
+std::optional<std::vector<vocalmap::Section>> singingOf(const TrackPointer& pTrack) {
+    if (!pTrack || pTrack->getStemInfo().size() < 4) {
+        return std::nullopt;
+    }
+    const ConstWaveformPointer pWaveform = pTrack->getWaveform();
+    const double seconds = pTrack->getDuration();
+    if (!pWaveform || !pWaveform->hasStem() || !(seconds > 0.0)) {
+        return std::nullopt;
+    }
+    const int frames = pWaveform->getDataSize() / 2; // left and right
+    if (frames < 100) {
+        return std::nullopt;
+    }
+    const WaveformData* pData = pWaveform->data();
+    std::vector<float> vocal(frames);
+    std::vector<float> rest(frames);
+    for (int f = 0; f < frames; ++f) {
+        const WaveformData& l = pData[2 * f];
+        const WaveformData& r = pData[2 * f + 1];
+        vocal[f] = std::max(l.stems[3], r.stems[3]) / 255.0f;
+        float band = 0.0f;
+        for (int s = 0; s < 3; ++s) {
+            band = std::max(band, std::max(l.stems[s], r.stems[s]) / 255.0f);
+        }
+        rest[f] = band;
+    }
+    return vocalmap::find(vocal, rest, frames / seconds);
+}
+
+QString minutesText(double seconds) {
+    const int s = static_cast<int>(std::lround(std::max(0.0, seconds)));
+    return QStringLiteral("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QLatin1Char('0'));
 }
 
 bool stemsReady(const QString& deckGroup) {
@@ -681,7 +736,8 @@ void AutoDJProcessor::beginSmartTransition(
     if (!isBeatmatchEnabled() || !pFromDeck || !pToDeck) {
         // No beatmatch: the outgoing vocals leave with an echo, which
         // covers the change.
-        if (pFromDeck && pToDeck && stemMixesEnabled(m_pConfig) && stemsReady(pFromDeck->group)) {
+        if (pFromDeck && pToDeck && stemMixesEnabled(m_pConfig) &&
+                stemsReady(pFromDeck->group) && outgoingSingsInMix(pFromDeck)) {
             kLogger.info() << "Stem mix" << pFromDeck->group << ": echo out of the vocals";
             stemEchoOut(pFromDeck->group);
         }
@@ -830,6 +886,12 @@ void AutoDJProcessor::beginSmartTransition(
             kLogger.info() << "Stem mix" << pFromDeck->group << "->" << pToDeck->group
                            << ": instrumental first, drums + bass swap in the middle, "
                               "vocals never together";
+            if (stemMixMode(m_pConfig) == kStemMixSinging) {
+                planVocals(pFromDeck, pToDeck);
+            }
+        } else if (!m_smart.beatmatched && fromParts && !outgoingSingsInMix(pFromDeck)) {
+            kLogger.info() << "Stem mix" << pFromDeck->group
+                           << ": no singing at the end, no echo out needed";
         } else if (!m_smart.beatmatched && fromParts) {
             kLogger.info() << "Stem mix" << pFromDeck->group << ": echo out of the vocals";
             stemEchoOut(pFromDeck->group);
@@ -839,6 +901,70 @@ void AutoDJProcessor::beginSmartTransition(
         }
     }
     updateSmartTransition(0.0); // incoming bass starts cut
+}
+
+bool AutoDJProcessor::outgoingSingsInMix(DeckAttributes* pFromDeck) {
+    // Only with singing detection and a known vocal map; otherwise assume
+    // the song sings (the safe choice: its vocals are handled).
+    if (stemMixMode(m_pConfig) != kStemMixSinging || !pFromDeck) {
+        return true;
+    }
+    const TrackPointer pTrack = pFromDeck->getLoadedTrack();
+    const auto sections = singingOf(pTrack);
+    if (!sections) {
+        return true;
+    }
+    const double seconds = pTrack->getDuration();
+    return vocalmap::singsBetween(*sections,
+            pFromDeck->fadeBeginPos * seconds,
+            pFromDeck->fadeEndPos * seconds);
+}
+
+void AutoDJProcessor::planVocals(DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
+    const TrackPointer pFrom = pFromDeck->getLoadedTrack();
+    const TrackPointer pTo = pToDeck->getLoadedTrack();
+    const auto fromSinging = singingOf(pFrom);
+    const auto toSinging = singingOf(pTo);
+    if (!fromSinging || !toSinging) {
+        kLogger.info() << "Singing detection: no vocal map yet for"
+                       << (!fromSinging ? pFromDeck->group : pToDeck->group)
+                       << "(its waveform with parts is not ready): plain stem mix";
+        return;
+    }
+    // The mix, in each song's own seconds.
+    const double fromStart = pFromDeck->fadeBeginPos * pFrom->getDuration();
+    const double fromEnd = pFromDeck->fadeEndPos * pFrom->getDuration();
+    const double length = std::max(0.1, fromEnd - fromStart);
+    const double toStart = pToDeck->playPosition() * pTo->getDuration();
+    const double toEnd = toStart + length;
+
+    beatmatch::VocalPlan plan;
+    plan.fromSings = vocalmap::singsBetween(*fromSinging, fromStart, fromEnd);
+    plan.toSings = vocalmap::singsBetween(*toSinging, toStart, toEnd);
+    plan.swapAt = 0.5;
+    QString swapText;
+    if (plan.fromSings && plan.toSings) {
+        // Hand the vocals over when the outgoing singer ends a line.
+        const double quiet = vocalmap::quietMoment(
+                *fromSinging, fromStart + 0.3 * length, fromEnd - 0.15 * length);
+        if (quiet >= 0.0) {
+            plan.swapAt = (quiet - fromStart) / length;
+            swapText = QStringLiteral(", vocals handed over at %1 (end of a line)")
+                               .arg(minutesText(quiet));
+        } else {
+            swapText = QStringLiteral(", no gap in the singing: vocals handed over halfway");
+        }
+    }
+    m_smart.vocalPlan = plan;
+    m_smart.vocalPlanned = true;
+    const double toFirst = vocalmap::nextSinging(*toSinging, toStart);
+    kLogger.info().noquote()
+            << "Singing detection:" << pFromDeck->group
+            << (plan.fromSings ? "sings" : "does not sing") << "during the mix,"
+            << pToDeck->group << (plan.toSings ? "sings" : "does not sing")
+            << (toFirst >= 0.0 ? QStringLiteral("(its singing starts at %1)").arg(minutesText(toFirst))
+                               : QStringLiteral("(no singing ahead)"))
+            << swapText;
 }
 
 void AutoDJProcessor::afterToDeckStarted() {
@@ -856,10 +982,13 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     if (!m_smart.active) {
         return;
     }
+    m_smart.progress = progress;
     followBeats();
     if (m_smart.stems) {
         // The parts cross over (the EQ stays as the DJ set it).
-        const beatmatch::StemBlend b = beatmatch::stemBlend(progress);
+        const beatmatch::StemBlend b = m_smart.vocalPlanned
+                ? beatmatch::stemBlend(progress, m_smart.vocalPlan)
+                : beatmatch::stemBlend(progress);
         auto level = [](double knob, double kill) {
             return kill > 0.5 ? 0.0 : knob;
         };
@@ -971,6 +1100,36 @@ void AutoDJProcessor::followBeats() {
     // The first second is the phase sync settling in; not counted.
     if (++m_smart.lockUpdates > 50) {
         m_smart.worstSlipBeats = std::max(m_smart.worstSlipBeats, std::fabs(slip));
+    }
+    // The slip once per bar in the log, so a drift can be traced afterwards.
+    const int bar = static_cast<int>(std::floor(m_smart.fromGrid.beatAt(fromSec) / 4.0));
+    if (bar != m_smart.loggedBar) {
+        m_smart.loggedBar = bar;
+        kLogger.info() << "Beat lock" << m_smart.pTo->group << "bar" << bar
+                       << ": slip" << slip << "beats, ratio" << m_smart.toRatio;
+    }
+    // Clearly off early in the mix, while the incoming song is still quiet:
+    // jump it in line now instead of pulling it back slowly (heard as a
+    // clash for several beats). A few times at most, never back to back.
+    if (std::fabs(slip) > beatmatch::kResyncBeats && m_smart.progress < 0.3 &&
+            m_smart.resyncs < 3 && m_smart.lockUpdates > 5 &&
+            m_smart.lockUpdates - m_smart.lastResyncUpdate > 25) {
+        const mixxx::audio::SampleRate sampleRate = m_smart.pTo->sampleRate();
+        const mixxx::audio::FramePos end = m_smart.pTo->trackEndPosition();
+        const double newSec =
+                m_smart.toGrid.beatTime(m_smart.toGrid.beatAt(toSec) + slip);
+        if (sampleRate.isValid() && end.isValid() && end.value() > 0.0 && newSec > 0.0) {
+            // Exactly there: quantize would move it to Mixxx's own idea of
+            // the beat instead (put back after the mix).
+            ControlObject::set(ConfigKey(m_smart.pTo->group, QStringLiteral("quantize")), 0.0);
+            ControlObject::set(ConfigKey(m_smart.pTo->group, QStringLiteral("playposition")),
+                    newSec * sampleRate.value() / end.value());
+            ++m_smart.resyncs;
+            m_smart.lastResyncUpdate = m_smart.lockUpdates;
+            kLogger.info() << "Beat lock" << m_smart.pTo->group << ": slip" << slip
+                           << "beats early in the mix, jumped back in line";
+            return;
+        }
     }
     // Safety: never more than 10% off the track's own speed.
     if (std::fabs(ratio - 1.0) > 0.1 || std::fabs(ratio - m_smart.toRatio) < 1e-5) {

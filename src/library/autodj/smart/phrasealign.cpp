@@ -51,7 +51,21 @@ double Grid::beatSecAt(double sec, int span) const {
     const int centre = static_cast<int>(std::lround(std::clamp(beatAt(sec), 0.0, 1.0 * last)));
     const int to = std::min(last, std::max(centre + span, 2 * span));
     const int from = std::max(0, to - 2 * span);
-    return (beats[to] - beats[from]) / (to - from);
+    // The middle beat length, not the average: one false or missed beat
+    // (a pickup note before the first real beat) must not change the tempo.
+    std::vector<double> lengths;
+    lengths.reserve(to - from);
+    for (int i = from; i < to; ++i) {
+        lengths.push_back(beats[i + 1] - beats[i]);
+    }
+    const std::size_t mid = lengths.size() / 2;
+    std::nth_element(lengths.begin(), lengths.begin() + mid, lengths.end());
+    if (lengths.size() % 2 == 1) {
+        return lengths[mid];
+    }
+    const double upper = lengths[mid];
+    const double lower = *std::max_element(lengths.begin(), lengths.begin() + mid);
+    return 0.5 * (lower + upper);
 }
 
 Grid Grid::atSpeed(double rateRatio) const {

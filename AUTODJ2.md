@@ -419,11 +419,17 @@ Auto DJ 2.0 plus Video Mixing uses the real beat positions everywhere:
   happens**, not its average.
 - **Beat lock:** when either song has a beat map, the incoming speed is set
   again on every update of the mix (`beatmatch::followRatio`): the same beat
-  length as the outgoing song now, plus a small nudge (at most 2%) that pulls
-  a beat that slipped back in line within about four beats. Slips smaller
-  than 1% of a beat are left alone, so the speed does not wobble. In a real
-  mix of two drifting songs the beats stayed within 0.015 of a beat
-  (about 8 ms).
+  length as the outgoing song now, plus a nudge (at most 6%; key lock keeps
+  the pitch) that pulls a beat that slipped back in line within about two
+  beats. Slips smaller than 1% of a beat are left alone, so the speed does
+  not wobble. Early in the mix (first 30%, the incoming song still quiet) a
+  slip of more than 5% of a beat is not pulled back slowly: the incoming
+  song jumps in line (at most 3 times). The slip is logged once per bar
+  ("Beat lock ... bar N : slip"). In real mixes the beats stay within 1%
+  of a beat (5 ms) from the second bar on.
+- The tempo where a song starts is the **middle** beat length of the
+  nearby beats, not the average: one false beat before the first real one
+  (a pickup note) no longer makes a song start several % too fast.
 
 ### 4.13 Key morph
 
@@ -615,7 +621,19 @@ converted to ONNX (github.com/mixxxdj/demucs).
   parts, its vocals leave with ECHO OUT, which covers the change. Songs
   without parts: the EQ mix as before. Switch: Auto DJ > Stems > "Use the
   parts in Auto DJ mixes" (`[Stems],AutoDJStems`, on by default).
-  Limit: Auto DJ does not yet know where a song has singing.
+  Auto DJ > Stems > "Auto DJ mixes" chooses: **Original mix** (no parts),
+  **Stem mix**, or **Singing detection mix** (the default,
+  `[Stems],AutoDJStemMode` 0/1/2).
+- **Singing detection** (`src/library/autodj/smart/vocalmap.*`, unit
+  tested): the level of a song's vocal part (from its waveform with the
+  parts) is smoothed over 0.5 s; moments clearly louder than the song's own
+  quiet vocal background (20th to 95th percentile, 30% up) count as singing;
+  breaths shorter than 1.5 s are joined, bits shorter than 1 s dropped, and
+  vocal part "leak" under the band is ignored. In a stem mix: a song that
+  does not sing during the mix keeps its vocals with its instrumental (no
+  needless cut); when both sing, the vocals are handed over at the end of a
+  line (a quiet moment), never together. A song that does not sing gets no
+  echo out.
 - **Waveforms with the parts:** when a deck loads a song whose parts are
   ready, the analyzer makes its waveform once more from the stem file
   (`AnalyzerThread::analyzeStemWaveform`), so the deck shows the parts in
@@ -699,10 +717,10 @@ card, the folder of the last video recording).
 Unit tests are in `src/test/` and run with the other Mixxx tests:
 
 ```
-mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*
+mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*
 ```
 
-150 tests. The energy and grid-check tests use synthetic drum loops (steady,
+158 tests. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -807,3 +825,9 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     waveforms are made again. The newest saved waveform is now the one
     kept. An MP4 keeps the parts list its deck set when the file is opened
     again elsewhere (it was wiped, so the deck drew the plain waveform).
+37. **Singing detection and a tighter beat lock.** Auto DJ finds where each
+    song sings (from its vocal part) and the DJ chooses Original, Stem or
+    Singing detection mixes. Beat lock: start tempo from the middle beat
+    length (a false first beat made The Smiths start 6% fast), a stronger
+    catch-up (6%), a jump into line early in the mix, and the slip logged
+    per bar.

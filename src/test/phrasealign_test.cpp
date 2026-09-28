@@ -274,6 +274,15 @@ TEST(PhraseAlignTest, BeatMapFindsItsBeats) {
     // The local beat length follows the drummer.
     EXPECT_NEAR(0.5, map.beatSecAt(times[0]), 0.001);
     EXPECT_NEAR(0.5 - 0.0001 * 300, map.beatSecAt(times[300]), 0.001);
+    // A false beat just before the first real one (The Smiths: 0.04 s, then
+    // the real beats every 0.572 s) does not change the tempo at the start.
+    std::vector<double> pickup{0.041};
+    for (int n = 0; n < 40; ++n) {
+        pickup.push_back(0.354 + 0.572 * n);
+    }
+    const Grid withPickup = Grid::fromBeats(pickup);
+    EXPECT_NEAR(0.572, withPickup.beatSecAt(0.041), 1e-9);
+    EXPECT_NEAR(0.572, withPickup.beatSecAt(3.0), 1e-9);
     // At another speed, everything is scaled in time.
     const Grid fast = map.atSpeed(1.25);
     EXPECT_NEAR(times[64] / 1.25, fast.beatTime(64), 1e-9);

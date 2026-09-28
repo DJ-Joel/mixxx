@@ -78,6 +78,32 @@ StemBlend stemBlend(double progress) {
     return s;
 }
 
+StemBlend stemBlend(double progress, const VocalPlan& plan) {
+    const double p = std::isnan(progress) ? 0.0 : std::clamp(progress, 0.0, 1.0);
+    constexpr double kHalfPi = 1.5707963267948966;
+    StemBlend s = stemBlend(p);
+    const double swapAt = std::clamp(std::isnan(plan.swapAt) ? 0.5 : plan.swapAt, 0.15, 0.85);
+    if (!plan.fromSings) {
+        s.fromVocals = s.fromInstrumental; // nothing sung: leave with the song
+    } else if (plan.toSings) {
+        // Both sing: the outgoing line ends at swapAt.
+        const double w = std::min(0.25, swapAt);
+        const double x = std::clamp((p - (swapAt - w)) / w, 0.0, 1.0);
+        s.fromVocals = p >= swapAt ? 0.0 : std::cos(x * kHalfPi);
+    }
+    if (!plan.toSings) {
+        s.toVocals = s.toInstrumental; // nothing sung yet: comes in with the song
+    } else if (plan.fromSings) {
+        const double w = std::min(0.25, 1.0 - swapAt);
+        const double x = std::clamp((p - swapAt) / w, 0.0, 1.0);
+        s.toVocals = p <= swapAt ? 0.0 : std::sin(x * kHalfPi);
+    } else {
+        // Only the new song sings: over the old instrumental, no clash.
+        s.toVocals = s.toInstrumental;
+    }
+    return s;
+}
+
 double followRatio(double fromBeat,
         double fromBeatRealSec,
         double toBeat,

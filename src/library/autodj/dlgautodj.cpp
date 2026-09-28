@@ -523,19 +523,49 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
         connect(pOn, &QAction::toggled, this, [this](bool on) {
             m_pStems->setEnabled(on);
         });
-        // Auto DJ mixes with the parts when both songs have them.
-        const ConfigKey stemMixKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStems"));
-        QAction* pStemMix = pStemMenu->addAction(tr("Use the parts in Auto DJ mixes"));
-        pStemMix->setCheckable(true);
-        pStemMix->setChecked(m_pConfig->getValue(stemMixKey, true));
-        pStemMix->setToolTip(
-                tr("When both songs have their parts: new instrumental first, drums + bass "
-                   "swap in the middle, the vocals never play together.\n"
-                   "When the songs cannot be beatmatched: the old vocals leave with an echo.\n"
-                   "Songs without parts are mixed as before."));
-        connect(pStemMix, &QAction::toggled, this, [this, stemMixKey](bool on) {
-            m_pConfig->setValue(stemMixKey, on);
-        });
+        // How Auto DJ mixes: 0 original, 1 stem mix, 2 with singing detection.
+        pStemMenu->addSection(tr("Auto DJ mixes"));
+        const ConfigKey modeKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStemMode"));
+        int mode = m_pConfig->getValue(modeKey, -1);
+        if (mode < 0 || mode > 2) { // older settings: an on/off switch
+            mode = m_pConfig->getValue(
+                           ConfigKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStems")),
+                           true)
+                    ? 2
+                    : 0;
+        }
+        auto* pModes = new QActionGroup(pStemMenu);
+        const struct {
+            int mode;
+            QString text;
+            QString tip;
+        } kModes[] = {
+                {0,
+                        tr("Original mix (EQ, never the parts)"),
+                        tr("The Auto DJ 2.0 mix with the EQ bass swap, also for songs that "
+                           "have their parts.")},
+                {1,
+                        tr("Stem mix"),
+                        tr("When both songs have their parts: new instrumental first, drums + "
+                           "bass swap in the middle, the vocals never together.\nNot "
+                           "beatmatched: the old vocals leave with an echo.")},
+                {2,
+                        tr("Stem mix with singing detection"),
+                        tr("The stem mix, timed by where the songs really sing: vocals are "
+                           "only moved when someone sings, and handed over at the end of a "
+                           "line.\nNo echo out when the old song does not sing at the end.")},
+        };
+        for (const auto& m : kModes) {
+            QAction* pAction = pStemMenu->addAction(m.text);
+            pAction->setCheckable(true);
+            pAction->setToolTip(m.tip + tr("\nSongs without parts always get the original mix."));
+            pAction->setChecked(mode == m.mode);
+            pModes->addAction(pAction);
+            const int value = m.mode;
+            connect(pAction, &QAction::triggered, this, [this, modeKey, value]() {
+                m_pConfig->setValue(modeKey, value);
+            });
+        }
         pStemMenu->addSection(tr("Save the parts"));
         const QString folder = QDir::toNativeSeparators(
                 QDir(m_pStems->folder()).filePath(stems::StemCache::folderName()));
