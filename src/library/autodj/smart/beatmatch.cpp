@@ -56,6 +56,28 @@ EqBlend eqBlend(double progress) {
     return e;
 }
 
+StemBlend stemBlend(double progress) {
+    const double p = std::isnan(progress) ? 0.0 : std::clamp(progress, 0.0, 1.0);
+    constexpr double kHalfPi = 1.5707963267948966;
+    StemBlend s;
+    if (p < 0.5) {
+        const double x = p / 0.5; // 0..1 over the first half
+        s.fromVocals = std::cos(x * kHalfPi);
+        s.toInstrumental = std::sin(x * kHalfPi);
+    } else {
+        const double x = (p - 0.5) / 0.5; // 0..1 over the second half
+        s.fromVocals = 0.0;
+        s.toInstrumental = 1.0;
+        s.fromInstrumental = std::cos(x * kHalfPi);
+        s.toVocals = std::sin(x * kHalfPi);
+    }
+    // The same moment as the bass swap.
+    const BassState bass = bassSwap(p);
+    s.fromDrums = s.fromBass = bass.fromLowKilled ? 0.0 : 1.0;
+    s.toDrums = s.toBass = bass.toLowKilled ? 0.0 : 1.0;
+    return s;
+}
+
 double followRatio(double fromBeat,
         double fromBeatRealSec,
         double toBeat,

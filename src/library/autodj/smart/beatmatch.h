@@ -42,6 +42,25 @@ struct EqBlend {
 };
 EqBlend eqBlend(double progress);
 
+/// Stem mix: when both songs have their parts (drums, bass, other =
+/// instrumental, vocals), the parts cross over instead of the EQ.
+/// First half: the incoming instrumental rises, the outgoing vocals fall.
+/// Middle: drums and bass swap hard, like the bass swap. Second half: the
+/// outgoing instrumental falls, the incoming vocals rise. So two vocals
+/// never play together and two basslines / kicks never clash. The values
+/// multiply the DJ's own part levels (equal-power curves).
+struct StemBlend {
+    double fromVocals = 1.0;
+    double fromInstrumental = 1.0;
+    double fromDrums = 1.0;
+    double fromBass = 1.0;
+    double toVocals = 0.0;
+    double toInstrumental = 0.0;
+    double toDrums = 0.0;
+    double toBass = 0.0;
+};
+StemBlend stemBlend(double progress);
+
 /// Beat lock, for a track whose tempo bends (a beat map): during the mix
 /// the incoming speed is set again and again so that its beats stay on the
 /// outgoing beats, like a DJ riding the pitch fader.

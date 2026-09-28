@@ -471,6 +471,21 @@ class AutoDJProcessor : public QObject {
         phrasealign::Grid toGrid;
         int lockUpdates = 0;
         double worstSlipBeats = 0.0;
+        // Stem mix: both songs have their parts, so the parts cross over
+        // instead of the EQ (drums + bass swap, vocals never together). The
+        // DJ's own part levels, put back afterwards.
+        bool stems = false;
+        struct StemLevels {
+            double vocals = 1.0;
+            double instrumental = 1.0;
+            double drums = 1.0;
+            double bass = 1.0;
+            double vocalsKill = 0.0;
+            double instrumentalKill = 0.0;
+            double drumsKill = 0.0;
+        };
+        StemLevels fromStems;
+        StemLevels toStems;
     };
     SmartTransition m_smart;
     // The queue ran empty while a song was playing (logged once).

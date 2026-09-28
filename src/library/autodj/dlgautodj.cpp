@@ -523,6 +523,19 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
         connect(pOn, &QAction::toggled, this, [this](bool on) {
             m_pStems->setEnabled(on);
         });
+        // Auto DJ mixes with the parts when both songs have them.
+        const ConfigKey stemMixKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStems"));
+        QAction* pStemMix = pStemMenu->addAction(tr("Use the parts in Auto DJ mixes"));
+        pStemMix->setCheckable(true);
+        pStemMix->setChecked(m_pConfig->getValue(stemMixKey, true));
+        pStemMix->setToolTip(
+                tr("When both songs have their parts: new instrumental first, drums + bass "
+                   "swap in the middle, the vocals never play together.\n"
+                   "When the songs cannot be beatmatched: the old vocals leave with an echo.\n"
+                   "Songs without parts are mixed as before."));
+        connect(pStemMix, &QAction::toggled, this, [this, stemMixKey](bool on) {
+            m_pConfig->setValue(stemMixKey, on);
+        });
         pStemMenu->addSection(tr("Save the parts"));
         const QString folder = QDir::toNativeSeparators(
                 QDir(m_pStems->folder()).filePath(stems::StemCache::folderName()));

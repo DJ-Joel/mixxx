@@ -80,6 +80,7 @@ StemControls::StemControls(UserSettingsPointer pConfig,
         d.pVocals = makeKnob(QStringLiteral("stem_vocals"));
         d.pInstrumental = makeKnob(QStringLiteral("stem_instrumental"));
         d.pDrums = makeKnob(QStringLiteral("stem_drums"));
+        d.pBass = makeKnob(QStringLiteral("stem_bass"));
         d.pVocalsKill = makeKill(QStringLiteral("stem_vocals_kill"));
         d.pInstrumentalKill = makeKill(QStringLiteral("stem_instrumental_kill"));
         d.pDrumsKill = makeKill(QStringLiteral("stem_drums_kill"));
@@ -175,6 +176,7 @@ void StemControls::resetDeck(int deck) {
     d.pVocals->set(1.0);
     d.pInstrumental->set(1.0);
     d.pDrums->set(1.0);
+    d.pBass->set(1.0);
     d.pVocalsKill->set(0.0);
     d.pInstrumentalKill->set(0.0);
     d.pDrumsKill->set(0.0);
@@ -190,7 +192,8 @@ void StemControls::apply(int deck) {
     const double vocals = d.pVocalsKill->toBool() ? 0.0 : d.pVocals->get();
     const double instrumental = d.pInstrumentalKill->toBool() ? 0.0 : d.pInstrumental->get();
     const double drums = d.pDrumsKill->toBool() ? 0.0 : d.pDrums->get();
-    const std::array<double, 4> parts{{drums, instrumental, instrumental, vocals}};
+    const double bass = instrumental * d.pBass->get();
+    const std::array<double, 4> parts{{drums, bass, instrumental, vocals}};
     for (int part = 0; part < 4; ++part) {
         // Only what changed, so the four knobs of the stem panel keep
         // working as well.

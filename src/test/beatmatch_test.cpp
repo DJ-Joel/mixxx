@@ -55,6 +55,50 @@ TEST(BeatmatchTest, BassSwapsHardAtTheMiddle) {
     }
 }
 
+TEST(BeatmatchTest, StemMixNeverPlaysTwoVocalsTogether) {
+    for (double p = 0.0; p <= 1.0001; p += 0.01) {
+        const auto s = beatmatch::stemBlend(p);
+        EXPECT_TRUE(s.fromVocals < 1e-9 || s.toVocals < 1e-9) << p;
+        // Drums and bass swap hard, never both, never neither.
+        EXPECT_NE(s.fromDrums > 0.5, s.toDrums > 0.5) << p;
+        EXPECT_EQ(s.fromDrums, s.fromBass) << p;
+        EXPECT_EQ(s.toDrums, s.toBass) << p;
+    }
+}
+
+TEST(BeatmatchTest, StemMixStartsAndEndsClean) {
+    const auto start = beatmatch::stemBlend(0.0);
+    EXPECT_DOUBLE_EQ(start.fromVocals, 1.0);
+    EXPECT_DOUBLE_EQ(start.fromInstrumental, 1.0);
+    EXPECT_DOUBLE_EQ(start.fromDrums, 1.0);
+    EXPECT_DOUBLE_EQ(start.toVocals, 0.0);
+    EXPECT_DOUBLE_EQ(start.toInstrumental, 0.0);
+    EXPECT_DOUBLE_EQ(start.toDrums, 0.0);
+    const auto middle = beatmatch::stemBlend(0.5);
+    EXPECT_NEAR(middle.fromVocals, 0.0, 1e-9); // old vocals gone by the swap
+    EXPECT_DOUBLE_EQ(middle.toInstrumental, 1.0);
+    EXPECT_DOUBLE_EQ(middle.toDrums, 1.0);
+    EXPECT_DOUBLE_EQ(middle.fromDrums, 0.0);
+    const auto end = beatmatch::stemBlend(1.0);
+    EXPECT_NEAR(end.fromInstrumental, 0.0, 1e-9);
+    EXPECT_NEAR(end.toVocals, 1.0, 1e-9);
+    EXPECT_DOUBLE_EQ(end.toBass, 1.0);
+}
+
+TEST(BeatmatchTest, StemMixFadesSmoothly) {
+    // No part jumps by more than a small step between nearby points,
+    // except drums and bass at the swap.
+    const double step = 0.01;
+    for (double p = step; p <= 1.0001; p += step) {
+        const auto a = beatmatch::stemBlend(p - step);
+        const auto b = beatmatch::stemBlend(p);
+        EXPECT_LT(std::fabs(a.fromVocals - b.fromVocals), 0.04) << p;
+        EXPECT_LT(std::fabs(a.toVocals - b.toVocals), 0.04) << p;
+        EXPECT_LT(std::fabs(a.fromInstrumental - b.fromInstrumental), 0.04) << p;
+        EXPECT_LT(std::fabs(a.toInstrumental - b.toInstrumental), 0.04) << p;
+    }
+}
+
 TEST(BeatmatchTest, EqBlendsMidsAndHighsGradually) {
     using beatmatch::eqBlend;
     using beatmatch::kEqBlendFloor;

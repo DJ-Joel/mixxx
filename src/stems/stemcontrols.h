@@ -22,7 +22,8 @@ class PlayerManager;
 /// stem_instrumental (bass + other) and stem_drums - that drive the four
 /// part volumes of a song playing from its stem file ([ChannelN_StemM],
 /// volume), plus stem_echo_out: the vocals leave with an echo that rings
-/// out. [Stems],vocal_swap fades the vocals from the louder playing deck to
+/// out. stem_bass (not on screen, for Auto DJ) scales the bass inside the
+/// instrumental. [Stems],vocal_swap fades the vocals from the louder playing deck to
 /// the other one over 4 bars. All are controls, so a MIDI controller can use
 /// them too. Songs without parts: the controls do nothing (stem_ready 0).
 class StemControls : public QObject {
@@ -46,6 +47,9 @@ class StemControls : public QObject {
         std::unique_ptr<ControlPotmeter> pVocals;
         std::unique_ptr<ControlPotmeter> pInstrumental;
         std::unique_ptr<ControlPotmeter> pDrums;
+        /// The bass inside the instrumental (1 = with it). Not on screen:
+        /// Auto DJ uses it to swap drums + bass apart from the synths.
+        std::unique_ptr<ControlPotmeter> pBass;
         std::unique_ptr<ControlPushButton> pVocalsKill;
         std::unique_ptr<ControlPushButton> pInstrumentalKill;
         std::unique_ptr<ControlPushButton> pDrumsKill;

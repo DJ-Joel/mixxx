@@ -81,6 +81,32 @@ void writeControl(const ConfigKey& key, double value) {
     }
 }
 
+// Auto DJ 2.0 plus Video Mixing: stem mixes. The deck's stem controls
+// (src/stems/stemcontrols.*) set the part volumes of a song that plays from
+// its stem file; [ChannelN],stem_ready says whether it does.
+bool stemMixesEnabled(const UserSettingsPointer& pConfig) {
+    return pConfig->getValue(ConfigKey(QStringLiteral("[Stems]"), QStringLiteral("AutoDJStems")), true);
+}
+
+bool stemsReady(const QString& deckGroup) {
+    return readControl(ConfigKey(deckGroup, QStringLiteral("stem_ready"))) > 0.5;
+}
+
+double readStem(const QString& deckGroup, const char* pItem, double fallback) {
+    const double value = readControl(ConfigKey(deckGroup, QString::fromLatin1(pItem)));
+    return std::isnan(value) ? fallback : value;
+}
+
+void writeStem(const QString& deckGroup, const char* pItem, double value) {
+    writeControl(ConfigKey(deckGroup, QString::fromLatin1(pItem)), value);
+}
+
+// ECHO OUT on the outgoing vocals (a push button: press and release).
+void stemEchoOut(const QString& deckGroup) {
+    writeStem(deckGroup, "stem_echo_out", 1.0);
+    writeStem(deckGroup, "stem_echo_out", 0.0);
+}
+
 // Auto DJ 2.0 plus Video Mixing: every library track with a known key and BPM whose file
 // still exists, as bridge candidates. Read straight from the database so
 // no Track objects are loaded for the whole library.
@@ -653,6 +679,12 @@ void AutoDJProcessor::beginSmartTransition(
     // tempo steady during this mix; it is reset once it has faded out.
     m_glide.pDeck = nullptr;
     if (!isBeatmatchEnabled() || !pFromDeck || !pToDeck) {
+        // No beatmatch: the outgoing vocals leave with an echo, which
+        // covers the change.
+        if (pFromDeck && pToDeck && stemMixesEnabled(m_pConfig) && stemsReady(pFromDeck->group)) {
+            kLogger.info() << "Stem mix" << pFromDeck->group << ": echo out of the vocals";
+            stemEchoOut(pFromDeck->group);
+        }
         return;
     }
     m_smart = SmartTransition();
@@ -769,6 +801,43 @@ void AutoDJProcessor::beginSmartTransition(
                        << "(" << toTrackBpm << "vs" << fromBpm
                        << "BPM): plain crossfade";
     }
+    // Stem mix: when both songs have their parts, the parts cross over
+    // instead of the EQ. Not beatmatched: the outgoing vocals echo out.
+    if (stemMixesEnabled(m_pConfig)) {
+        const bool fromParts = stemsReady(pFromDeck->group);
+        const bool toParts = stemsReady(pToDeck->group);
+        if (m_smart.beatmatched && fromParts && toParts) {
+            m_smart.stems = true;
+            auto save = [](const QString& g) {
+                SmartTransition::StemLevels l;
+                l.vocals = readStem(g, "stem_vocals", 1.0);
+                l.instrumental = readStem(g, "stem_instrumental", 1.0);
+                l.drums = readStem(g, "stem_drums", 1.0);
+                l.bass = readStem(g, "stem_bass", 1.0);
+                l.vocalsKill = readStem(g, "stem_vocals_kill", 0.0);
+                l.instrumentalKill = readStem(g, "stem_instrumental_kill", 0.0);
+                l.drumsKill = readStem(g, "stem_drums_kill", 0.0);
+                return l;
+            };
+            m_smart.fromStems = save(pFromDeck->group);
+            m_smart.toStems = save(pToDeck->group);
+            // During the mix the knobs carry the levels (kills off).
+            for (const QString& g : {pFromDeck->group, pToDeck->group}) {
+                writeStem(g, "stem_vocals_kill", 0.0);
+                writeStem(g, "stem_instrumental_kill", 0.0);
+                writeStem(g, "stem_drums_kill", 0.0);
+            }
+            kLogger.info() << "Stem mix" << pFromDeck->group << "->" << pToDeck->group
+                           << ": instrumental first, drums + bass swap in the middle, "
+                              "vocals never together";
+        } else if (!m_smart.beatmatched && fromParts) {
+            kLogger.info() << "Stem mix" << pFromDeck->group << ": echo out of the vocals";
+            stemEchoOut(pFromDeck->group);
+        } else if (m_smart.beatmatched && (fromParts || toParts)) {
+            kLogger.info() << "No stem mix: only" << (fromParts ? "the outgoing" : "the incoming")
+                           << "song has its parts (EQ mix)";
+        }
+    }
     updateSmartTransition(0.0); // incoming bass starts cut
 }
 
@@ -788,12 +857,33 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
         return;
     }
     followBeats();
-    const beatmatch::BassState bass = beatmatch::bassSwap(progress);
-    if (!std::isnan(m_smart.fromLowKill)) {
-        writeControl(eqKillKey(m_smart.pFrom->group), bass.fromLowKilled ? 1.0 : 0.0);
-    }
-    if (!std::isnan(m_smart.toLowKill)) {
-        writeControl(eqKillKey(m_smart.pTo->group), bass.toLowKilled ? 1.0 : 0.0);
+    if (m_smart.stems) {
+        // The parts cross over (the EQ stays as the DJ set it).
+        const beatmatch::StemBlend b = beatmatch::stemBlend(progress);
+        auto level = [](double knob, double kill) {
+            return kill > 0.5 ? 0.0 : knob;
+        };
+        const auto& f = m_smart.fromStems;
+        const auto& t = m_smart.toStems;
+        const QString& from = m_smart.pFrom->group;
+        const QString& to = m_smart.pTo->group;
+        writeStem(from, "stem_vocals", level(f.vocals, f.vocalsKill) * b.fromVocals);
+        writeStem(from, "stem_instrumental", level(f.instrumental, f.instrumentalKill) * b.fromInstrumental);
+        writeStem(from, "stem_drums", level(f.drums, f.drumsKill) * b.fromDrums);
+        writeStem(from, "stem_bass", f.bass * b.fromBass);
+        writeStem(to, "stem_vocals", level(t.vocals, t.vocalsKill) * b.toVocals);
+        writeStem(to, "stem_instrumental", level(t.instrumental, t.instrumentalKill) * b.toInstrumental);
+        writeStem(to, "stem_drums", level(t.drums, t.drumsKill) * b.toDrums);
+        // The bass (inside the instrumental) swaps with the drums.
+        writeStem(to, "stem_bass", t.bass * b.toBass);
+    } else {
+        const beatmatch::BassState bass = beatmatch::bassSwap(progress);
+        if (!std::isnan(m_smart.fromLowKill)) {
+            writeControl(eqKillKey(m_smart.pFrom->group), bass.fromLowKilled ? 1.0 : 0.0);
+        }
+        if (!std::isnan(m_smart.toLowKill)) {
+            writeControl(eqKillKey(m_smart.pTo->group), bass.toLowKilled ? 1.0 : 0.0);
+        }
     }
     // Key morph. Written on every update, because switching key lock on
     // can reset the pitch in the engine a moment after we set it.
@@ -806,6 +896,9 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     }
     // Full EQ transition: the mids and highs cross over gradually, relative
     // to where the DJ had them (a missing control stays NaN = untouched).
+    if (m_smart.stems) {
+        return; // no EQ blend on top of a stem mix
+    }
     const beatmatch::EqBlend eq = beatmatch::eqBlend(progress);
     writeControl(eqGainKey(m_smart.pFrom->group, 2), m_smart.fromMid * eq.fromMidHigh);
     writeControl(eqGainKey(m_smart.pFrom->group, 3), m_smart.fromHigh * eq.fromMidHigh);
@@ -824,6 +917,21 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
     writeControl(eqGainKey(m_smart.pFrom->group, 3), m_smart.fromHigh);
     writeControl(eqGainKey(m_smart.pTo->group, 2), m_smart.toMid);
     writeControl(eqGainKey(m_smart.pTo->group, 3), m_smart.toHigh);
+    if (m_smart.stems) {
+        // The parts back as the DJ had them.
+        auto restore = [](const QString& g, const SmartTransition::StemLevels& l) {
+            writeStem(g, "stem_vocals", l.vocals);
+            writeStem(g, "stem_instrumental", l.instrumental);
+            writeStem(g, "stem_drums", l.drums);
+            writeStem(g, "stem_bass", l.bass);
+            writeStem(g, "stem_vocals_kill", l.vocalsKill);
+            writeStem(g, "stem_instrumental_kill", l.instrumentalKill);
+            writeStem(g, "stem_drums_kill", l.drumsKill);
+        };
+        restore(m_smart.pFrom->group, m_smart.fromStems);
+        restore(m_smart.pTo->group, m_smart.toStems);
+        kLogger.info() << "Stem mix" << m_smart.pTo->group << (completed ? "done" : "stopped");
+    }
     if (m_smart.beatLock) {
         kLogger.info() << "Beat lock" << m_smart.pTo->group << "done: ended at ratio"
                        << m_smart.toRatio << ", largest slip"

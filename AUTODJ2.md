@@ -488,8 +488,8 @@ installed next to a normal Mixxx:
 
 ### 4.17 Stems: splitting songs into parts
 
-Work in progress (steps 1-4 of 6 done: listening test, splitting engine,
-decks play the parts, DJ stem controls). Songs are split into
+Work in progress (steps 1-5 of 6 done: listening test, splitting engine,
+decks play the parts, DJ stem controls, Auto DJ stem mixes). Songs are split into
 four parts - drums, bass, other (synths, guitars, melody) and vocals - by
 Demucs v4 ("htdemucs", Meta, MIT license), the model the Mixxx project
 converted to ONNX (github.com/mixxxdj/demucs).
@@ -549,7 +549,23 @@ converted to ONNX (github.com/mixxxdj/demucs).
   `stem_instrumental`, `stem_drums` (0-1), `stem_vocals_kill`,
   `stem_instrumental_kill`, `stem_drums_kill`, `stem_echo_out`,
   `stem_echo_out_active`, `stem_ready`; `[Stems]` `vocal_swap`,
-  `vocal_swap_active`. The 4-deck mixer does not show them yet.
+  `vocal_swap_active`, and `stem_bass` (not on screen: the bass inside the
+  instrumental, used by Auto DJ). The 4-deck mixer does not show them yet.
+- **Auto DJ stem mixes** (`AutoDJProcessor::beginSmartTransition` /
+  `updateSmartTransition`, `beatmatch::stemBlend`, unit tested): when a mix
+  is beatmatched and both songs have their parts, the parts cross over
+  instead of the EQ: first half the incoming instrumental (synths, no bass)
+  rises while the outgoing vocals fall; in the middle drums + bass swap hard
+  on the same beat as the bass swap; second half the outgoing instrumental
+  falls while the incoming vocals rise. Two vocals never play together and
+  two basslines or kicks never clash. The EQ is left as the DJ set it; the
+  stem knobs move on screen and are put back afterwards (the DJ's own part
+  levels and kills are kept as the starting point). When a mix is not
+  beatmatched (quick switch or plain fade) and the outgoing song has its
+  parts, its vocals leave with ECHO OUT, which covers the change. Songs
+  without parts: the EQ mix as before. Switch: Auto DJ > Stems > "Use the
+  parts in Auto DJ mixes" (`[Stems],AutoDJStems`, on by default).
+  Limit: Auto DJ does not yet know where a song has singing.
 - **How:** the song is read exactly as the deck plays it, converted to
   44100 Hz if needed (windowed-sinc resampler), normalised, and cut into
   7.8 s pieces that overlap by a quarter; the model's answers are blended
@@ -628,7 +644,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*
 ```
 
-147 tests. The energy and grid-check tests use synthetic drum loops (steady,
+150 tests. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -718,3 +734,7 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     echo that rings out) and VOCAL SWAP (vocals move to the other deck over
     4 bars on the beat). The first-sound check is skipped for songs playing
     from their parts (false "first sound has been moved" warnings).
+35. **Stems, step 5: Auto DJ stem mixes.** Beatmatched mixes of two songs
+    with parts: instrumental first, drums + bass swap in the middle, vocals
+    never together (stem knobs move, restored afterwards). Unmatched mixes:
+    the outgoing vocals echo out. Switch in Auto DJ > Stems.
