@@ -51,6 +51,7 @@
 #include "qml/qmlsoundmanagerproxy.h"
 #endif
 #include "soundio/soundmanager.h"
+#include "stems/stemcontrols.h"
 #include "sources/soundsourceproxy.h"
 #include "util/clipboard.h"
 #include "util/db/dbconnectionpooled.h"
@@ -592,6 +593,11 @@ void CoreServices::initialize(QApplication* pApp) {
 
     m_pEffectsManager->setup();
 
+    // Auto DJ 2.0 plus Video Mixing: vocals / instrumental / drums knobs,
+    // echo out and vocal swap for songs playing from their stem files.
+    m_pStemControls = std::make_unique<StemControls>(
+            pConfig, m_pEffectsManager.get(), m_pPlayerManager.get());
+
 #ifdef __VINYLCONTROL__
     m_pVCManager->init();
 #endif
@@ -961,6 +967,7 @@ void CoreServices::finalize() {
     // PlayerManager depends on Engine, SoundManager, VinylControlManager, and Config
     // The player manager has to be deleted before the library to ensure
     // that all modified track metadata of loaded tracks is saved.
+    m_pStemControls.reset(); // uses the PlayerManager and the EffectsManager
     qDebug() << t.elapsed(false).debugMillisWithUnit() << "deleting PlayerManager";
     CLEAR_AND_CHECK_DELETED(m_pPlayerManager);
 

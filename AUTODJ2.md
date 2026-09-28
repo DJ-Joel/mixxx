@@ -488,8 +488,8 @@ installed next to a normal Mixxx:
 
 ### 4.17 Stems: splitting songs into parts
 
-Work in progress (steps 1-3 of 6 done: listening test, splitting engine,
-decks play the parts). Songs are split into
+Work in progress (steps 1-4 of 6 done: listening test, splitting engine,
+decks play the parts, DJ stem controls). Songs are split into
 four parts - drums, bass, other (synths, guitars, melody) and vocals - by
 Demucs v4 ("htdemucs", Meta, MIT license), the model the Mixxx project
 converted to ONNX (github.com/mixxxdj/demucs).
@@ -531,6 +531,25 @@ converted to ONNX (github.com/mixxxdj/demucs).
   never blocks the others. Mono songs are split (the one channel on both
   sides); songs that are not 44.1 or 48 kHz are skipped (the Windows AAC
   encoder only takes those rates, and the parts must line up with the song).
+- **DJ stem controls** (`src/stems/stemcontrols.*`, LateNight 2-deck
+  mixer row `mixer/stem_controls.xml`, `mixer/stem_knob.xml`): per deck
+  three knobs - VOC (vocals), INST (bass + other) and DRUM - whose names
+  are kill buttons (short click toggles, hold = kill while held). They set
+  the four part volumes (`[ChannelN_StemM],volume`) only when turned, so the
+  stem panel's own four knobs keep working too; the engine ramps every gain
+  change, so there are no clicks. **ECHO OUT** puts Mixxx's Echo on the
+  vocals' own quick-effect slot (send fully open), cuts the vocals on the
+  next beat and lets the echo ring out for 4 bars, then puts the DJ's own
+  vocal effect back (the part's gain is applied before its effect, so the
+  tail keeps sounding). **VOCAL SWAP** (middle of the mixer) fades the
+  vocals of the louder playing deck out and of the other playing deck in
+  over 4 bars, starting on the next beat, on an equal-power curve. A new
+  song resets the deck's controls; songs without parts ignore them
+  (`stem_ready` = 0). Controls for MIDI mapping: `[ChannelN]` `stem_vocals`,
+  `stem_instrumental`, `stem_drums` (0-1), `stem_vocals_kill`,
+  `stem_instrumental_kill`, `stem_drums_kill`, `stem_echo_out`,
+  `stem_echo_out_active`, `stem_ready`; `[Stems]` `vocal_swap`,
+  `vocal_swap_active`. The 4-deck mixer does not show them yet.
 - **How:** the song is read exactly as the deck plays it, converted to
   44100 Hz if needed (windowed-sinc resampler), normalised, and cut into
   7.8 s pieces that overlap by a quarter; the model's answers are blended
@@ -694,3 +713,8 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     for splitting many songs in the background with time and space check,
     progress and stop. Made on this computer first, time limit per song,
     mono songs supported, unusual sample rates skipped with a reason.
+34. **Stems, step 4: DJ stem controls.** VOC / INST / DRUM knobs with kill
+    buttons per deck in the LateNight mixer, ECHO OUT (vocals leave with an
+    echo that rings out) and VOCAL SWAP (vocals move to the other deck over
+    4 bars on the beat). The first-sound check is skipped for songs playing
+    from their parts (false "first sound has been moved" warnings).

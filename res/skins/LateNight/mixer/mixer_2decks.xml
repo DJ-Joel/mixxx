@@ -79,6 +79,61 @@
 
         </Children>
       </WidgetGroup><!-- /Channel controls -->
+      <!-- Auto DJ 2.0 plus Video Mixing: stem controls (vocals / instrumental /
+           drums, echo out) per deck and VOCAL SWAP in the middle -->
+      <WidgetGroup><Size>1min,4f</Size></WidgetGroup>
+      <WidgetGroup>
+        <ObjectName>AlignHCenter</ObjectName>
+        <SizePolicy>min,min</SizePolicy>
+        <Layout>horizontal</Layout>
+        <Children>
+          <Template src="skins:LateNight/mixer/stem_controls.xml">
+            <SetVariable name="ChanNum">1</SetVariable>
+          </Template>
+          <WidgetGroup><Size>4f,1min</Size></WidgetGroup>
+          <WidgetGroup>
+            <Layout>vertical</Layout>
+            <SizePolicy>min,min</SizePolicy>
+            <Children>
+              <WidgetGroup><Size>1min,6f</Size></WidgetGroup>
+              <PushButton>
+                <ObjectName>StemVocalSwapButton</ObjectName>
+                <Tooltip>VOCAL SWAP: over 4 bars the vocals fade out of the louder playing deck and into the other playing deck (both songs need their parts).</Tooltip>
+                <Size>64f,40f</Size>
+                <NumberStates>2</NumberStates>
+                <RightClickIsPushButton>false</RightClickIsPushButton>
+                <State>
+                  <Number>0</Number>
+                  <Text>VOCAL&#10;SWAP</Text>
+                  <Alignment>center</Alignment>
+                  <Unpressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_square.svg</Unpressed>
+                  <Pressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_square_active.svg</Pressed>
+                </State>
+                <State>
+                  <Number>1</Number>
+                  <Text>VOCAL&#10;SWAP</Text>
+                  <Alignment>center</Alignment>
+                  <Unpressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_square_active.svg</Unpressed>
+                  <Pressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_square_active.svg</Pressed>
+                </State>
+                <Connection>
+                  <ConfigKey>[Stems],vocal_swap</ConfigKey>
+                  <ButtonState>LeftButton</ButtonState>
+                  <ConnectValueToWidget>false</ConnectValueToWidget>
+                </Connection>
+                <Connection>
+                  <ConfigKey>[Stems],vocal_swap_active</ConfigKey>
+                  <ConnectValueFromWidget>false</ConnectValueFromWidget>
+                </Connection>
+              </PushButton>
+            </Children>
+          </WidgetGroup>
+          <WidgetGroup><Size>4f,1min</Size></WidgetGroup>
+          <Template src="skins:LateNight/mixer/stem_controls.xml">
+            <SetVariable name="ChanNum">2</SetVariable>
+          </Template>
+        </Children>
+      </WidgetGroup><!-- /Stem controls -->
 
       <WidgetGroup><!-- Crossfader + Channel1/2 assign switches -->
         <ObjectName>CrossfaderAndSwitches2Decks</ObjectName>

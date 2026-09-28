@@ -1,0 +1,79 @@
+<!DOCTYPE template>
+<!--
+  Auto DJ 2.0 plus Video Mixing: the simple stem controls of one deck.
+  Variables:
+    ChanNum : deck number
+  Three knobs (vocals, instrumental = bass + other, drums); the name under
+  each knob is its kill button. ECHO OUT takes the vocals away with an echo.
+  They work on songs that play from their stem file (parts ready).
+-->
+<Template>
+  <SetVariable name="Group">[Channel<Variable name="ChanNum"/>]</SetVariable>
+  <WidgetGroup>
+    <ObjectName>StemControls</ObjectName>
+    <Layout>vertical</Layout>
+    <SizePolicy>min,min</SizePolicy>
+    <Children>
+      <WidgetGroup>
+        <Layout>horizontal</Layout>
+        <SizePolicy>min,min</SizePolicy>
+        <Children>
+          <Template src="skins:LateNight/mixer/stem_knob.xml">
+            <SetVariable name="Part">vocals</SetVariable>
+            <SetVariable name="Label">VOC</SetVariable>
+            <SetVariable name="KnobColor">red</SetVariable>
+            <SetVariable name="PartColor">#FF00FF</SetVariable>
+            <SetVariable name="Tip">Vocals of this song (needs its parts: Stem Split). Click the name to kill the vocals.</SetVariable>
+          </Template>
+          <WidgetGroup><Size>2f,1min</Size></WidgetGroup>
+          <Template src="skins:LateNight/mixer/stem_knob.xml">
+            <SetVariable name="Part">instrumental</SetVariable>
+            <SetVariable name="Label">INST</SetVariable>
+            <SetVariable name="KnobColor">blue</SetVariable>
+            <SetVariable name="PartColor">#00E8E8</SetVariable>
+            <SetVariable name="Tip">Instrumental of this song: bass, synths, guitars (needs its parts: Stem Split). Click the name to kill it.</SetVariable>
+          </Template>
+          <WidgetGroup><Size>2f,1min</Size></WidgetGroup>
+          <Template src="skins:LateNight/mixer/stem_knob.xml">
+            <SetVariable name="Part">drums</SetVariable>
+            <SetVariable name="Label">DRUM</SetVariable>
+            <SetVariable name="KnobColor">green</SetVariable>
+            <SetVariable name="PartColor">#FD4A4A</SetVariable>
+            <SetVariable name="Tip">Drums of this song (needs its parts: Stem Split). Click the name to kill the drums.</SetVariable>
+          </Template>
+        </Children>
+      </WidgetGroup>
+      <WidgetGroup><Size>1min,2f</Size></WidgetGroup>
+      <PushButton>
+        <ObjectName>StemEchoOutButton</ObjectName>
+        <Tooltip>ECHO OUT: on the next beat the vocals leave with an echo that rings out for 4 bars (click the VOC name to bring them back).</Tooltip>
+        <Size>100f,18f</Size>
+        <NumberStates>2</NumberStates>
+        <RightClickIsPushButton>false</RightClickIsPushButton>
+        <State>
+          <Number>0</Number>
+          <Text>ECHO OUT</Text>
+          <Alignment>center</Alignment>
+          <Unpressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_wide.svg</Unpressed>
+          <Pressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_wide_active.svg</Pressed>
+        </State>
+        <State>
+          <Number>1</Number>
+          <Text>ECHO OUT</Text>
+          <Alignment>center</Alignment>
+          <Unpressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_wide_active.svg</Unpressed>
+          <Pressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_wide_active.svg</Pressed>
+        </State>
+        <Connection>
+          <ConfigKey><Variable name="Group"/>,stem_echo_out</ConfigKey>
+          <ButtonState>LeftButton</ButtonState>
+          <ConnectValueToWidget>false</ConnectValueToWidget>
+        </Connection>
+        <Connection>
+          <ConfigKey><Variable name="Group"/>,stem_echo_out_active</ConfigKey>
+          <ConnectValueFromWidget>false</ConnectValueFromWidget>
+        </Connection>
+      </PushButton>
+    </Children>
+  </WidgetGroup>
+</Template>

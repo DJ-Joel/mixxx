@@ -1426,6 +1426,7 @@ add_library(
   src/library/autodj/smart/phrasealign.cpp
   src/video/videomix.cpp
   src/stems/stemcache.cpp
+  src/stems/stemcontrols.cpp
   src/stems/stemengine.cpp
   src/stems/stemfilewriter.cpp
   src/stems/stemmath.cpp

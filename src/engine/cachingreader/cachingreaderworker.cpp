@@ -335,6 +335,13 @@ void CachingReaderWorker::loadTrack(const TrackPointer& pTrack) {
     if (pN60dBSound) {
         m_firstSoundFrameToVerify = pN60dBSound->getPosition();
     }
+#ifdef __STEM__
+    if (playsFromStems) {
+        // The parts are re-encoded, so the exact first-sound sample check
+        // does not apply (the timing itself matches the song: checked).
+        m_firstSoundFrameToVerify = mixxx::audio::FramePos();
+    }
+#endif
 
     // The engine must not request any chunks before receiving the
     // trackLoaded() signal

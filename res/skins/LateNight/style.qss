@@ -228,6 +228,25 @@ WPushButton,
   font-size: 11px;
 }
 
+/* Auto DJ 2.0 plus Video Mixing: stem controls in the mixer */
+#StemKillButton,
+#StemEchoOutButton,
+#StemVocalSwapButton {
+  font-size: 9px;
+  padding: 0px;
+}
+/* light text when off, dark text on the lit (on) background */
+WPushButton#StemKillButton[displayValue="0"],
+WPushButton#StemEchoOutButton[displayValue="0"],
+WPushButton#StemVocalSwapButton[displayValue="0"] {
+  color: #D2D2D2;
+}
+WPushButton#StemKillButton[displayValue="1"],
+WPushButton#StemEchoOutButton[displayValue="1"],
+WPushButton#StemVocalSwapButton[displayValue="1"] {
+  color: #000;
+}
+
 #RateRangePrefix,
 #RecDuration[highlight="2"],
 #SamplerTitleMini,

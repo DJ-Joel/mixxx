@@ -1,0 +1,60 @@
+<!DOCTYPE template>
+<!--
+  Auto DJ 2.0 plus Video Mixing: one stem knob with its name as kill button.
+  Variables:
+    Group     : deck group
+    Part      : vocals / instrumental / drums
+    Label     : short name shown under the knob
+    KnobColor : knob indicator colour (red, blue, green, orange)
+    PartColor : arc colour (the part's colour in the stem panel)
+    Tip       : tooltip
+-->
+<Template>
+  <WidgetGroup>
+    <Layout>vertical</Layout>
+    <SizePolicy>min,min</SizePolicy>
+    <Children>
+      <KnobComposed>
+        <Tooltip><Variable name="Tip"/></Tooltip>
+        <Size>32f,28f</Size>
+        <Knob>skins:LateNight/<Variable name="KnobScheme"/>/knobs/knob_indicator_small_<Variable name="KnobColor"/>.svg</Knob>
+        <BackPath>skins:LateNight/<Variable name="KnobScheme"/>/knobs/knob_bg_small.svg</BackPath>
+        <MinAngle><Variable name="PotiMinAngle"/></MinAngle>
+        <MaxAngle><Variable name="PotiMaxAngle"/></MaxAngle>
+        <ArcRadius><Variable name="ArcRadiusSmall"/></ArcRadius>
+        <ArcUnipolar>true</ArcUnipolar>
+        <ArcColor><Variable name="PartColor"/></ArcColor>
+        <ArcThickness>2</ArcThickness>
+        <ArcRoundCaps><Variable name="ArcRoundCaps"/></ArcRoundCaps>
+        <Connection>
+          <ConfigKey><Variable name="Group"/>,stem_<Variable name="Part"/></ConfigKey>
+        </Connection>
+      </KnobComposed>
+      <PushButton>
+        <ObjectName>StemKillButton</ObjectName>
+        <Tooltip><Variable name="Tip"/></Tooltip>
+        <Size>32f,16f</Size>
+        <NumberStates>2</NumberStates>
+        <RightClickIsPushButton>false</RightClickIsPushButton>
+        <State>
+          <Number>0</Number>
+          <Text><Variable name="Label"/></Text>
+          <Alignment>center</Alignment>
+          <Unpressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_medium.svg</Unpressed>
+          <Pressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_medium_active.svg</Pressed>
+        </State>
+        <State>
+          <Number>1</Number>
+          <Text><Variable name="Label"/></Text>
+          <Alignment>center</Alignment>
+          <Unpressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_medium_active.svg</Unpressed>
+          <Pressed scalemode="STRETCH">skins:LateNight/<Variable name="BtnScheme"/>/buttons/btn_<Variable name="BtnType"/>_medium_active.svg</Pressed>
+        </State>
+        <Connection>
+          <ConfigKey><Variable name="Group"/>,stem_<Variable name="Part"/>_kill</ConfigKey>
+          <ButtonState>LeftButton</ButtonState>
+        </Connection>
+      </PushButton>
+    </Children>
+  </WidgetGroup>
+</Template>
