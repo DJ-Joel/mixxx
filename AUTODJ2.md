@@ -372,19 +372,19 @@ the middle of a phrase sounds wrong even when the beats match.
 `phrasealign::plan()`:
 
 - counts phrases from **beat 1 of the bar**: Mixxx's grid has no downbeat,
-  so the analysis finds it (`src/library/autodj/smart/downbeat.*`, unit
-  tested). Most of this music has a kick on every beat, but the bass note
-  and the chords usually change on beat 1 and it is hit harder: for each of
-  the four places in the bar those changes are added up over the whole
-  song (bass and chord pitch profiles from a small FFT, and the onset
-  strength). The winner is used only when it is clear ("clear by" 0.6 or
-  more), holds in both halves of the song, and stays the same with the beat
-  lines moved 30-60 ms earlier or later; otherwise the grid's first line
-  stays beat 1. Stored per grid in `autodj_downbeat` (found again when the
-  grid changes); Auto DJ's grid (`AutoDJProcessor::gridFor`) then starts on
-  beat 1. The beat grid itself is not changed. Checked in two blind
-  listening tests: every song found this clearly was right by ear;
-  uncertain ones (0.2-0.45) included wrong answers and are left alone;
+  so beat 1 is where the main beat kicks in = the song's **Intro End
+  marker** (the DJ's, or the one the analysis puts on the first kick;
+  `AnalyzerEnergy::beatOnePhase`). Auto DJ's grid (`AutoDJProcessor::gridFor`)
+  starts there; songs without an Intro End marker keep the grid's first
+  line. The beat grid itself is not changed. Moving the marker moves beat
+  1. A chord/bass downbeat finder (`src/library/autodj/smart/downbeat.*`,
+  unit tested) is run by the analysis and only logged: in blind listening
+  tests it was right on 2 of 3 songs, and it disagreed with the marker on
+  about half the library;
+- shows the bars on the waveform: white flags at the top and bottom edge at
+  every beat 1 and amber flags plus a thin line at every 8-bar phrase,
+  drawn on top of the waveform (`WaveformRenderDownbeat`, accelerated
+  waveforms; skin colours `DownbeatColor` / `PhraseColor`);
 - picks, on the outgoing song, the **last** phrase start from which a whole
   fade still ends before its energy drops (Outro Start marker, or the end of
   the body);
@@ -860,9 +860,11 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     pushed good mixes out of line. Tempo planning ignores wrong beats in a
     fade-out. Stem Split: a song removed from the library is no longer
     split, and songs over 20 minutes (DJ mixes) are only split on their own.
-39. **Beat 1 of the bar.** The analysis finds the downbeat from bass and
-    chord changes and harder hits, and Auto DJ counts bars and phrases from
-    it when it is clear and steady (two blind listening tests). The beat
+39. **Beat 1 of the bar.** Auto DJ counts bars and phrases from where the
+    main beat kicks in (the Intro End marker), and the waveforms show beat 1
+    of every bar and every phrase as flags. A chord/bass downbeat finder was
+    tried and checked in blind listening tests; not reliable enough, it is
+    only logged. The beat
     lock pauses where a beat map goes wrong (a fade-out read as a much
     faster tempo had pushed a mix half a beat apart) and holds the steady
     tempos together until the beat lines are good again.

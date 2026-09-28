@@ -1634,22 +1634,18 @@ phrasealign::Grid AutoDJProcessor::gridFor(const TrackPointer& pTrack) const {
             !m_pTrackCollectionManager->internalCollection()) {
         return grid;
     }
-    double bpm = 0.0;
-    double firstBeatSec = 0.0;
-    if (!AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec)) {
-        return grid;
-    }
-    const auto found = EnergyStore::loadDownbeat(
-            m_pTrackCollectionManager->internalCollection()->database(), pTrack->getId());
-    if (!found || !found->sure || found->phase <= 0 || !found->isFor(bpm, firstBeatSec)) {
-        return grid; // the grid's first line is beat 1, or not sure
+    // Beat 1 = where the main beat kicks in (the Intro End marker).
+    bool known = false;
+    const int phase = AnalyzerEnergy::beatOnePhase(pTrack, &known);
+    if (!known || phase <= 0) {
+        return grid; // the grid's first line is beat 1
     }
     if (grid.isMap()) {
         const phrasealign::Grid moved =
-                phrasealign::Grid::fromBeats(downbeat::fromBeatOne(grid.beats, found->phase));
+                phrasealign::Grid::fromBeats(downbeat::fromBeatOne(grid.beats, phase));
         return moved.isValid() ? moved : grid;
     }
-    grid.firstBeatSec += found->phase * grid.beatSec;
+    grid.firstBeatSec += phase * grid.beatSec;
     return grid;
 }
 

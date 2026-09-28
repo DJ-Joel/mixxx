@@ -268,6 +268,31 @@ void AnalyzerEnergy::cleanup() {
     m_mono.clear();
 }
 
+// static
+int AnalyzerEnergy::beatOnePhase(const TrackPointer& pTrack, bool* pKnown) {
+    *pKnown = false;
+    if (!pTrack) {
+        return 0;
+    }
+    const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
+    const mixxx::audio::FramePos introEnd =
+            pIntro ? pIntro->getEndPosition() : mixxx::audio::kInvalidFramePos;
+    const double sampleRate = pTrack->getSampleRate().value();
+    if (!introEnd.isValid() || !(sampleRate > 0.0)) {
+        return 0;
+    }
+    const phrasealign::Grid grid = beatGrid(pTrack);
+    if (!grid.isValid()) {
+        return 0;
+    }
+    const long beat = std::lround(grid.beatAt(introEnd.value() / sampleRate));
+    if (beat < 0) {
+        return 0;
+    }
+    *pKnown = true;
+    return static_cast<int>(beat % 4);
+}
+
 void AnalyzerEnergy::storeDownbeat(const TrackPointer& pTrack) {
     EnergyStore::Downbeat stored;
     stored.version = EnergyStore::Downbeat::kVersion;
@@ -296,7 +321,6 @@ void AnalyzerEnergy::storeDownbeat(const TrackPointer& pTrack) {
                       << (found.phase == 0 ? QStringLiteral("grid's first beat")
                                            : QStringLiteral("grid's beat %1").arg(found.phase + 1))
                       << "(clear by" << found.margin << ")"
-                      << (!found.sure ? QStringLiteral("- not sure, bars stay as the grid has them")
-                                  : (found.phase == 0 ? QStringLiteral("- the grid is right")
-                                                      : QStringLiteral("- Auto DJ counts bars from there")));
+                      << (found.sure ? QStringLiteral("- clear") : QStringLiteral("- not sure"))
+                      << "(for information: Auto DJ counts bars from the Intro End marker)";
 }

@@ -21,6 +21,14 @@ class AnalyzerEnergy : public Analyzer {
     /// time of every beat when Mixxx made a beat map that bends with the
     /// music ("Assume constant tempo" off). Not valid if it has none.
     static phrasealign::Grid beatGrid(const TrackPointer& pTrack);
+    /// Beat 1 of the bar: the grid beat (index % 4, in beatGrid's count)
+    /// where the main beat kicks in = the Intro End marker (the DJ's, or the
+    /// one the analysis set at the first kick). *pKnown false (and 0) when
+    /// the song has no Intro End marker: then the grid's first line counts
+    /// as beat 1, as before. (The chord/bass finder in downbeat.h was right
+    /// on 2 of 3 songs checked by ear and disagreed with the marker on half
+    /// the library, so it is only logged.)
+    static int beatOnePhase(const TrackPointer& pTrack, bool* pKnown);
 
     explicit AnalyzerEnergy(const QSqlDatabase& dbConnection);
     ~AnalyzerEnergy() override = default;
