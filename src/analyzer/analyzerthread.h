@@ -18,6 +18,7 @@
 #include "util/workerthread.h"
 
 class AnalyzerWaveform;
+class AnalyzerStemDownbeat;
 
 enum AnalyzerModeFlags {
     None = 0x00,
@@ -123,6 +124,9 @@ class AnalyzerThread : public WorkerThread {
     /// m_analyzers), for a second pass over the song's stem file.
     AnalyzerWaveform* m_pWaveformAnalyzer = nullptr;
     int m_waveformIndex = -1;
+    /// Beat 1 found on the parts, in the same second pass.
+    AnalyzerStemDownbeat* m_pStemDownbeat = nullptr;
+    int m_stemDownbeatIndex = -1;
     void analyzeStemWaveform(const mixxx::AudioSource::OpenParams& openParams);
 
     mixxx::SampleBuffer m_sampleBuffer;

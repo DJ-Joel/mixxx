@@ -385,3 +385,39 @@ TEST(PhraseAlignTest, QuickSwitchCountsBendingBars) {
     EXPECT_NEAR(times[280], s->fromFadeBeginSec, 1e-9);
     EXPECT_NEAR(times[288], s->fromFadeEndSec, 1e-9);
 }
+
+// Bass swap on the beat: the bar line nearest the middle of the fade.
+TEST(PhraseAlignTest, BassSwapLandsOnTheMiddleBarLine) {
+    // A 16-bar fade from a phrase start at 32 s (120 BPM): the swap is 8
+    // bars (16 s) in, on a bar line.
+    EXPECT_NEAR(48.0, phrasealign::bassSwapSec(k120, 32.0, 64.0), 1e-9);
+    // A fade that does not start exactly on a beat (a late re-plan): still
+    // counted in whole bars from the nearest beat, so it hits a bar line.
+    EXPECT_NEAR(48.0, phrasealign::bassSwapSec(k120, 32.1, 64.1), 1e-9);
+    // 3 bars: half is 1.5 bars; whole bars, not past the middle: 1 bar in.
+    EXPECT_NEAR(34.0, phrasealign::bassSwapSec(k120, 32.0, 38.0), 1e-9);
+    // A 1-bar quick switch that starts a little after a beat: the beat
+    // nearest the middle (a real mix swapped at the very end before).
+    EXPECT_NEAR(33.0, phrasealign::bassSwapSec(k120, 32.1, 34.1), 1e-9);
+}
+
+TEST(PhraseAlignTest, BassSwapWithoutGridIsTheMiddle) {
+    EXPECT_NEAR(15.0, phrasealign::bassSwapSec(Grid{}, 10.0, 20.0), 1e-9);
+    // Too short for a whole bar each side: the beat nearest the middle.
+    EXPECT_NEAR(33.0, phrasealign::bassSwapSec(k120, 32.0, 34.0), 1e-9);
+}
+
+TEST(PhraseAlignTest, BassSwapFollowsABendingBeatMap) {
+    // 64 beats slowing down steadily: the swap is on beat 32 of the fade,
+    // which is later than the middle of the fade in seconds.
+    std::vector<double> beats;
+    double t = 0.0;
+    for (int i = 0; i <= 64; ++i) {
+        beats.push_back(t);
+        t += 0.45 + 0.1 * i / 64.0;
+    }
+    const Grid map = Grid::fromBeats(beats);
+    const double swap = phrasealign::bassSwapSec(map, beats[0], beats[64]);
+    EXPECT_NEAR(beats[32], swap, 1e-9);
+    EXPECT_LT(swap, 0.5 * (beats[0] + beats[64])); // slowing: beat 32 comes early
+}

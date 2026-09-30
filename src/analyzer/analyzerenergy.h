@@ -2,6 +2,7 @@
 
 #include <QSqlDatabase>
 #include <memory>
+#include <vector>
 
 #include "analyzer/analyzer.h"
 #include "analyzer/energycalculator.h"
@@ -27,8 +28,13 @@ class AnalyzerEnergy : public Analyzer {
     /// the song has no Intro End marker: then the grid's first line counts
     /// as beat 1, as before. (The chord/bass finder in downbeat.h was right
     /// on 2 of 3 songs checked by ear and disagreed with the marker on half
-    /// the library, so it is only logged.)
+    /// the library, so it is only logged.) Auto DJ also uses the finder's
+    /// answer from the song's stem parts, when sure, for a song without an
+    /// Intro End marker (AnalyzerStemDownbeat, AutoDJProcessor::gridFor).
     static int beatOnePhase(const TrackPointer& pTrack, bool* pKnown);
+    /// Every beat of the track's grid (seconds at its own speed), counted
+    /// from its first line, to the end of the track. Empty without a grid.
+    static std::vector<double> beatTimesOf(const TrackPointer& pTrack);
 
     explicit AnalyzerEnergy(const QSqlDatabase& dbConnection);
     ~AnalyzerEnergy() override = default;

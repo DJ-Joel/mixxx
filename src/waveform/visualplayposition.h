@@ -75,6 +75,14 @@ class VisualPlayPosition : public QObject {
     double determinePlayPosInLoopBoundries(
             const VisualPlayPositionData& data, const double& offset);
     double getEnginePlayPos();
+    /// Auto DJ 2.0 plus Video Mixing: the play position right now (fraction
+    /// of the track): the position of the last audio buffer the engine made,
+    /// moved on by the time since that buffer began (at most two buffers).
+    /// Every deck is stamped with the same buffer time, so two decks read
+    /// like this are compared at the same moment (the "playposition"
+    /// control is only updated 15 times a second, and each deck at its own
+    /// moment). False when there is no position (no track loaded).
+    bool getEnginePlayPosNow(double* pPlayPosition);
     void getTrackTime(double* pPlayPosition, double* pTempoTrackSeconds);
 
     // WARNING: Not thread safe. This function must only be called from the main

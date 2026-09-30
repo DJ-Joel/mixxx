@@ -1,5 +1,6 @@
 #include "library/autodj/smart/energystore.h"
 
+#include <QMutex>
 #include <QSet>
 #include <QStringList>
 #include <QSqlError>
@@ -9,8 +10,32 @@
 
 #include "library/queryutil.h"
 
+namespace {
+// Database connections whose tables are known to be ready. The check below
+// is about 8 statements, and every load and save used to run it again.
+QMutex s_readyMutex;
+QSet<QString> s_readyConnections;
+} // namespace
+
 // static
 bool EnergyStore::ensureTable(const QSqlDatabase& db) {
+    const QString connection = db.connectionName() + QChar('|') + db.databaseName();
+    {
+        const QMutexLocker lock(&s_readyMutex);
+        if (s_readyConnections.contains(connection)) {
+            return true;
+        }
+    }
+    if (!ensureTableNow(db)) {
+        return false;
+    }
+    const QMutexLocker lock(&s_readyMutex);
+    s_readyConnections.insert(connection);
+    return true;
+}
+
+// static
+bool EnergyStore::ensureTableNow(const QSqlDatabase& db) {
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral(
                 "CREATE TABLE IF NOT EXISTS autodj_energy ("
@@ -71,6 +96,19 @@ bool EnergyStore::ensureTable(const QSqlDatabase& db) {
     }
     if (!query.exec(QStringLiteral(
                 "CREATE TABLE IF NOT EXISTS autodj_downbeat ("
+                "track_id INTEGER PRIMARY KEY, "
+                "bpm REAL, "
+                "first_beat_sec REAL, "
+                "phase INTEGER, "
+                "margin REAL, "
+                "sure INTEGER, "
+                "version INTEGER)"))) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    // Beat 1 found on the stem parts (the same columns).
+    if (!query.exec(QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS autodj_downbeat_parts ("
                 "track_id INTEGER PRIMARY KEY, "
                 "bpm REAL, "
                 "first_beat_sec REAL, "
@@ -313,14 +351,16 @@ bool EnergyStore::Downbeat::isFor(double gridBpm, double gridFirstBeatSec) const
 
 // static
 std::optional<EnergyStore::Downbeat> EnergyStore::loadDownbeat(
-        const QSqlDatabase& db, TrackId trackId) {
+        const QSqlDatabase& db, TrackId trackId, bool fromParts) {
     if (!ensureTable(db)) {
         return std::nullopt;
     }
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
-            "SELECT bpm, first_beat_sec, phase, margin, sure, version FROM autodj_downbeat "
-            "WHERE track_id=:id"));
+            "SELECT bpm, first_beat_sec, phase, margin, sure, version FROM %1 "
+            "WHERE track_id=:id")
+                    .arg(fromParts ? QStringLiteral("autodj_downbeat_parts")
+                                   : QStringLiteral("autodj_downbeat")));
     query.bindValue(QStringLiteral(":id"), trackId.toVariant());
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
@@ -340,15 +380,18 @@ std::optional<EnergyStore::Downbeat> EnergyStore::loadDownbeat(
 }
 
 // static
-bool EnergyStore::saveDownbeat(const QSqlDatabase& db, TrackId trackId, const Downbeat& d) {
+bool EnergyStore::saveDownbeat(
+        const QSqlDatabase& db, TrackId trackId, const Downbeat& d, bool fromParts) {
     if (!ensureTable(db)) {
         return false;
     }
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
-            "INSERT OR REPLACE INTO autodj_downbeat "
+            "INSERT OR REPLACE INTO %1 "
             "(track_id, bpm, first_beat_sec, phase, margin, sure, version) "
-            "VALUES (:id, :bpm, :first, :phase, :margin, :sure, :version)"));
+            "VALUES (:id, :bpm, :first, :phase, :margin, :sure, :version)")
+                    .arg(fromParts ? QStringLiteral("autodj_downbeat_parts")
+                                   : QStringLiteral("autodj_downbeat")));
     query.bindValue(QStringLiteral(":id"), trackId.toVariant());
     query.bindValue(QStringLiteral(":bpm"), d.bpm);
     query.bindValue(QStringLiteral(":first"), d.firstBeatSec);

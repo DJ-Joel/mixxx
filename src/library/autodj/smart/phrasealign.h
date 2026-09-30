@@ -118,6 +118,12 @@ std::optional<Plan> plan(const Grid& from,
 /// (the incoming song starts on its first downbeat, so its full sound
 /// comes in gradually over the whole fade; its intro is skipped).
 
+/// The moment of the bass swap in a mix, in the outgoing track's seconds:
+/// the bar line nearest the middle of the fade, counted in whole bars from
+/// the fade start (a phrase start), so it lands on a beat even where a beat
+/// map bends. The middle of the fade when there is no grid.
+double bassSwapSec(const Grid& from, double fadeBeginSec, double fadeEndSec);
+
 /// Fade Now: the "must be over by" limit that makes plan() start the fade
 /// at the NEXT phrase start at least `minLeadSec` from now (time to cue the
 /// incoming track). The wait is at most one phrase (8 bars).

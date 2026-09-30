@@ -269,6 +269,25 @@ void AnalyzerEnergy::cleanup() {
 }
 
 // static
+std::vector<double> AnalyzerEnergy::beatTimesOf(const TrackPointer& pTrack) {
+    const phrasealign::Grid grid = beatGrid(pTrack);
+    if (!grid.isValid()) {
+        return {};
+    }
+    std::vector<double> beats = grid.beats;
+    if (!grid.isMap()) {
+        const double end = pTrack->getDuration();
+        for (int n = 0; n < 20000; ++n) {
+            const double t = grid.beatTime(n);
+            if (t > end) {
+                break;
+            }
+            beats.push_back(t);
+        }
+    }
+    return beats;
+}
+
 int AnalyzerEnergy::beatOnePhase(const TrackPointer& pTrack, bool* pKnown) {
     *pKnown = false;
     if (!pTrack) {
@@ -300,19 +319,7 @@ void AnalyzerEnergy::storeDownbeat(const TrackPointer& pTrack) {
         return; // no grid (yet): nothing to find
     }
     // The grid's own beats, counted from its first line.
-    const phrasealign::Grid grid = beatGrid(pTrack);
-    std::vector<double> beats = grid.beats;
-    if (!grid.isMap()) {
-        const double end = pTrack->getDuration();
-        for (int n = 0; n < 20000; ++n) {
-            const double t = grid.beatTime(n);
-            if (t > end) {
-                break;
-            }
-            beats.push_back(t);
-        }
-    }
-    const downbeat::Result found = downbeat::find(*m_pDownbeat, beats);
+    const downbeat::Result found = downbeat::find(*m_pDownbeat, beatTimesOf(pTrack));
     stored.phase = found.phase;
     stored.margin = found.margin;
     stored.sure = found.sure;

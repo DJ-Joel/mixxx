@@ -75,6 +75,12 @@ constexpr int kMinBeats = 64;
 /// @param beatTimes the grid's beats (seconds), beat index 0 = its first line
 Result find(const Features& features, const std::vector<double>& beatTimes);
 
+/// What the finder hears from a song's stem parts: the bass and the chords
+/// ("other") mixed to mono, without the drums and the singing that hide
+/// them in the whole song. `pParts` holds `frames` frames of stem audio: 8
+/// channels = 4 stereo parts in the order drums, bass, other, vocals.
+void bassAndChordsFromParts(const float* pParts, int frames, float* pMono);
+
 /// The same beats counted from beat 1: the first `phase` beats are dropped.
 std::vector<double> fromBeatOne(const std::vector<double>& beatTimes, int phase);
 

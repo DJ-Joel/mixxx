@@ -1,5 +1,7 @@
 #include "library/autodj/smart/bridgefinder.h"
 
+#include <cmath>
+
 #include <QRegularExpression>
 #include <algorithm>
 #include <random>
@@ -223,11 +225,19 @@ std::optional<TrackFeatures> BridgeFinder::pickStart(const QVector<TrackFeatures
         const QSet<QString>& excludeNames,
         bool calm,
         quint32 randomValue) {
+    // An opener Auto DJ can beatmatch out of (steady grid, not a whole DJ
+    // mix), unless there is none.
     QVector<const TrackFeatures*> usable;
-    for (const TrackFeatures& x : candidates) {
-        if (x.hasKey() && x.hasBpm() && !excludeIds.contains(x.id) &&
-                !excludeNames.contains(nameKey(x))) {
-            usable.append(&x);
+    for (const bool strict : {true, false}) {
+        for (const TrackFeatures& x : candidates) {
+            if (x.hasKey() && x.hasBpm() && !excludeIds.contains(x.id) &&
+                    !excludeNames.contains(nameKey(x)) &&
+                    (!strict || (!x.gridUnsteady && x.durationSec <= kFillMaxSongSec))) {
+                usable.append(&x);
+            }
+        }
+        if (!usable.isEmpty()) {
+            break;
         }
     }
     if (usable.isEmpty()) {
@@ -258,8 +268,13 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
         QSet<QString> excludeNames,
         int count,
         bool avoidSameArtist,
-        quint32 randomSeed) const {
+        quint32 randomSeed,
+        int keyMorphLimit,
+        QList<int>* pKeyShifts) const {
     QList<TrackFeatures> chain;
+    if (pKeyShifts) {
+        pKeyShifts->clear();
+    }
     std::mt19937 rng(randomSeed);
     TrackFeatures current = last;
     int sameKeyRun = 1; // tracks in a row in current's key, current included
@@ -271,53 +286,101 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
         return a.hasKey() && a.camelotNumber == b.camelotNumber &&
                 a.camelotMinor == b.camelotMinor;
     };
+    struct Option {
+        double cost;
+        const TrackFeatures* pTrack;
+        int keyShift; // key morph, semitones
+    };
     while (static_cast<int>(chain.size()) < count) {
-        QVector<std::pair<double, const TrackFeatures*>> options;
-        for (const TrackFeatures& x : candidates) {
-            if (!x.hasKey() || !x.hasBpm() || excludeIds.contains(x.id) ||
-                    (!x.displayName.isEmpty() && excludeNames.contains(nameKey(x)))) {
-                continue;
-            }
-            if (avoidSameArtist) {
-                const QString artist = artistKey(current);
-                if (!artist.isEmpty() && artist == artistKey(x)) {
+        QVector<Option> options;
+        // First only tracks Auto DJ can beatmatch (steady beat grid); a
+        // drifting one only when nothing else mixes.
+        const auto collect = [&](bool steadyOnly) {
+            for (const TrackFeatures& x : candidates) {
+                if (!x.hasKey() || !x.hasBpm() || excludeIds.contains(x.id) ||
+                        (!x.displayName.isEmpty() && excludeNames.contains(nameKey(x)))) {
                     continue;
                 }
+                if ((steadyOnly && x.gridUnsteady) || x.durationSec > kFillMaxSongSec) {
+                    continue; // drifting grid (first pass), or a whole DJ mix
+                }
+                if (avoidSameArtist) {
+                    const QString artist = artistKey(current);
+                    if (!artist.isEmpty() && artist == artistKey(x)) {
+                        continue;
+                    }
+                }
+                MixScore s = m_scorer.score(current, x);
+                int keyShift = 0;
+                if (!MixScorer::clashLabel(s).isEmpty()) {
+                    // Key morph: only in a beatmatched mix (steady grids,
+                    // no tempo clash), and only if it makes the keys fit.
+                    if (keyMorphLimit <= 0 || current.gridUnsteady || x.gridUnsteady ||
+                            s.tempoCost >= MixScorer::kClashTempoCost) {
+                        continue;
+                    }
+                    keyShift = MixScorer::keyMorphSemitones(current, x, keyMorphLimit);
+                    if (keyShift == 0) {
+                        continue;
+                    }
+                    s = m_scorer.score(current, MixScorer::shiftKey(x, keyShift));
+                    if (!MixScorer::clashLabel(s).isEmpty()) {
+                        continue;
+                    }
+                }
+                double cost = s.total + genreCost(current.genre, x.genre) +
+                        (x.gridUnsteady ? kUnsteadyGridCost : 0.0) +
+                        kKeyMorphCost * std::abs(keyShift);
+                if (sameKeyRun >= 2 &&
+                        sameKey(current, keyShift ? MixScorer::shiftKey(x, keyShift) : x)) {
+                    cost += kSameKeyRunCost;
+                }
+                // Close tempos beatmatch safely (half or double time counts
+                // as close, as in the scorer).
+                if (current.hasBpm()) {
+                    const double ratio = std::fabs(std::log(x.bpm / current.bpm));
+                    const double pct = 100.0 *
+                            std::min({ratio,
+                                    std::fabs(std::log(2.0 * x.bpm / current.bpm)),
+                                    std::fabs(std::log(x.bpm / (2.0 * current.bpm)))});
+                    cost += std::max(0.0, pct - kFillTempoComfortPct) * kFillTempoCostPerPct;
+                }
+                options.append(Option{cost, &x, keyShift});
             }
-            const MixScore s = m_scorer.score(current, x);
-            if (!MixScorer::clashLabel(s).isEmpty()) {
-                continue;
-            }
-            double cost = s.total + genreCost(current.genre, x.genre) +
-                    (x.gridUnsteady ? kUnsteadyGridCost : 0.0);
-            if (sameKeyRun >= 2 && sameKey(current, x)) {
-                cost += kSameKeyRunCost;
-            }
-            options.append(std::make_pair(cost, &x));
+        };
+        collect(true);
+        if (options.isEmpty()) {
+            collect(false);
         }
         if (options.isEmpty()) {
             break;
         }
-        std::sort(options.begin(), options.end(), [](const auto& a, const auto& b) {
-            return a.first < b.first;
+        std::sort(options.begin(), options.end(), [](const Option& a, const Option& b) {
+            return a.cost < b.cost;
         });
         int pool = 1;
         if (randomSeed != 0) {
             while (pool < options.size() && pool < kRandomPoolSize &&
-                    options[pool].first <= options.front().first + kRandomCostMargin) {
+                    options[pool].cost <= options.front().cost + kRandomCostMargin) {
                 ++pool;
             }
         }
-        const TrackFeatures* pBest =
-                options[static_cast<qsizetype>(std::uniform_int_distribution<int>(0, pool - 1)(rng))]
-                        .second;
-        sameKeyRun = sameKey(current, *pBest) ? sameKeyRun + 1 : 1;
+        const Option& best =
+                options[static_cast<qsizetype>(std::uniform_int_distribution<int>(0, pool - 1)(rng))];
+        const TrackFeatures* pBest = best.pTrack;
+        // The next track must fit the key this one will really play in.
+        const TrackFeatures heard =
+                best.keyShift ? MixScorer::shiftKey(*pBest, best.keyShift) : *pBest;
+        sameKeyRun = sameKey(current, heard) ? sameKeyRun + 1 : 1;
         chain.append(*pBest);
+        if (pKeyShifts) {
+            pKeyShifts->append(best.keyShift);
+        }
         excludeIds.insert(pBest->id);
         if (!pBest->displayName.isEmpty()) {
             excludeNames.insert(nameKey(*pBest));
         }
-        current = *pBest;
+        current = heard;
     }
     return chain;
 }

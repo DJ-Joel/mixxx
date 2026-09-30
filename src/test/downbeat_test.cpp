@@ -87,3 +87,55 @@ TEST(DownbeatTest, CountsFromBeatOne) {
     EXPECT_EQ(beats, downbeat::fromBeatOne(beats, 0));
     EXPECT_EQ(beats, downbeat::fromBeatOne(beats, 9)); // nonsense: unchanged
 }
+
+// Beat 1 from the stem parts (AnalyzerStemDownbeat): the finder hears only
+// the bass and the chords.
+TEST(DownbeatTest, PartsGiveTheBassAndChordsOnly) {
+    // One frame of stem audio: drums, bass, other, vocals (left, right).
+    const float frame[8] = {9.0f, 9.0f, 0.2f, 0.4f, 0.6f, 0.8f, 7.0f, 7.0f};
+    float mono = 0.0f;
+    downbeat::bassAndChordsFromParts(frame, 1, &mono);
+    EXPECT_FLOAT_EQ(0.5f, mono); // (0.2 + 0.4 + 0.6 + 0.8) / 4: no drums, no vocals
+}
+
+TEST(DownbeatTest, FindsBeatOneOnTheParts) {
+    // The bars start on grid beat 2 (the bass and chords change there). The
+    // drums hit hardest on beat 0 of every four and the singer's lines start
+    // on beat 3; the finder must not hear those (on real songs they hide the
+    // bass and chords; this made-up song is too simple to show that).
+    constexpr int kPhase = 2;
+    std::vector<double> beats;
+    const std::vector<float> music = song(kPhase, true, &beats);
+    std::vector<float> parts(music.size() * 8, 0.0f);
+    for (std::size_t i = 0; i < music.size(); ++i) {
+        const double t = static_cast<double>(i) / kRate;
+        const double beat = (t - 1.0) / 0.5;
+        const int b = static_cast<int>(std::floor(beat));
+        const double since = (beat - b) * 0.5;
+        float drums = 0.0f;
+        float vocals = 0.0f;
+        if (b >= 0) {
+            const bool accent = b % 4 == 0;
+            drums = static_cast<float>((accent ? 1.5 : 0.3) * std::exp(-since / 0.02) *
+                    std::sin(2 * kPi * 80.0 * t));
+            const int line = (b + 1) / 4; // lines start on beat 3 of four
+            const double note = 440.0 * std::pow(2.0, (line % 5) / 12.0);
+            vocals = static_cast<float>(0.5 * std::sin(2 * kPi * note * t));
+        }
+        float* pFrame = &parts[i * 8];
+        pFrame[0] = pFrame[1] = drums;
+        pFrame[2] = pFrame[3] = music[i]; // bass
+        pFrame[4] = pFrame[5] = music[i]; // other (chords)
+        pFrame[6] = pFrame[7] = vocals;
+    }
+    downbeat::Features features(kRate);
+    std::vector<float> mono(4096);
+    for (std::size_t i = 0; i < music.size(); i += 4096) {
+        const int n = static_cast<int>(std::min<std::size_t>(4096, music.size() - i));
+        downbeat::bassAndChordsFromParts(&parts[i * 8], n, mono.data());
+        features.process(mono.data(), n);
+    }
+    const downbeat::Result r = downbeat::find(features, beats);
+    EXPECT_EQ(kPhase, r.phase);
+    EXPECT_TRUE(r.sure) << "margin " << r.margin;
+}

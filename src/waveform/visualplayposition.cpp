@@ -1,5 +1,7 @@
 #include "waveform/visualplayposition.h"
 
+#include <algorithm>
+
 #include "moc_visualplayposition.cpp"
 #include "util/cmdlineargs.h"
 #include "util/math.h"
@@ -196,6 +198,20 @@ double VisualPlayPosition::getEnginePlayPos() {
     } else {
         return 0;
     }
+}
+
+bool VisualPlayPosition::getEnginePlayPosNow(double* pPlayPosition) {
+    VisualPlayPositionData data;
+    if (!m_data.getAt(0, &data)) {
+        return false;
+    }
+    double offsetBuffers = 0.0;
+    if (data.m_audioBufferMicroS > 0.0) {
+        const double sinceBufferMicros = data.m_referenceTime.elapsed().toDoubleMicros();
+        offsetBuffers = std::clamp(sinceBufferMicros / data.m_audioBufferMicroS, 0.0, 2.0);
+    }
+    *pPlayPosition = determinePlayPosInLoopBoundries(data, data.m_positionStep * offsetBuffers);
+    return true;
 }
 
 void VisualPlayPosition::getTrackTime(double* pPlayPosition, double* pTempoTrackSeconds) {

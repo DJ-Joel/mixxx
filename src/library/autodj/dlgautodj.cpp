@@ -33,6 +33,9 @@
 #include <memory>
 #include <QTableWidget>
 #include <QTimer>
+#include <QFile>
+#include <QFutureWatcher>
+#include <QtConcurrentRun>
 
 #include "control/controlobject.h"
 #include "control/controlproxy.h"
@@ -41,6 +44,7 @@
 #include "mixer/playermanager.h"
 #ifdef __FFMPEG__
 #include "video/videomanager.h"
+#include "stems/stemcache.h"
 #include "stems/stemsplitter.h"
 #endif
 #include "library/library.h"
@@ -655,6 +659,13 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             const QString path = QDir(m_pStems->folder()).filePath(stems::StemCache::folderName());
             QDir().mkpath(path);
             QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        });
+        QAction* pCleanUp = pStemMenu->addAction(tr("Clean up old stem files..."));
+        pCleanUp->setToolTip(tr("Finds stem files that no song in this library uses any more\n"
+                                "(songs removed from the library, or changed) and moves them "
+                                "to the Recycle Bin."));
+        connect(pCleanUp, &QAction::triggered, this, [this]() {
+            cleanUpStemFiles();
         });
         pStemMenu->addSeparator();
         QAction* pNote = pStemMenu->addAction(
@@ -1384,6 +1395,82 @@ void DlgAutoDJ::showLiveAssistant() {
     m_pLiveAssistant->raise();
     m_pLiveAssistant->activateWindow();
     refreshLiveAssistant(true);
+}
+
+void DlgAutoDJ::cleanUpStemFiles() {
+    const QList<stems::StemCache::SongFile> songs = m_pAutoDJProcessor->librarySongFiles();
+    if (songs.isEmpty()) {
+        QMessageBox::information(this,
+                tr("Clean up old stem files"),
+                tr("Could not read the songs of the library."));
+        return;
+    }
+    // The disk is read in the background (songs on a network drive can be
+    // slow to check).
+    struct Found {
+        QStringList files;
+        qint64 bytes = 0;
+        int missingSongs = 0;
+    };
+    auto* pWatcher = new QFutureWatcher<Found>(this);
+    connect(pWatcher, &QFutureWatcher<Found>::finished, this, [this, pWatcher]() {
+        const Found found = pWatcher->result();
+        pWatcher->deleteLater();
+        const QString title = tr("Clean up old stem files");
+        if (found.missingSongs > 0) {
+            QMessageBox::information(this,
+                    title,
+                    tr("%1 songs of the library cannot be reached right now (a network "
+                       "or USB drive that is not connected?).\n\nConnect them and try "
+                       "again: without the song files, older stem files cannot be "
+                       "checked, and nothing is removed.")
+                            .arg(found.missingSongs));
+            return;
+        }
+        if (found.files.isEmpty()) {
+            QMessageBox::information(this, title, tr("No old stem files found. All clean."));
+            return;
+        }
+        const double megabytes = static_cast<double>(found.bytes) / (1024.0 * 1024.0);
+        QStringList examples;
+        for (int i = 0; i < std::min(8, static_cast<int>(found.files.size())); ++i) {
+            examples << QFileInfo(found.files[i]).fileName();
+        }
+        if (found.files.size() > examples.size()) {
+            examples << tr("... and %1 more").arg(found.files.size() - examples.size());
+        }
+        if (QMessageBox::question(this,
+                    title,
+                    tr("%1 stem files (%2 MB) are not used by any song in this library "
+                       "any more:\n\n%3\n\nMove them to the Recycle Bin?\n(If another "
+                       "Mixxx library shares these folders, its songs were not checked.)")
+                            .arg(found.files.size())
+                            .arg(megabytes, 0, 'f', 0)
+                            .arg(examples.join(QChar('\n')))) != QMessageBox::Yes) {
+            return;
+        }
+        int moved = 0;
+        for (const QString& file : found.files) {
+            if (QFile::moveToTrash(file)) {
+                ++moved;
+            }
+        }
+        qInfo().noquote() << "Stems: clean-up moved" << moved << "of" << found.files.size()
+                          << "unused stem files to the Recycle Bin";
+        QMessageBox::information(this,
+                title,
+                moved == found.files.size()
+                        ? tr("Moved %1 stem files to the Recycle Bin.").arg(moved)
+                        : tr("Moved %1 of %2 stem files to the Recycle Bin (the others "
+                             "are in use or could not be moved).")
+                                  .arg(moved)
+                                  .arg(found.files.size()));
+    });
+    pWatcher->setFuture(QtConcurrent::run([songs]() {
+        Found found;
+        found.files = stems::StemCache::unusedFiles(songs, &found.bytes, &found.missingSongs);
+        return found;
+    }));
 }
 
 void DlgAutoDJ::refreshLiveAssistant(bool force) {

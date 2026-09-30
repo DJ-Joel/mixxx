@@ -98,6 +98,9 @@ class DlgAutoDJ : public QWidget, public Ui::DlgAutoDJ, public LibraryView {
     // force = recompute even if the live deck, track, tempo and key are
     // unchanged since the last time.
     void refreshLiveAssistant(bool force);
+    // Stems menu > Clean up old stem files: finds the stem files no song of
+    // the library uses any more and moves them to the Recycle Bin (asks first).
+    void cleanUpStemFiles();
     QPointer<QDialog> m_pLiveAssistant;
     QLabel* m_pLiveNow = nullptr;
     QTableWidget* m_pLiveTable = nullptr;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <numeric>
 
 namespace downbeat {
@@ -279,6 +280,16 @@ std::vector<double> fromBeatOne(const std::vector<double>& beatTimes, int phase)
         return beatTimes;
     }
     return std::vector<double>(beatTimes.begin() + phase, beatTimes.end());
+}
+
+void bassAndChordsFromParts(const float* pParts, int frames, float* pMono) {
+    constexpr int kChannels = 8;
+    constexpr int kBass = 2;  // part 2 (left, right)
+    constexpr int kOther = 4; // part 3
+    for (int f = 0; f < frames; ++f) {
+        const float* pFrame = pParts + static_cast<std::ptrdiff_t>(f) * kChannels;
+        pMono[f] = 0.25f * (pFrame[kBass] + pFrame[kBass + 1] + pFrame[kOther] + pFrame[kOther + 1]);
+    }
 }
 
 } // namespace downbeat

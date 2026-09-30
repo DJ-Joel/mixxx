@@ -882,3 +882,132 @@ TEST(SmartSequencerTest, ReportsTracksThatCannotBeBeatmatched) {
     EXPECT_TRUE(r.warnings[0].contains(QStringLiteral("no beatmatch")));
     EXPECT_TRUE(r.warnings[0].contains(QStringLiteral("Erasure")));
 }
+
+// Smart Fill picks songs Auto DJ can beatmatch (a real fill queued a
+// 58-minute DJ mix and a song whose beat grid drifts: both got plain fades).
+TEST(BridgeFinderTest, SmartFillPrefersSteadyBeatGrids) {
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 120),   // the smoothest, but its grid drifts
+            makeTrack(11, 9, true, 124.5), // less smooth (key step, 3.7%), steady
+    };
+    library[0].gridUnsteady = true;
+    BridgeFinder finder{MixScorer()};
+    const auto chain = finder.extend(last, library, {}, {}, 1);
+    ASSERT_EQ(1, chain.size());
+    EXPECT_EQ(TrackId(QVariant(11)), chain[0].id);
+}
+
+TEST(BridgeFinderTest, SmartFillTakesADriftingGridOnlyWhenNothingElseMixes) {
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 120), // drifts, but the only one that mixes
+            makeTrack(11, 2, false, 140), // clashes
+    };
+    library[0].gridUnsteady = true;
+    BridgeFinder finder{MixScorer()};
+    const auto chain = finder.extend(last, library, {}, {}, 1);
+    ASSERT_EQ(1, chain.size());
+    EXPECT_EQ(TrackId(QVariant(10)), chain[0].id);
+}
+
+TEST(BridgeFinderTest, SmartFillNeverTakesAWholeDjMix) {
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 120), // a 58-minute DJ mix
+    };
+    library[0].durationSec = 58 * 60;
+    BridgeFinder finder{MixScorer()};
+    EXPECT_TRUE(finder.extend(last, library, {}, {}, 1).isEmpty());
+    // Nor as the opening track, when there is anything else.
+    library.append(makeTrack(11, 9, true, 122));
+    library[1].durationSec = 4 * 60;
+    const auto opener = BridgeFinder::pickStart(library, {}, {}, false, 0);
+    ASSERT_TRUE(opener.has_value());
+    EXPECT_EQ(TrackId(QVariant(11)), opener->id);
+}
+
+TEST(BridgeFinderTest, SmartFillPrefersCloseTempos) {
+    // Both mix (within 5%), but 4.5% apart is close to Auto DJ's limit,
+    // where the tempo at the mix may differ a little: the 1% one wins, even
+    // with a key step (which alone would have lost before).
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    const QVector<TrackFeatures> library = {
+            makeTrack(10, 8, true, 125.5),
+            makeTrack(11, 9, true, 121.2),
+    };
+    BridgeFinder finder{MixScorer()};
+    const auto chain = finder.extend(last, library, {}, {}, 1);
+    ASSERT_EQ(1, chain.size());
+    EXPECT_EQ(TrackId(QVariant(11)), chain[0].id);
+}
+
+// Key morph: Smart Fill may choose a song whose key clashes when pitching it
+// one semitone (as Auto DJ does in a beatmatched mix) makes it fit.
+TEST(BridgeFinderTest, SmartFillUsesTheKeyMorph) {
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    // 3A clashes with 8A, but one semitone down it plays in 8A.
+    const QVector<TrackFeatures> library = {makeTrack(10, 3, true, 121)};
+    BridgeFinder finder{MixScorer()};
+    EXPECT_TRUE(finder.extend(last, library, {}, {}, 1).isEmpty()); // no morph: clash
+    QList<int> shifts;
+    const auto chain = finder.extend(last, library, {}, {}, 1, false, 0, 1, &shifts);
+    ASSERT_EQ(1, chain.size());
+    EXPECT_EQ(TrackId(QVariant(10)), chain[0].id);
+    ASSERT_EQ(1, shifts.size());
+    EXPECT_EQ(-1, shifts[0]);
+    EXPECT_EQ(QStringLiteral("8A"), MixScorer::shiftKey(chain[0], shifts[0]).camelotText());
+}
+
+TEST(BridgeFinderTest, SmartFillPrefersASongThatFitsWithoutAKeyMorph) {
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    const QVector<TrackFeatures> library = {
+            makeTrack(10, 3, true, 120),   // fits only pitched
+            makeTrack(11, 8, true, 121.5), // fits as it is
+    };
+    BridgeFinder finder{MixScorer()};
+    QList<int> shifts;
+    const auto chain = finder.extend(last, library, {}, {}, 1, false, 0, 1, &shifts);
+    ASSERT_EQ(1, chain.size());
+    EXPECT_EQ(TrackId(QVariant(11)), chain[0].id);
+    EXPECT_EQ(0, shifts[0]);
+}
+
+TEST(BridgeFinderTest, SmartFillNoKeyMorphWithoutABeatmatch) {
+    // The key morph only happens in a beatmatched mix: not with a drifting
+    // grid (no beatmatch), nor across a tempo clash.
+    TrackFeatures last = makeTrack(1, 8, true, 120);
+    QVector<TrackFeatures> library = {makeTrack(10, 3, true, 121)};
+    library[0].gridUnsteady = true;
+    BridgeFinder finder{MixScorer()};
+    EXPECT_TRUE(finder.extend(last, library, {}, {}, 1, false, 0, 1).isEmpty());
+    library[0].gridUnsteady = false;
+    last.gridUnsteady = true;
+    EXPECT_TRUE(finder.extend(last, library, {}, {}, 1, false, 0, 1).isEmpty());
+    last.gridUnsteady = false;
+    library[0].bpm = 132; // 10% faster
+    EXPECT_TRUE(finder.extend(last, library, {}, {}, 1, false, 0, 1).isEmpty());
+}
+
+TEST(BridgeFinderTest, SmartFillPlansTheNextSongForThePitchedKey) {
+    // 3A is pitched to play in 8A; the next song must fit 8A (9A does),
+    // not 3A (9A would clash with 3A).
+    const TrackFeatures last = makeTrack(1, 8, true, 120);
+    const QVector<TrackFeatures> library = {
+            makeTrack(10, 3, true, 121),
+            makeTrack(11, 9, true, 122),
+    };
+    BridgeFinder finder{MixScorer()};
+    QList<int> shifts;
+    // Energy/tempo aside, 9A fits 8A directly, so it may come first; ask
+    // for both and check every step fits the key that is really heard.
+    const auto chain = finder.extend(last, library, {}, {}, 2, false, 0, 1, &shifts);
+    ASSERT_EQ(2, chain.size());
+    TrackFeatures heard = last;
+    for (int i = 0; i < chain.size(); ++i) {
+        const TrackFeatures next = MixScorer::shiftKey(chain[i], shifts[i]);
+        EXPECT_TRUE(MixScorer::clashLabel(MixScorer().score(heard, next)).isEmpty())
+                << "step " << i;
+        heard = next;
+    }
+}

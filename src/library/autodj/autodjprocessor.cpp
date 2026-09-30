@@ -2,7 +2,11 @@
 
 #include <QFutureWatcher>
 #include <QHash>
+#include <QDir>
+#include <QElapsedTimer>
+#include <QFileInfo>
 #include <QRandomGenerator>
+#include <QSet>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QtConcurrentRun>
@@ -10,6 +14,7 @@
 #include <cmath>
 #include <limits>
 #include <optional>
+#include <thread>
 
 #include "analyzer/analyzerenergy.h"
 #include "engine/channels/enginedeck.h"
@@ -36,6 +41,7 @@
 #include "util/assert.h"
 #include "util/logger.h"
 #include "util/math.h"
+#include "waveform/visualplayposition.h"
 
 namespace {
 const mixxx::Logger kLogger("AutoDJ");
@@ -61,6 +67,8 @@ constexpr double kBeatmatchTolerancePct = 5.0; // the DJ's 5% rule
 // that do not match, for many seconds).
 constexpr double kNoGridSwitchSec = 4.0;
 constexpr double kMissing = std::numeric_limits<double>::quiet_NaN();
+// The bass swap timer is started this much before the swap (see armBassSwap).
+constexpr double kSwapTimerEarlyMs = 16.0;
 
 ConfigKey eqKillKey(const QString& deckGroup) {
     // parameter1 = low band; button_parameter1 = its kill switch.
@@ -239,12 +247,64 @@ void markGrid(TrackFeatures* pTrack, const QHash<TrackId, GridCheckRow>& checks)
             it->driftBeats > EnergyCalculator::kGridMaxDriftBeats;
 }
 
+// The drive or network share a song file is on: "C:/" or "//server/share".
+QString storageRoot(const QString& location) {
+    const QString path = QDir::fromNativeSeparators(location);
+    if (path.startsWith(QStringLiteral("//"))) {
+        const int shareEnd = path.indexOf(QChar('/'), path.indexOf(QChar('/'), 2) + 1);
+        return shareEnd > 0 ? path.left(shareEnd) : path;
+    }
+    const int first = path.indexOf(QChar('/'));
+    return first >= 0 ? path.left(first + 1) : path;
+}
+
+// Whether the songs on a drive or network share can be read right now. A
+// share that is off would give songs Auto DJ cannot load (they are skipped
+// as missing, and the queue runs dry). Checked on a few of its song files
+// (not the share itself), and remembered for a minute: asking a network
+// share that is off can take seconds.
+bool storageReachable(const QString& root, const QStringList& sampleFiles) {
+    struct Known {
+        bool reachable = true;
+        QElapsedTimer age;
+    };
+    static QHash<QString, Known> s_known;
+    auto it = s_known.find(root);
+    if (it != s_known.end() && it->age.isValid() && it->age.elapsed() < 60 * 1000) {
+        return it->reachable;
+    }
+    // A local drive: there or not. A network share: can its songs be read?
+    bool reachable = !root.startsWith(QStringLiteral("//"))
+            ? QDir(root).exists()
+            : sampleFiles.isEmpty();
+    for (const QString& file : sampleFiles) {
+        if (reachable) {
+            break;
+        }
+        if (QFileInfo::exists(file)) {
+            reachable = true;
+            break;
+        }
+    }
+    Known known;
+    known.reachable = reachable;
+    known.age.start();
+    s_known.insert(root, known);
+    if (!reachable) {
+        kLogger.warning() << "Songs on" << root
+                          << "cannot be reached right now (drive or network share off?):"
+                          << "Smart Fill, bridges and the Live Assistant leave them out";
+    }
+    return reachable;
+}
+
 QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
     QVector<TrackFeatures> candidates;
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral(
                 "SELECT library.id, library.bpm, library.key_id, "
-                "library.artist, library.title, library.genre, track_locations.location "
+                "library.artist, library.title, library.genre, track_locations.location, "
+                "library.duration "
                 "FROM library JOIN track_locations "
                 "ON track_locations.id = library.location "
                 "WHERE library.mixxx_deleted = 0 "
@@ -254,6 +314,8 @@ QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
         return candidates;
     }
     QList<TrackId> ids;
+    QHash<TrackId, QString> rootOf;          // song -> its drive or share
+    QHash<QString, QStringList> samplesOf;   // drive or share -> a few songs on it
     while (query.next()) {
         TrackFeatures f;
         f.id = TrackId(query.value(0));
@@ -274,9 +336,36 @@ QVector<TrackFeatures> loadBridgeCandidates(const QSqlDatabase& db) {
         f.artist = artist;
         f.title = title;
         f.genre = query.value(5).toString().trimmed();
-        f.isVideo = TrackFeatures::isVideoFile(query.value(6).toString());
+        const QString location = query.value(6).toString();
+        f.isVideo = TrackFeatures::isVideoFile(location);
+        f.durationSec = query.value(7).toDouble();
+        const QString root = storageRoot(location);
+        rootOf.insert(f.id, root);
+        QStringList& samples = samplesOf[root];
+        if (samples.size() < 5) {
+            samples.append(location);
+        }
         candidates.append(f);
         ids.append(f.id);
+    }
+    // Leave out songs on a drive or share that is off right now.
+    QSet<QString> offline;
+    for (auto it = samplesOf.constBegin(); it != samplesOf.constEnd(); ++it) {
+        if (!storageReachable(it.key(), it.value())) {
+            offline.insert(it.key());
+        }
+    }
+    if (!offline.isEmpty()) {
+        QVector<TrackFeatures> reachable;
+        QList<TrackId> reachableIds;
+        for (const TrackFeatures& f : std::as_const(candidates)) {
+            if (!offline.contains(rootOf.value(f.id))) {
+                reachable.append(f);
+                reachableIds.append(f.id);
+            }
+        }
+        candidates = reachable;
+        ids = reachableIds;
     }
     const QHash<TrackId, EnergyStore::Value> energies = EnergyStore::loadEnergies(db, ids);
     const QHash<TrackId, GridCheckRow> gridChecks = loadGridChecks(db);
@@ -342,7 +431,8 @@ DeckAttributes::DeckAttributes(int index,
           m_trackSamples(group, "track_samples"),
           m_sampleRate(group, "track_samplerate"),
           m_rateRatio(group, "rate_ratio"),
-          m_pPlayer(pPlayer) {
+          m_pPlayer(pPlayer),
+          m_pVisualPos(VisualPlayPosition::getVisualPlayPosition(group)) {
     connect(m_pPlayer, &BaseTrackPlayer::newTrackLoaded,
             this, &DeckAttributes::slotTrackLoaded);
     connect(m_pPlayer, &BaseTrackPlayer::loadingTrack,
@@ -360,6 +450,14 @@ DeckAttributes::DeckAttributes(int index,
 }
 
 DeckAttributes::~DeckAttributes() {
+}
+
+double DeckAttributes::enginePlayPosition() const {
+    double position = 0.0;
+    if (m_pVisualPos && m_pVisualPos->getEnginePlayPosNow(&position)) {
+        return position;
+    }
+    return playPosition();
 }
 
 void DeckAttributes::slotPlayChanged(double v) {
@@ -449,6 +547,11 @@ AutoDJProcessor::AutoDJProcessor(
             this,
             &AutoDJProcessor::controlAddRandomTrack);
     connect(&m_fadeNow, &ControlObject::valueChanged, this, &AutoDJProcessor::controlFadeNow);
+    m_swapTimer.setSingleShot(true);
+    m_swapTimer.setTimerType(Qt::PreciseTimer);
+    connect(&m_swapTimer, &QTimer::timeout, this, [this]() {
+        bassSwapTimerFired();
+    });
     m_glideTicker.setInterval(100);
     connect(&m_glideTicker, &QTimer::timeout, this, [this]() {
         updateGlide(m_glide.pDeck);
@@ -766,14 +869,37 @@ int AutoDJProcessor::currentKeyShift(DeckAttributes* pDeck) const {
 }
 
 namespace {
-// Where a deck is, in seconds of its track at its own speed (-1 = unknown).
+// Where a deck is right now, in seconds of its track at its own speed
+// (-1 = unknown). From the audio engine, so two decks read one after the
+// other are compared at the same moment (see enginePlayPosition()).
 double trackSecond(const DeckAttributes* pDeck) {
     const mixxx::audio::SampleRate sampleRate = pDeck->sampleRate();
     const mixxx::audio::FramePos end = pDeck->trackEndPosition();
     if (!sampleRate.isValid() || !end.isValid()) {
         return -1.0;
     }
+    return pDeck->enginePlayPosition() * end.value() / sampleRate;
+}
+
+// The same from the "playposition" control (15 updates a second, each deck
+// at its own moment). Only for the timing check in the log.
+double controlTrackSecond(const DeckAttributes* pDeck) {
+    const mixxx::audio::SampleRate sampleRate = pDeck->sampleRate();
+    const mixxx::audio::FramePos end = pDeck->trackEndPosition();
+    if (!sampleRate.isValid() || !end.isValid()) {
+        return -1.0;
+    }
     return pDeck->playPosition() * end.value() / sampleRate;
+}
+
+// The length of the deck's track in seconds at its own speed (0 = unknown).
+double trackLengthSec(const DeckAttributes* pDeck) {
+    const mixxx::audio::SampleRate sampleRate = pDeck->sampleRate();
+    const mixxx::audio::FramePos end = pDeck->trackEndPosition();
+    if (!sampleRate.isValid() || !end.isValid()) {
+        return 0.0;
+    }
+    return end.value() / sampleRate;
 }
 } // namespace
 
@@ -800,6 +926,18 @@ void AutoDJProcessor::beginSmartTransition(
     m_smart.pTo = pToDeck;
     m_smart.fromLowKill = readControl(eqKillKey(pFromDeck->group));
     m_smart.toLowKill = readControl(eqKillKey(pToDeck->group));
+    // The bass swap lands on the bar line nearest the middle of the fade.
+    {
+        const double fromLength = trackLengthSec(pFromDeck);
+        const double beginSec = pFromDeck->fadeBeginPos * fromLength;
+        const double endSec = pFromDeck->fadeEndPos * fromLength;
+        if (fromLength > 0.0 && endSec > beginSec) {
+            m_smart.swapTrackSec = phrasealign::bassSwapSec(
+                    gridFor(pFromDeck->getLoadedTrack()), beginSec, endSec);
+            m_smart.swapProgress = std::clamp(
+                    (m_smart.swapTrackSec - beginSec) / (endSec - beginSec), 0.05, 0.95);
+        }
+    }
     m_smart.fromMid = readControl(eqGainKey(pFromDeck->group, 2));
     m_smart.fromHigh = readControl(eqGainKey(pFromDeck->group, 3));
     m_smart.toMid = readControl(eqGainKey(pToDeck->group, 2));
@@ -1072,11 +1210,26 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     }
     m_smart.progress = progress;
     followBeats();
+    // Bass swap: normally the precise timer did it, on the bar line. If the
+    // mix got there first (a seek, or the timer came late), now.
+    if (!m_smart.swapped && progress >= m_smart.swapProgress) {
+        m_smart.swapped = true;
+        kLogger.info() << "Bass swap" << m_smart.pTo->group
+                       << "at a position update (not timed on the beat)";
+    }
+    armBassSwap();
     if (m_smart.stems) {
         // The parts cross over (the EQ stays as the DJ set it).
-        const beatmatch::StemBlend b = m_smart.vocalPlanned
+        beatmatch::StemBlend b = m_smart.vocalPlanned
                 ? beatmatch::stemBlend(progress, m_smart.vocalPlan, m_smart.fadeDrums)
                 : beatmatch::stemBlend(progress, m_smart.fadeDrums);
+        // The bass (and the drums, when they swap) at the timed swap.
+        b.fromBass = m_smart.swapped ? 0.0 : 1.0;
+        b.toBass = m_smart.swapped ? 1.0 : 0.0;
+        if (!m_smart.fadeDrums) {
+            b.fromDrums = b.fromBass;
+            b.toDrums = b.toBass;
+        }
         auto level = [](double knob, double kill) {
             return kill > 0.5 ? 0.0 : knob;
         };
@@ -1094,7 +1247,10 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
         // The bass (inside the instrumental) swaps with the drums.
         writeStem(to, "stem_bass", t.bass * b.toBass);
     } else {
-        const beatmatch::BassState bass = beatmatch::bassSwap(progress);
+        // The bass swaps at the timed swap (see armBassSwap).
+        beatmatch::BassState bass;
+        bass.fromLowKilled = m_smart.swapped;
+        bass.toLowKilled = !m_smart.swapped;
         if (!std::isnan(m_smart.fromLowKill)) {
             writeControl(eqKillKey(m_smart.pFrom->group), bass.fromLowKilled ? 1.0 : 0.0);
         }
@@ -1123,7 +1279,60 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     writeControl(eqGainKey(m_smart.pTo->group, 3), m_smart.toHigh * eq.toMidHigh);
 }
 
+void AutoDJProcessor::armBassSwap() {
+    if (!m_smart.active || m_smart.swapped || m_smart.swapTrackSec < 0.0 ||
+            m_swapTimer.isActive() || !m_smart.pFrom->isPlaying()) {
+        return;
+    }
+    const double nowSec = trackSecond(m_smart.pFrom);
+    const double ratio = m_smart.pFrom->rateRatio();
+    if (nowSec < 0.0 || !(ratio > 0.0)) {
+        return;
+    }
+    const double leftMs = (m_smart.swapTrackSec - nowSec) / ratio * 1000.0;
+    if (leftMs <= 250.0) {
+        // A little early: Windows timers can wake up to ~15 ms late (a real
+        // mix logged 12 ms late); the last moment is waited out exactly.
+        m_swapTimer.start(std::max(0, static_cast<int>(leftMs - kSwapTimerEarlyMs)));
+    }
+}
+
+void AutoDJProcessor::bassSwapTimerFired() {
+    if (!m_smart.active || m_smart.swapped) {
+        return;
+    }
+    const double nowSec = trackSecond(m_smart.pFrom);
+    const double ratio = m_smart.pFrom->rateRatio();
+    double lateMs = 0.0;
+    if (nowSec >= 0.0 && ratio > 0.0) {
+        lateMs = (nowSec - m_smart.swapTrackSec) / ratio * 1000.0;
+        if (lateMs < -(kSwapTimerEarlyMs + 5.0)) {
+            // Still a while to go (the tempo moved): wait again.
+            m_swapTimer.start(std::max(0, static_cast<int>(-lateMs - kSwapTimerEarlyMs)));
+            return;
+        }
+        // The last few milliseconds: wait them out exactly (at most ~20 ms,
+        // once per mix), reading the engine position.
+        QElapsedTimer guard;
+        guard.start();
+        while (lateMs < -0.3 && guard.elapsed() < 30) {
+            std::this_thread::yield();
+            const double sec = trackSecond(m_smart.pFrom);
+            if (sec < 0.0) {
+                break;
+            }
+            lateMs = (sec - m_smart.swapTrackSec) / ratio * 1000.0;
+        }
+    }
+    m_smart.swapped = true;
+    kLogger.info() << "Bass swap" << m_smart.pTo->group << "on the bar line at"
+                   << m_smart.swapTrackSec << "s -" << std::lround(lateMs)
+                   << "ms after it (timed from the engine position)";
+    updateSmartTransition(m_smart.progress);
+}
+
 void AutoDJProcessor::endSmartTransition(bool completed) {
+    m_swapTimer.stop();
     if (!m_smart.active) {
         return;
     }
@@ -1152,7 +1361,9 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
     if (m_smart.beatLock) {
         kLogger.info() << "Beat lock" << m_smart.pTo->group << "done: ended at ratio"
                        << m_smart.toRatio << ", largest slip"
-                       << m_smart.worstSlipBeats << "beats";
+                       << m_smart.worstSlipBeats << "beats (engine positions); the old"
+                       << "15-a-second readings were up to"
+                       << std::lround(m_smart.worstReadingGapMs) << "ms off";
     }
     if (m_smart.beatmatched) {
         writeControl(ConfigKey(m_smart.pTo->group, QStringLiteral("quantize")),
@@ -1270,6 +1481,26 @@ void AutoDJProcessor::followBeats() {
     if (trusted && m_smart.lockUpdates > 50) {
         m_smart.worstSlipBeats = std::max(m_smart.worstSlipBeats, std::fabs(slip));
     }
+    // Timing check: the same slip from the "playposition" control (15
+    // updates a second, each deck at its own moment), which the beat lock
+    // read before. The difference shows how far off those readings were, so
+    // the log proves what the engine positions changed.
+    double readingGapMs = 0.0;
+    {
+        const double fromControlSec = controlTrackSecond(m_smart.pFrom);
+        const double toControlSec = controlTrackSecond(m_smart.pTo);
+        if (fromControlSec >= 0.0 && toControlSec >= 0.0) {
+            double gapBeats = (m_smart.fromGrid.beatAt(fromControlSec) -
+                                      m_smart.toGrid.beatAt(toControlSec)) -
+                    (fromBeat - toBeat);
+            gapBeats -= std::round(gapBeats);
+            readingGapMs = gapBeats * m_smart.fromGrid.beatSecAt(fromSec) / fromRatio * 1000.0;
+            if (trusted && m_smart.lockUpdates > 50) {
+                m_smart.worstReadingGapMs =
+                        std::max(m_smart.worstReadingGapMs, std::fabs(readingGapMs));
+            }
+        }
+    }
     if (!trusted) {
         return; // keep the speed as it is until the readings are steady
     }
@@ -1285,7 +1516,9 @@ void AutoDJProcessor::followBeats() {
         m_smart.loggedBar = bar;
         kLogger.info() << "Beat lock" << m_smart.pTo->group << "bar" << bar
                        << ": kick slip" << slip << "beats (lines" << lineSlip
-                       << "), ratio" << m_smart.toRatio;
+                       << "), ratio" << m_smart.toRatio
+                       << "- timing check: the old 15-a-second readings would be off by"
+                       << std::lround(readingGapMs) << "ms";
     }
     // The lines clearly off early in the mix, while the incoming song is
     // still quiet: line them up now instead of pulling back slowly (heard
@@ -1351,12 +1584,22 @@ void AutoDJProcessor::updateGlide(DeckAttributes* pDeck) {
     }
     const double ratio = beatmatch::glideRatio(
             m_glide.startRatio, m_glide.timer.elapsed() / 1000.0);
-    writeControl(rateKey, ratio);
+    // Set before writing: playerRateChanged() ignores our own glide steps.
     m_glide.lastWritten = ratio;
+    writeControl(rateKey, ratio);
     if (ratio == 1.0) {
         m_glide.pDeck = nullptr;
         m_glideTicker.stop();
         resetDeckTempo(pDeck, false); // back at its own tempo: restore key lock
+        // The next mix was planned for this tempo already (see
+        // alignTransitionToPhrases); plan it once more now it is there.
+        if (m_eState == ADJ_IDLE) {
+            DeckAttributes* pFromDeck = getFromDeck();
+            DeckAttributes* pToDeck = pFromDeck ? getOtherDeck(pFromDeck) : nullptr;
+            if (pToDeck) {
+                calculateTransition(pFromDeck, pToDeck, false);
+            }
+        }
     }
 }
 
@@ -1629,6 +1872,33 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
 }
 
 phrasealign::Grid AutoDJProcessor::gridFor(const TrackPointer& pTrack) const {
+    // Asked for many times per plan (and a beat map is several thousand
+    // beats), so kept per track until its beats, its Intro End marker (beat
+    // 1) or its length change.
+    if (!pTrack || !pTrack->getId().isValid()) {
+        return gridForNow(pTrack);
+    }
+    GridCacheEntry key;
+    key.pBeats = pTrack->getBeats();
+    const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
+    const mixxx::audio::FramePos introEnd =
+            pIntro ? pIntro->getEndPosition() : mixxx::audio::kInvalidFramePos;
+    key.introEndFrame = introEnd.isValid() ? introEnd.value() : -1.0;
+    key.durationSec = pTrack->getDuration();
+    const auto it = m_gridCache.constFind(pTrack->getId());
+    if (it != m_gridCache.constEnd() && it->pBeats == key.pBeats &&
+            it->introEndFrame == key.introEndFrame && it->durationSec == key.durationSec) {
+        return it->grid;
+    }
+    key.grid = gridForNow(pTrack);
+    if (m_gridCache.size() > 16) {
+        m_gridCache.clear(); // only the tracks on the decks matter
+    }
+    m_gridCache.insert(pTrack->getId(), key);
+    return key.grid;
+}
+
+phrasealign::Grid AutoDJProcessor::gridForNow(const TrackPointer& pTrack) const {
     phrasealign::Grid grid = AnalyzerEnergy::beatGrid(pTrack);
     if (!grid.isValid() || !m_pTrackCollectionManager ||
             !m_pTrackCollectionManager->internalCollection()) {
@@ -1636,7 +1906,25 @@ phrasealign::Grid AutoDJProcessor::gridFor(const TrackPointer& pTrack) const {
     }
     // Beat 1 = where the main beat kicks in (the Intro End marker).
     bool known = false;
-    const int phase = AnalyzerEnergy::beatOnePhase(pTrack, &known);
+    int phase = AnalyzerEnergy::beatOnePhase(pTrack, &known);
+    if (!known) {
+        // No marker: beat 1 found on the song's stem parts, when sure (see
+        // AnalyzerStemDownbeat). Otherwise the grid's first line.
+        double bpm = 0.0;
+        double firstBeatSec = 0.0;
+        AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec);
+        const auto parts = EnergyStore::loadDownbeat(
+                m_pTrackCollectionManager->internalCollection()->database(),
+                pTrack->getId(),
+                true);
+        if (parts && parts->sure && parts->isFor(bpm, firstBeatSec)) {
+            phase = parts->phase;
+            known = true;
+            kLogger.info() << "Beat 1 of" << pTrack->getInfo()
+                           << ": no Intro End marker, using the one found on its parts"
+                           << "(the grid's beat" << phase + 1 << ")";
+        }
+    }
     if (!known || phase <= 0) {
         return grid; // the grid's first line is beat 1
     }
@@ -1762,6 +2050,29 @@ QList<std::pair<QString, QString>> AutoDJProcessor::smartFillSources() const {
     return sources;
 }
 
+QList<stems::StemCache::SongFile> AutoDJProcessor::librarySongFiles() const {
+    QList<stems::StemCache::SongFile> songs;
+    if (!m_pTrackCollectionManager || !m_pTrackCollectionManager->internalCollection()) {
+        return songs;
+    }
+    QSqlQuery query(m_pTrackCollectionManager->internalCollection()->database());
+    if (!query.exec(QStringLiteral(
+                "SELECT track_locations.location, library.duration, library.samplerate "
+                "FROM library JOIN track_locations ON track_locations.id = library.location "
+                "WHERE library.mixxx_deleted = 0 AND track_locations.fs_deleted = 0"))) {
+        kLogger.warning() << "Could not read the library songs:" << query.lastError();
+        return songs;
+    }
+    while (query.next()) {
+        stems::StemCache::SongFile song;
+        song.location = query.value(0).toString();
+        song.durationSec = query.value(1).toDouble();
+        song.sampleRate = query.value(2).toInt();
+        songs.append(song);
+    }
+    return songs;
+}
+
 QStringList AutoDJProcessor::smartFill(int count,
         MixScoreWeights::EnergyDirection energy,
         bool avoidSameArtist,
@@ -1863,24 +2174,49 @@ QStringList AutoDJProcessor::smartFill(int count,
     }
     MixScoreWeights weights;
     weights.direction = energy;
-    chain += BridgeFinder(MixScorer(weights))
-                     .extend(*pLast,
-                             library,
-                             excludeIds,
-                             excludeNames,
-                             count - static_cast<int>(chain.size()),
-                             avoidSameArtist,
-                             // never 0 (0 = no randomness)
-                             QRandomGenerator::global()->generate() | 1u);
+    // Key morph: a song whose key clashes may still be chosen when Auto DJ
+    // will pitch it to fit (only in beatmatched mixes: see extend).
+    const int morphLimit = isBeatmatchEnabled() ? keyMorphLimit() : 0;
+    QList<int> keyShifts;
+    const QList<TrackFeatures> found = BridgeFinder(MixScorer(weights))
+                                               .extend(*pLast,
+                                                       library,
+                                                       excludeIds,
+                                                       excludeNames,
+                                                       count - static_cast<int>(chain.size()),
+                                                       avoidSameArtist,
+                                                       // never 0 (0 = no randomness)
+                                                       QRandomGenerator::global()->generate() | 1u,
+                                                       morphLimit,
+                                                       &keyShifts);
+    QHash<TrackId, int> shiftOf;
+    for (int i = 0; i < found.size() && i < keyShifts.size(); ++i) {
+        shiftOf.insert(found[i].id, keyShifts[i]);
+    }
+    chain += found;
     PlaylistDAO& playlistDao = m_pTrackCollectionManager->internalCollection()->getPlaylistDAO();
     const int playlistId = m_pAutoDJTableModel->getPlaylist();
+    int morphed = 0;
     for (const TrackFeatures& t : chain) {
         if (playlistDao.appendTrackToPlaylist(t.id, playlistId)) {
-            added << (opener && t.id == opener->id
-                            ? tr("Opening track (chosen for you): %1")
-                                      .arg(MixScorer::trackText(t))
-                            : MixScorer::trackText(t));
+            QString text = opener && t.id == opener->id
+                    ? tr("Opening track (chosen for you): %1").arg(MixScorer::trackText(t))
+                    : MixScorer::trackText(t);
+            const int shift = shiftOf.value(t.id);
+            if (shift != 0) {
+                ++morphed;
+                text += tr("  (key morph %1%2 semitone: plays in %3)")
+                                .arg(shift > 0 ? QStringLiteral("+") : QString())
+                                .arg(shift)
+                                .arg(MixScorer::shiftKey(t, shift).camelotText());
+            }
+            added << text;
         }
+    }
+    if (morphed > 0) {
+        kLogger.info() << "Smart fill:" << morphed
+                       << "of the songs fit thanks to a key morph (Auto DJ pitches them"
+                       << "in the mix)";
     }
     m_pAutoDJTableModel->select();
     kLogger.info() << "Smart fill: added" << added.size() << "tracks";
@@ -2416,7 +2752,22 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::toggleAutoDJ(bool enable) {
         }
         emitAutoDJStateChanged(m_eState);
     } else { // Disable Auto DJ
+        // Switched off during a beatmatched mix: the incoming song plays on
+        // at the mix tempo. Ease it back to its own tempo, as after a mix
+        // that finished (key lock is put back when the glide ends; a key
+        // morph stays for the rest of that song, as in a normal mix).
+        DeckAttributes* pMixTo = m_smart.active && m_smart.beatmatched ? m_smart.pTo : nullptr;
+        const double mixToRatio = m_smart.toRatio;
         endSmartTransition(false);
+        if (pMixTo) {
+            if (pMixTo->isPlaying() && std::fabs(mixToRatio - 1.0) > 1e-4) {
+                kLogger.info() << "Auto DJ off during a mix:" << pMixTo->group
+                               << "eases back from ratio" << mixToRatio << "to its own tempo";
+                startGlide(pMixTo, mixToRatio);
+            } else {
+                resetDeckTempo(pMixTo, false); // not playing: straight back
+            }
+        }
         m_fadeNowLimit = FadeNowLimit(); // a pending Fade Now is cancelled
         // A glide in progress carries on (m_glideTicker): the last track of
         // the queue still eases back to its own tempo after Auto DJ stops.
@@ -2627,6 +2978,10 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
             thisDeck->fadeBeginPos = 1.0;
             thisDeck->fadeEndPos = 1.0;
             otherDeck->isFromDeck = false;
+            // Top up the queue now if that waited for the mix to end.
+            if (m_fillAfterMix) {
+                maybeFillRandomTracks();
+            }
             // Load the next track to otherDeck.
             loadNextTrackFromQueue(*otherDeck);
             emitAutoDJStateChanged(m_eState);
@@ -2910,6 +3265,14 @@ bool AutoDJProcessor::removeTrackFromTopOfQueue(TrackPointer pTrack) {
 }
 
 void AutoDJProcessor::maybeFillRandomTracks() {
+    // Not while a mix runs: Smart Fill reads the whole library, and that
+    // must not hold up the position updates that drive the fade, the beat
+    // lock and the bass swap. It runs as soon as the mix is over.
+    if (m_eState == ADJ_LEFT_FADING || m_eState == ADJ_RIGHT_FADING) {
+        m_fillAfterMix = true;
+        return;
+    }
+    m_fillAfterMix = false;
     int minAutoDJCrateTracks =
             m_pConfig->getValueString(ConfigKey(kPreferenceGroup,
                                               QStringLiteral("RandomQueueMinimumAllowed")))
@@ -3658,6 +4021,9 @@ void AutoDJProcessor::playerEmpty(DeckAttributes* pDeck) {
 
 void AutoDJProcessor::trackAnalyzed() {
     const Track* pTrack = qobject_cast<const Track*>(sender());
+    if (pTrack) {
+        m_gridCache.remove(pTrack->getId()); // e.g. beat 1 found on its parts
+    }
     if (!pTrack || m_eState != ADJ_IDLE) {
         return; // not while a mix is running
     }
@@ -3683,6 +4049,14 @@ void AutoDJProcessor::playerRateChanged(DeckAttributes* pAttributes) {
 
     if (m_eState != ADJ_IDLE) {
         // We don't want to recalculate a running transition
+        return;
+    }
+    // Our own tempo glide writes a new rate 10 times a second for 30 s. The
+    // plan does not change with it (it is made for the tempo the glide ends
+    // at, and positions are fractions of the track), so those steps do not
+    // plan the mix again; the glide plans once more when it ends.
+    if (pAttributes == m_glide.pDeck &&
+            std::fabs(pAttributes->rateRatio() - m_glide.lastWritten) < 1e-6) {
         return;
     }
 

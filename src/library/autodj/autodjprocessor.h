@@ -3,6 +3,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QHash>
+#include <QSharedPointer>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -20,11 +21,14 @@
 #include "library/autodj/smart/phrasealign.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "preferences/usersettings.h"
+#include "stems/stemcache.h"
+#include "track/beats.h"
 #include "track/track_decl.h"
 #include "util/class.h"
 #include "util/parented_ptr.h"
 
 class TrackCollectionManager;
+class VisualPlayPosition;
 class PlayerManagerInterface;
 class BaseTrackPlayer;
 typedef QList<QModelIndex> QModelIndexList;
@@ -59,6 +63,14 @@ class DeckAttributes : public QObject {
     double playPosition() const {
         return m_playPos.get();
     }
+
+    /// Auto DJ 2.0 plus Video Mixing: where the deck is right now (fraction
+    /// of the track), from the audio engine itself. The "playposition"
+    /// control above is only updated 15 times a second, each deck at its own
+    /// moment, so two decks read from it can be up to 1/15 s apart. Use this
+    /// whenever two decks are compared (beat lock, bass swap). Falls back to
+    /// playPosition() when the engine has no position.
+    double enginePlayPosition() const;
 
     void setPlayPosition(double playpos) {
         m_playPos.set(playpos);
@@ -150,6 +162,7 @@ class DeckAttributes : public QObject {
     ControlProxy m_sampleRate;
     ControlProxy m_rateRatio;
     BaseTrackPlayer* m_pPlayer;
+    QSharedPointer<VisualPlayPosition> m_pVisualPos;
 };
 
 class AutoDJProcessor : public QObject {
@@ -289,6 +302,9 @@ class AutoDJProcessor : public QObject {
     /// Crates and playlists Smart Fill can take songs from:
     /// (source key for smartFill, name to show).
     QList<std::pair<QString, QString>> smartFillSources() const;
+    /// Every song of the library (not removed, file known to exist), for
+    /// cleaning up stem files no song uses any more.
+    QList<stems::StemCache::SongFile> librarySongFiles() const;
     /// Tops up the queue when it runs low: Smart Fill first (config
     /// [Auto DJ] SmartFillAuto, default on), random tracks for the rest.
     void fillQueue(int tracksToAdd);
@@ -399,6 +415,8 @@ class AutoDJProcessor : public QObject {
     // present.
     bool removeTrackFromTopOfQueue(TrackPointer pTrack);
     void maybeFillRandomTracks();
+    // The queue ran low during a mix: top it up when the mix is over.
+    bool m_fillAfterMix = false;
     void applySmartSortResult(const SequenceResult& result,
             const QList<std::pair<TrackId, int>>& snapshot);
     UserSettingsPointer m_pConfig;
@@ -442,6 +460,14 @@ class AutoDJProcessor : public QObject {
     /// The track's beats counted from beat 1 of the bar: the grid, moved on to
     /// the downbeat the analysis found when it is sure (downbeat.h).
     phrasealign::Grid gridFor(const TrackPointer& pTrack) const;
+    phrasealign::Grid gridForNow(const TrackPointer& pTrack) const; // no cache
+    struct GridCacheEntry {
+        mixxx::BeatsPointer pBeats;
+        double introEndFrame = -1.0;
+        double durationSec = 0.0;
+        phrasealign::Grid grid;
+    };
+    mutable QHash<TrackId, GridCacheEntry> m_gridCache;
     bool gridsAllowBeatmatch(const TrackPointer& pFromTrack,
             const TrackPointer& pToTrack,
             QString* pWhy) const;
@@ -459,6 +485,11 @@ class AutoDJProcessor : public QObject {
     /// A loaded track's analysis finished: plan the mix again.
     void trackAnalyzed();
     void endSmartTransition(bool completed);
+    /// Bass swap on the beat: start the precise timer once the swap is
+    /// less than a quarter of a second away.
+    void armBassSwap();
+    void bassSwapTimerFired();
+    QTimer m_swapTimer;
     void updateGlide(DeckAttributes* pDeck);
     struct SmartTransition {
         bool active = false;
@@ -484,7 +515,15 @@ class AutoDJProcessor : public QObject {
         phrasealign::Grid toGrid;
         int lockUpdates = 0;
         double worstSlipBeats = 0.0;
+        double worstReadingGapMs = 0.0; // timing check (see followBeats)
         double progress = 0.0;       // how far the mix is (0..1)
+        // Bass swap on the beat: where it happens (outgoing track seconds
+        // at its own speed, -1 = the middle of the fade), as mix progress,
+        // and whether it has happened. A precise timer fires it on time
+        // (the position updates only come 15 times a second).
+        double swapTrackSec = -1.0;
+        double swapProgress = 0.5;
+        bool swapped = false;
         int resyncs = 0;             // jumps back in line (early in the mix)
         int lastResyncUpdate = -1000;
         int loggedBar = -1000;       // the slip is logged once per bar

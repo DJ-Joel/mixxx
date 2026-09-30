@@ -1203,6 +1203,7 @@ add_library(
   src/analyzer/analyzerbeats.cpp
   src/analyzer/analyzerebur128.cpp
   src/analyzer/analyzerenergy.cpp
+  src/analyzer/analyzerstemdownbeat.cpp
   src/analyzer/analyzergain.cpp
   src/analyzer/energycalculator.cpp
   src/analyzer/analyzerkey.cpp
@@ -3012,6 +3013,8 @@ if(BUILD_TESTING)
     src/test/genrescan_test.cpp
     src/test/videomix_test.cpp
     src/test/stemmath_test.cpp
+    src/test/stemcache_test.cpp
+    src/test/engineposition_test.cpp
     src/test/beatstranslatetest.cpp
     src/test/borrowabletest.cpp
     src/test/bpmtest.cpp

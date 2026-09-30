@@ -231,6 +231,29 @@ std::optional<Plan> plan(const Grid& from,
     return p;
 }
 
+double bassSwapSec(const Grid& from, double fadeBeginSec, double fadeEndSec) {
+    const double middle = 0.5 * (fadeBeginSec + fadeEndSec);
+    if (!from.isValid() || !(fadeEndSec > fadeBeginSec)) {
+        return middle;
+    }
+    const double beginBeat = from.beatAt(fadeBeginSec);
+    const double endBeat = from.beatAt(fadeEndSec);
+    const double startBeat = std::round(beginBeat);
+    // Whole bars, never more than half the fade (a quick switch of 1 bar
+    // swapped at its very end otherwise). Under 2 bars: the beat nearest
+    // the middle.
+    const double halfBeats =
+            std::floor((endBeat - beginBeat) / 2.0 / kBeatsPerBar + 1e-6) * kBeatsPerBar;
+    const double swapBeat = halfBeats > 0.0
+            ? startBeat + halfBeats
+            : std::round(0.5 * (beginBeat + endBeat));
+    const double swapSec = from.beatTime(swapBeat);
+    if (!(swapSec > fadeBeginSec && swapSec < fadeEndSec)) {
+        return middle;
+    }
+    return swapSec;
+}
+
 double fadeNowLimitSec(const Grid& from, double nowSec, int bars, double minLeadSec) {
     if (!from.isValid()) {
         return -1.0;

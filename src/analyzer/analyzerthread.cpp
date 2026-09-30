@@ -5,6 +5,7 @@
 #include "analyzer/analyzerbeats.h"
 #include "analyzer/analyzerebur128.h"
 #include "analyzer/analyzerenergy.h"
+#include "analyzer/analyzerstemdownbeat.h"
 #include "analyzer/analyzergain.h"
 #include "analyzer/analyzerkey.h"
 #include "analyzer/analyzersilence.h"
@@ -130,6 +131,12 @@ void AnalyzerThread::doRun() {
     if (dbConnectionPooler.isPooling()) {
         QSqlDatabase dbConnection = mixxx::DbConnectionPooled(m_dbConnectionPool);
         m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerEnergy>(dbConnection)));
+        // Only takes part in the second pass over a song's stem file (it
+        // needs the parts); the normal pass over the song leaves it out.
+        auto pStemDownbeat = std::make_unique<AnalyzerStemDownbeat>(dbConnection);
+        m_pStemDownbeat = pStemDownbeat.get();
+        m_stemDownbeatIndex = static_cast<int>(m_analyzers.size());
+        m_analyzers.push_back(AnalyzerWithState(std::move(pStemDownbeat)));
     }
     DEBUG_ASSERT(!m_analyzers.empty());
     kLogger.debug() << "Activated" << m_analyzers.size() << "analyzers";
@@ -217,14 +224,19 @@ void AnalyzerThread::analyzeStemWaveform(const mixxx::AudioSource::OpenParams& o
     // (parts made by Mixxx) gets a waveform with the parts too, so the
     // decks can show them in colour. Only the waveform is made from the
     // stem file; BPM, key, loudness and energy stay those of the song.
-    if (!m_currentTrack || m_waveformIndex < 0 || !m_pWaveformAnalyzer || isStopping() ||
-            !stems::StemCache::playbackEnabled()) {
+    // The same pass also finds beat 1 of the bar on the parts (bass and
+    // chords without drums and singing): AnalyzerStemDownbeat.
+    if (!m_currentTrack || isStopping() || !stems::StemCache::playbackEnabled()) {
         return;
     }
     const TrackPointer pTrack = m_currentTrack->getTrack();
     const ConstWaveformPointer pWaveform = pTrack->getWaveform();
-    if (pWaveform && pWaveform->hasStem() &&
-            pWaveform->getDescription().endsWith(AnalyzerWaveform::partsMarker())) {
+    const bool needWaveform = m_waveformIndex >= 0 && m_pWaveformAnalyzer &&
+            !(pWaveform && pWaveform->hasStem() &&
+                    pWaveform->getDescription().endsWith(AnalyzerWaveform::partsMarker()));
+    const bool needDownbeat = m_stemDownbeatIndex >= 0 && m_pStemDownbeat &&
+            m_pStemDownbeat->isNeeded(pTrack);
+    if (!needWaveform && !needDownbeat) {
         return; // done before
     }
     if (mixxx::StemInfoImporter::maybeStemFile(pTrack->getLocation()) &&
@@ -246,22 +258,39 @@ void AnalyzerThread::analyzeStemWaveform(const mixxx::AudioSource::OpenParams& o
     if (!matches) {
         return;
     }
-    AnalyzerWithState& waveform = m_analyzers[m_waveformIndex];
-    m_pWaveformAnalyzer->setFromStemFile(true);
-    const bool started = waveform.initialize(*m_currentTrack,
-            pSource->getSignalInfo().getSampleRate(),
-            pSource->getSignalInfo().getChannelCount(),
-            pSource->frameLength());
-    m_pWaveformAnalyzer->setFromStemFile(false);
-    if (!started) {
+    bool waveformStarted = false;
+    if (needWaveform) {
+        AnalyzerWithState& waveform = m_analyzers[m_waveformIndex];
+        m_pWaveformAnalyzer->setFromStemFile(true);
+        waveformStarted = waveform.initialize(*m_currentTrack,
+                pSource->getSignalInfo().getSampleRate(),
+                pSource->getSignalInfo().getChannelCount(),
+                pSource->frameLength());
+        m_pWaveformAnalyzer->setFromStemFile(false);
+    }
+    const bool downbeatStarted = needDownbeat &&
+            m_analyzers[m_stemDownbeatIndex].initialize(*m_currentTrack,
+                    pSource->getSignalInfo().getSampleRate(),
+                    pSource->getSignalInfo().getChannelCount(),
+                    pSource->frameLength());
+    if (!waveformStarted && !downbeatStarted) {
         return;
     }
-    kLogger.info() << "Stems: waveform with the parts for" << pTrack->getInfo();
-    // Only the waveform analyzer is active now; the others ignore the audio.
-    if (analyzeAudioSource(pSource) == AnalysisResult::Finished) {
-        waveform.finish(*m_currentTrack);
-    } else {
-        waveform.cancel();
+    kLogger.info() << "Stems:" << (waveformStarted ? "waveform" : "")
+                   << (waveformStarted && downbeatStarted ? "and" : "")
+                   << (downbeatStarted ? "beat 1" : "") << "from the parts for"
+                   << pTrack->getInfo();
+    // Only these analyzers are active now; the others ignore the audio.
+    const bool finished = analyzeAudioSource(pSource) == AnalysisResult::Finished;
+    for (const int index : {m_waveformIndex, m_stemDownbeatIndex}) {
+        if (index < 0) {
+            continue;
+        }
+        if (finished) {
+            m_analyzers[index].finish(*m_currentTrack);
+        } else {
+            m_analyzers[index].cancel();
+        }
     }
 #else
     Q_UNUSED(openParams);

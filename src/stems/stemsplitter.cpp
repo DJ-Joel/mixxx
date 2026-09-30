@@ -50,6 +50,7 @@ StemSplitter::StemSplitter(UserSettingsPointer pConfig, QObject* pParent)
     // Where the parts go: the DJ's folder (default: the settings folder) or
     // beside each song.
     stems::StemCache::setFolder(folder());
+    stems::StemCache::setFallbackFolder(pConfig->getSettingsPath());
     stems::StemCache::setLocation(location());
     stems::StemCache::setPlaybackEnabled(
             pConfig->getValue(ConfigKey(kStemsGroup, "PlayStems"), true));
@@ -250,11 +251,13 @@ QString StemSplitter::folder() const {
         return m_pConfig->getSettingsPath();
     }
     // A "Mixxx Stems" folder itself was chosen: use it, do not make a
-    // second "Mixxx Stems" inside it.
-    QDir dir(chosen);
-    if (dir.dirName().compare(stems::StemCache::folderName(), Qt::CaseInsensitive) == 0 &&
-            dir.cdUp()) {
-        chosen = dir.absolutePath();
+    // second "Mixxx Stems" inside it. (By name only: the folder may be on
+    // a network share that is off right now.)
+    const QString clean = QDir::cleanPath(QDir::fromNativeSeparators(chosen));
+    const QFileInfo info(clean);
+    if (info.fileName().compare(stems::StemCache::folderName(), Qt::CaseInsensitive) == 0 &&
+            !info.path().isEmpty()) {
+        return info.path();
     }
     return chosen;
 }
@@ -425,6 +428,13 @@ bool StemSplitter::moveFinished(const QString& partial,
             stems::StemCache::fileFor(job.track, stems::StemCache::Location::OneFolder);
     if (!fallback.isEmpty() && fallback != *pTarget) {
         places.append(fallback);
+    }
+    // Last: the settings folder, so the parts are not lost when the chosen
+    // folder is on a drive or share that is off.
+    const QString lastResort =
+            stems::StemCache::fileInFolder(job.track, stems::StemCache::fallbackFolder());
+    if (!lastResort.isEmpty() && !places.contains(lastResort)) {
+        places.append(lastResort);
     }
     for (const QString& place : places) {
         if (!QDir().mkpath(QFileInfo(place).absolutePath())) {
@@ -715,6 +725,7 @@ bool StemSplitter::split(const Job& job) {
                       << "=" << QString::number(seconds / std::max(took, 0.001), 'f', 0)
                       << "x faster than playing (" << outRate << "Hz)"
                       << "->" << QDir::toNativeSeparators(target);
+    stems::StemCache::noteNewFile(target);
     emit stemsReady(job.track->getId(), target);
     return true;
 }

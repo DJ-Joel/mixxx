@@ -35,6 +35,12 @@ class EnergyStore {
     /// Creates the table if needed. Safe to call often.
     static bool ensureTable(const QSqlDatabase& db);
 
+  private:
+    /// The check itself; ensureTable runs it once per database connection.
+    static bool ensureTableNow(const QSqlDatabase& db);
+
+  public:
+
     /// The formula version stored for this track, if any.
     static std::optional<int> storedVersion(const QSqlDatabase& db, TrackId trackId);
 
@@ -89,8 +95,15 @@ class EnergyStore {
         /// Found on this grid, with the current method.
         bool isFor(double gridBpm, double gridFirstBeatSec) const;
     };
-    static std::optional<Downbeat> loadDownbeat(const QSqlDatabase& db, TrackId trackId);
-    static bool saveDownbeat(const QSqlDatabase& db, TrackId trackId, const Downbeat& downbeat);
+    /// fromParts: beat 1 found on the song's stem parts (bass and chords
+    /// without drums and singing, see AnalyzerStemDownbeat), kept apart from
+    /// the one found on the whole song.
+    static std::optional<Downbeat> loadDownbeat(
+            const QSqlDatabase& db, TrackId trackId, bool fromParts = false);
+    static bool saveDownbeat(const QSqlDatabase& db,
+            TrackId trackId,
+            const Downbeat& downbeat,
+            bool fromParts = false);
 
     /// Sets the DJ's rating (1..10) for the tracks. rating 0 clears it, so
     /// the measured value is used again.
