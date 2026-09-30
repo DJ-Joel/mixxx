@@ -273,10 +273,31 @@ it picks at random among the few candidates within 1.0 of the best cost
   (the title is compared after removing "The", brackets, "Remix/Edit/Version"
   endings, "feat." and so on);
 - with an empty queue it starts with a calm song, so the set has room to
-  build.
+  build;
+- picked for Auto DJ to **beatmatch**: songs with a steady beat grid first
+  (a song whose grid drifts only when nothing else fits), tempos within 3%
+  preferred (each % beyond costs extra; Auto DJ beatmatches within 5% at the
+  mix point, where a beat map may be a little off its average), and never a
+  whole DJ mix (longer than 15 minutes), not even as the opener;
+- **key morph:** a song whose key clashes still counts when pitching it by
+  up to the key morph limit (4.13) makes it fit, but only where Auto DJ will
+  beatmatch (both grids steady, tempos within 5%); each semitone costs a
+  little, so a song that fits as it is wins. The next song is chosen for the
+  key that will really be heard. The list of added songs says "key morph -1
+  semitone: plays in 8A";
+- songs on a drive or network share that cannot be reached right now are
+  left out (checked on a few of its songs, remembered for a minute), so the
+  queue does not fill up with songs Auto DJ must skip.
+
+On the DJ's library (318 songs) this raised the share of Smart Fill steps
+Auto DJ can beatmatch from 92% to 97%; the key morph is used in about one
+pick in eight.
 
 "Keep the queue filled automatically" runs Smart Fill when the queue gets
-short; Mixxx's random fill is only used if Smart Fill finds nothing.
+short; Mixxx's random fill is only used if Smart Fill finds nothing. It
+waits until a running mix is over: reading the whole library must not hold
+up the position updates that drive the fade, the beat lock and the bass
+swap.
 
 ### 4.6 Live Assistant
 
@@ -345,7 +366,13 @@ When a mix starts (`AutoDJProcessor::beginSmartTransition`):
    (phase) when it starts.
 2. **Bass swap:** during the first half of the fade the incoming bass is cut;
    at the middle the bass swaps hard; in the second half the outgoing bass is
-   cut. *Why:* two bass lines together sound muddy and hide the beat.
+   cut. *Why:* two bass lines together sound muddy and hide the beat. The
+   swap lands **on the bar line** nearest the middle of the fade (whole bars
+   from the fade start, never past the middle; in a fade under 2 bars, the
+   beat nearest the middle), timed from the audio engine's own position with
+   a precise timer (started a little early, the last milliseconds waited out)
+   instead of the next 15-a-second position update (up to 67 ms late). The
+   log says how close it was ("Bass swap ... 0 ms after it").
 3. **EQ blend:** mids and highs cross over gradually (down to about −10 dB),
    relative to how the DJ had set them. Everything is put back afterwards.
 4. **Glide back:** after the mix the new song eases back to its own tempo over
@@ -358,6 +385,10 @@ itself follows that decision. (Deciding twice, a moment apart, could
 disagree for tempos right at the 5% limit.) A song that is still easing back
 to its own tempo after the previous mix is judged at its own tempo, since it
 will be there when the mix starts.
+
+**Auto DJ switched off during a mix:** the EQ and stem levels are put back,
+and the incoming song eases back to its own tempo (as after a finished mix)
+instead of staying at the mix tempo.
 
 **End of the queue:** when the queue runs empty, Mixxx normally switches
 Auto DJ off at once, and songs added afterwards are never played. Here Auto
@@ -436,6 +467,14 @@ Auto DJ 2.0 plus Video Mixing uses the real beat positions everywhere:
   good beat map passes).
 - The beatmatch decision uses the tempo each song has **where the mix
   happens**, not its average.
+- **Where the decks are:** the beat lock (and the bass swap) read both
+  decks' positions from the audio engine: the position of its last audio
+  buffer, moved on by the time since (`VisualPlayPosition::
+  getEnginePlayPosNow`). Mixxx's "playposition" control is only updated 15
+  times a second, each deck at its own moment (reset by every seek), so two
+  decks read from it could be up to 1/15 s (67 ms, about 1/8 of a beat)
+  apart - and the lock would "correct" that into a real slip. The log's bar
+  lines show how far off the old readings would have been ("timing check").
 - **Beat lock:** when either song has a beat map, the incoming speed is set
   again on every update of the mix (`beatmatch::followRatio`): the same beat
   length as the outgoing song now, plus a nudge (at most 6%; key lock keeps
@@ -457,7 +496,8 @@ smallest shift that makes the keys fit (key lock keeps the tempo). One
 semitone is 7 steps round the Camelot wheel. The limit is 1 semitone by
 default (0, 1 or 2 by right-clicking the Beatmatch button). The song keeps
 that key until it has played out: gliding the pitch back would be heard as
-the song going out of tune. The next mix uses the shifted key.
+the song going out of tune. The next mix uses the shifted key. Smart Fill
+counts on it too (4.5).
 
 ### 4.14 Genre Scan
 
@@ -683,6 +723,27 @@ converted to ONNX (github.com/mixxxdj/demucs).
   so CUDA is used.
 - The stem files are written with the AAC encoder built into Windows
   (Media Foundation, `src/stems/stemfilewriter.*`).
+- **Finding a song's stem file** (`src/stems/stemcache.*`): the name is
+  "Artist - Title [code].stem.mp4", but the song is found by the code only,
+  which comes from the song file's name, its length (whole seconds, one
+  second either side is also tried) and its sample rate. Not from the tags,
+  or the file's size or date, so editing or writing tags keeps the parts;
+  not from the drive or folder, so a USB drive may get another letter. Stem
+  files named the old way (code from size and date) are still found. When
+  neither the chosen folder nor the song's folder can be written (a network
+  share that is off), the parts go to the settings folder and are found
+  there too.
+- **Clean up old stem files...** (Stems menu): lists the stem files no song
+  of the library uses any more (removed, or changed) with their size, and
+  moves them to the Recycle Bin after asking. It refuses while songs of the
+  library cannot be reached (older stem files cannot be checked without
+  their song file).
+- **Beat 1 from the parts** (`src/analyzer/analyzerstemdownbeat.*`): when a
+  song plays from its parts, the analysis runs the beat 1 finder (4.12's
+  downbeat.h) again on its bass and chords only, without drums and singing,
+  and logs the answer next to the Intro End marker ("the Intro End marker
+  agrees" / "DIFFERENT"). Auto DJ uses it, when sure, only for a song that
+  has no Intro End marker.
 
 ## 5. Where the code is
 
@@ -724,6 +785,8 @@ Auto DJ 2.0 plus Video Mixing adds its own tables to Mixxx's library database
 | `autodj_auto_markers` | Where the analysis put the Intro End / Outro Start markers (so markers the DJ moved are recognised and never overwritten). |
 | `autodj_grid_check` | Beat grid check result, the grid it was made on, and the version of the check. |
 | `autodj_energy_manual` | The DJ's own energy ratings. |
+| `autodj_downbeat` | Beat 1 found by the chord/bass finder on the whole song (for information), and the grid it was found on. |
+| `autodj_downbeat_parts` | The same, found on the song's stem parts (bass and chords only). |
 
 Settings are stored in Mixxx's settings file under `[Auto DJ]` (Smart Fill
 options, key morph limit and so on) and `[Video]` (picture timing, graphics
@@ -736,10 +799,11 @@ card, the folder of the last video recording).
 Unit tests are in `src/test/` and run with the other Mixxx tests:
 
 ```
-mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*
+mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*
 ```
 
-167 tests. The energy and grid-check tests use synthetic drum loops (steady,
+189 tests. EnginePositionTest checks the timing the beat lock relies on:
+two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
 and eye on a real library of mostly 1980s new wave, synth-pop, EBM and goth
@@ -868,3 +932,14 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     lock pauses where a beat map goes wrong (a fade-out read as a much
     faster tempo had pushed a mix half a beat apart) and holds the steady
     tempos together until the beat lines are good again.
+40. **Review fixes.** From a code review: the beat lock reads both decks
+    from the audio engine (the 15-a-second position readings could be up to
+    67 ms apart), the bass swap is timed on the bar line, Auto DJ switched
+    off during a mix eases the new song back to its tempo, stem files are
+    found whatever the tags say (plus "Clean up old stem files..." and a
+    settings-folder fallback), beat 1 is also found on the stem parts, Auto
+    DJ's tables are checked once instead of on every read, the tempo glide
+    no longer re-plans the next mix ten times a second, and Smart Fill waits
+    for the mix to end. Smart Fill picks songs Auto DJ can beatmatch (steady
+    grids, close tempos, no DJ mixes, no unreachable songs) and counts on
+    the key morph.
