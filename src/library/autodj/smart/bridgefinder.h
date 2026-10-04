@@ -7,6 +7,7 @@
 #include <optional>
 
 #include "library/autodj/smart/mixscorer.h"
+#include "library/autodj/smart/mixstep.h"
 
 /// A library track (or two) that could be played between two tracks that
 /// clash.
@@ -26,12 +27,15 @@ struct BridgeSuggestion {
 struct NextSuggestion {
     TrackFeatures track;
     MixScore score; ///< now -> this track
-    double cost = 0.0; ///< score + genre cost, lower is better
+    mixstep::Step step; ///< how Auto DJ would mix it (key morph, tempo ride)
+    double cost = 0.0; ///< the step's cost (score, genre, grid...), lower is better
 };
 
 class BridgeFinder {
   public:
-    explicit BridgeFinder(const MixScorer& scorer);
+    /// `rules`: what Auto DJ can do in a mix (key morph, tempo ride...): a
+    /// step only counts when mixstep::judge calls it smooth with them.
+    explicit BridgeFinder(const MixScorer& scorer, mixstep::Rules rules = mixstep::Rules());
 
     /// @param excludeIds tracks that must not be suggested (already queued)
     /// @param excludeNames lower-case "artist - title" to skip, so another
@@ -56,16 +60,8 @@ class BridgeFinder {
     /// Extra cost for a bridge that is not a music video next to one that
     /// is (in a video set the screen would show cover art instead).
     static constexpr double kNoVideoBridgeCost = 2.0;
-    /// Extra cost for a track whose beat grid drifts (cannot be beatmatched:
-    /// a quick switch instead of a mix) in Smart Fill and the Live
-    /// Assistant. Such tracks are never suggested as bridges.
-    static constexpr double kUnsteadyGridCost = 1.5;
-    /// Smart Fill (see extend).
-    static constexpr double kFillTempoComfortPct = 3.0;
-    static constexpr double kFillTempoCostPerPct = 1.0;
+    /// Smart Fill never takes a song longer than this (a whole DJ mix).
     static constexpr double kFillMaxSongSec = 15.0 * 60.0;
-    /// Smart Fill: the extra cost of a key morph, per semitone.
-    static constexpr double kKeyMorphCost = 1.0;
 
     /// Smart Fill: a chain of up to `count` library tracks to play after
     /// `last`, each the smoothest next mix from the one before (no key or
@@ -77,19 +73,15 @@ class BridgeFinder {
     ///        well, so every fill is different
     /// Staying in one key for more than two tracks costs extra, so the set
     /// moves around the Camelot wheel instead of sitting in one key.
-    /// Picked for Auto DJ to beatmatch: a track whose beat grid drifts off
-    /// the music (no beatmatch, only a quick switch) is only taken when no
-    /// steady one mixes; tempos more than kFillTempoComfortPct apart cost
-    /// extra (a beat map's tempo where the mix happens can be a little off
-    /// its average, and Auto DJ beatmatches within 5% only); and whole DJ
-    /// mixes (longer than kFillMaxSongSec) are never taken.
-    /// Key morph (keyMorphLimit > 0): a track whose key clashes also counts
-    /// when pitching it by up to that many semitones makes it fit, as Auto
-    /// DJ does in a beatmatched mix. Only for tracks Auto DJ can beatmatch
-    /// (both grids steady, tempos within the 5% rule), at kKeyMorphCost per
-    /// semitone, so a track that fits as it is still wins. The next track
-    /// is then chosen against the key it will really play in. pKeyShifts
-    /// (if given) gets each chosen track's shift (0 = none).
+    /// Every step is judged by mixstep::judge (steady grids, close tempos,
+    /// key morph and tempo ride per the rules), so Smart Fill picks songs
+    /// Auto DJ can beatmatch. A track whose beat grid drifts is only taken
+    /// when no steady one mixes, and whole DJ mixes (longer than
+    /// kFillMaxSongSec) never. The next track is chosen against the key the
+    /// last one will really be heard in.
+    /// @param keyMorphLimit overrides the rules' key morph limit when larger
+    /// @param pKeyShifts each chosen track's key morph (0 = none)
+    /// @param pSteps each chosen track's whole step (key morph, tempo ride)
     QList<TrackFeatures> extend(const TrackFeatures& last,
             const QVector<TrackFeatures>& candidates,
             QSet<TrackId> excludeIds,
@@ -98,7 +90,8 @@ class BridgeFinder {
             bool avoidSameArtist = false,
             quint32 randomSeed = 0,
             int keyMorphLimit = 0,
-            QList<int>* pKeyShifts = nullptr) const;
+            QList<int>* pKeyShifts = nullptr,
+            QList<mixstep::Step>* pSteps = nullptr) const;
 
     /// Live Assistant: the best `count` tracks to play after `now`, best
     /// first. Only smooth mixes (no key or tempo clash); ranked by the mix
@@ -155,4 +148,5 @@ class BridgeFinder {
 
   private:
     MixScorer m_scorer;
+    mixstep::Rules m_rules;
 };

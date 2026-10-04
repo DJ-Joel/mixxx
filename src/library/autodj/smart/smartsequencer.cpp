@@ -16,8 +16,9 @@ constexpr double kEps = 1e-9;
 constexpr int kMaxStaleKicks = 300;
 } // namespace
 
-SmartSequencer::SmartSequencer(const MixScorer& scorer)
-        : m_scorer(scorer) {
+SmartSequencer::SmartSequencer(const MixScorer& scorer, mixstep::Rules rules)
+        : m_scorer(scorer),
+          m_rules(rules) {
 }
 
 // Cost of every ordered pair (not symmetric: A->B can differ from B->A
@@ -35,7 +36,11 @@ SmartSequencer::Costs SmartSequencer::buildCosts(
         c.end[i] = m_scorer.endCost(tracks[i]);
         for (int j = 0; j < n; ++j) {
             if (i != j) {
-                c.pair[i][j] = m_scorer.score(tracks[i], tracks[j]).total;
+                // The same judge as Smart Fill: steady grids, close tempos,
+                // genre, and what the key morph and tempo ride can fix.
+                // (Judged with each track in its own key; the report below
+                // follows the keys as they will really be heard.)
+                c.pair[i][j] = mixstep::judge(m_scorer, tracks[i], tracks[j], m_rules).cost;
             }
         }
     }
@@ -341,7 +346,7 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
             : heuristicPath(c, fixedStart, timeBudgetMs);
 
     // Bridges must not repeat a queued song (or another copy of it).
-    const BridgeFinder bridgeFinder(m_scorer);
+    const BridgeFinder bridgeFinder(m_scorer, m_rules);
     QSet<TrackId> usedIds;
     QSet<QString> usedNames;
     for (const TrackFeatures& t : tracks) {
@@ -356,13 +361,16 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
     // Report: the whole running order, with the clashes that could not be
     // avoided marked between the two tracks involved.
     result.totalCost = pathCost(c, best);
+    TrackFeatures heardPrev; // the previous track, in the key it will be heard in
     for (int k = 0; k < n; ++k) {
         const TrackFeatures& to = tracks[best[k]];
         result.order.push_back(to.id);
+        mixstep::Step step;
         if (k > 0) {
-            const TrackFeatures& from = tracks[best[k - 1]];
-            const MixScore s = m_scorer.score(from, to);
-            const QString label = MixScorer::clashLabel(s);
+            const TrackFeatures from = heardPrev;
+            step = mixstep::judge(m_scorer, from, to, m_rules);
+            const MixScore& s = step.score;
+            const QString label = step.smooth ? QString() : MixScorer::clashLabel(s);
             if (!label.isEmpty()) {
                 ++result.clashCount;
                 // k is 0-based, so the pair is tracks k and k + 1 counted from 1.
@@ -451,9 +459,13 @@ SequenceResult SmartSequencer::solve(const QVector<TrackFeatures>& tracks,
                 result.warnings << QStringLiteral("Tracks %1 and %2: %3")
                                            .arg(QString::number(k), QString::number(k + 1), note);
                 result.orderLines << QStringLiteral("      ~~ %1").arg(note);
+            } else if (!step.helpText().isEmpty()) {
+                // Smooth thanks to the key morph or the tempo ride.
+                result.orderLines << QStringLiteral("      ~ Auto DJ: %1").arg(step.helpText());
             }
         }
         result.orderLines << MixScorer::trackLine(k + 1, to);
+        heardPrev = mixstep::heard(to, step);
     }
     return result;
 }

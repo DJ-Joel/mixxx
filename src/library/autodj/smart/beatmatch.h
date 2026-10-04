@@ -18,6 +18,47 @@ constexpr double kGlideSeconds = 30.0;
 /// unknown; the transition is then a plain crossfade.
 std::optional<double> matchRatio(double fromBpm, double toTrackBpm, double tolerancePct);
 
+/// Steady loudness through a mix. With Mixxx's additive crossfader both
+/// songs play at full volume in the middle of the mix, about 2-3 dB louder
+/// than either song alone: a give-away that a mix is happening. A deck's
+/// loudness is estimated from its crossfader gain and how much of its bass
+/// and of its mids and highs are open (half the power each, a rough model
+/// of dance music); both decks are then turned down together so the sum
+/// stays at one song's level, never by more than kMinLoudnessGain.
+double deckPower(double faderGain, double bassLevel, double midHighLevel);
+constexpr double kMinLoudnessGain = 0.79; // -2 dB
+double loudnessGain(double fromPower, double toPower, double minGain = kMinLoudnessGain);
+
+/// Tempo ride: two songs too far apart in tempo for one beatmatch (more
+/// than the 5% rule) meet in the middle. Before the mix the outgoing song
+/// eases its tempo part of the way towards the incoming one (key lock on,
+/// over about a minute, too slowly to hear); the incoming song then
+/// beatmatches as usual and eases back to its own tempo after the mix. So
+/// neither song is ever more than `maxEachPct` off its own tempo.
+/// The widest tempo gap the ride bridges, and the most each song moves.
+constexpr double kTempoRideMaxGapPct = 9.0;
+constexpr double kTempoRideMaxEachPct = 4.7;
+struct RidePlan {
+    double outgoingRatio = 1.0; ///< the outgoing song's speed at the mix (1 = own tempo)
+    double incomingRatio = 1.0; ///< the incoming song's speed at the mix
+    double gapPct = 0.0;        ///< how far apart the two tempos were
+};
+/// nullopt when no ride is needed (within `beatmatchPct`), or the gap is
+/// wider than `maxGapPct`. Half and double time count as close, as in
+/// matchRatio. The gap is shared equally when possible; the outgoing song
+/// always moves at least enough to bring the incoming one within
+/// `maxEachPct`, and never more than that itself.
+std::optional<RidePlan> ridePlan(double fromBpm,
+        double toTrackBpm,
+        double beatmatchPct = 5.0,
+        double maxGapPct = kTempoRideMaxGapPct,
+        double maxEachPct = kTempoRideMaxEachPct);
+/// How long the outgoing song takes to ease to the ride tempo.
+constexpr double kTempoRideSeconds = 60.0;
+/// The outgoing speed during the ride: from `startRatio` to `targetRatio`
+/// as `progress` goes 0..1, easing in and out (no sudden change of pace).
+double rideRatio(double startRatio, double targetRatio, double progress);
+
 /// Ratio during the glide back: a straight line from `startRatio` to 1.0
 /// over `glideSeconds`.
 double glideRatio(double startRatio, double elapsedSeconds, double glideSeconds = kGlideSeconds);

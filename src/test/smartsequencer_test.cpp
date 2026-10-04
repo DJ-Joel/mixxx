@@ -9,6 +9,7 @@
 
 #include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/mixscorer.h"
+#include "library/autodj/smart/mixstep.h"
 #include "library/autodj/smart/smartsequencer.h"
 #include "library/autodj/smart/trackfeatures.h"
 
@@ -38,7 +39,8 @@ double orderCost(const MixScorer& scorer,
     };
     double sum = scorer.startCost(find(order.front())) + scorer.endCost(find(order.back()));
     for (int k = 1; k < order.size(); ++k) {
-        sum += scorer.score(find(order[k - 1]), find(order[k])).total;
+        // The sorter prices every pair with the shared mix-step judge.
+        sum += mixstep::judge(scorer, find(order[k - 1]), find(order[k]), mixstep::Rules()).cost;
     }
     return sum;
 }
@@ -52,7 +54,7 @@ double bruteForceBest(const MixScorer& scorer, QVector<TrackFeatures> tracks) {
     do {
         double sum = scorer.startCost(tracks.front()) + scorer.endCost(tracks.back());
         for (int k = 1; k < tracks.size(); ++k) {
-            sum += scorer.score(tracks[k - 1], tracks[k]).total;
+            sum += mixstep::judge(scorer, tracks[k - 1], tracks[k], mixstep::Rules()).cost;
         }
         best = std::min(best, sum);
     } while (std::next_permutation(tracks.begin(), tracks.end(), [](const auto& a, const auto& b) {
@@ -1010,4 +1012,101 @@ TEST(BridgeFinderTest, SmartFillPlansTheNextSongForThePitchedKey) {
                 << "step " << i;
         heard = next;
     }
+}
+
+// The shared mix-step judge (mixstep.h): Smart Fill, Smart Sort, bridges
+// and the Live Assistant all count what Auto DJ can really do in a mix.
+TEST(MixStepTest, TempoRideMakesWiderGapsSmoothForSteadyGrids) {
+    const TrackFeatures from = makeTrack(1, 8, true, 120);
+    const TrackFeatures to = makeTrack(2, 8, true, 128); // 6.5% apart
+    mixstep::Rules rules;
+    EXPECT_FALSE(mixstep::judge(MixScorer(), from, to, rules).smooth); // no ride: tempo clash
+    rules.tempoRidePct = 9.0;
+    const mixstep::Step step = mixstep::judge(MixScorer(), from, to, rules);
+    EXPECT_TRUE(step.smooth);
+    EXPECT_TRUE(step.tempoRide);
+    EXPECT_TRUE(step.beatmatched);
+    EXPECT_NEAR(6.45, step.tempoGapPct, 0.01);
+    EXPECT_TRUE(step.helpText().contains(QStringLiteral("tempo ride")));
+    // A plain beatmatch is cheaper than a ride.
+    const mixstep::Step close =
+            mixstep::judge(MixScorer(), from, makeTrack(3, 8, true, 122), rules);
+    EXPECT_FALSE(close.tempoRide);
+    EXPECT_LT(close.cost, step.cost);
+    // Too far apart, or a drifting grid: no ride.
+    EXPECT_FALSE(mixstep::judge(MixScorer(), from, makeTrack(4, 8, true, 134), rules).smooth);
+    TrackFeatures drifting = to;
+    drifting.gridUnsteady = true;
+    EXPECT_FALSE(mixstep::judge(MixScorer(), from, drifting, rules).smooth);
+}
+
+TEST(MixStepTest, KeyMorphAndTempoRideTogether) {
+    // 3A at 128 after 8A at 120: the ride beatmatches it, so the key morph
+    // can pitch it one semitone down into 8A.
+    mixstep::Rules rules;
+    rules.tempoRidePct = 9.0;
+    rules.keyMorphLimit = 1;
+    const mixstep::Step step = mixstep::judge(
+            MixScorer(), makeTrack(1, 8, true, 120), makeTrack(2, 3, true, 128), rules);
+    EXPECT_TRUE(step.smooth);
+    EXPECT_TRUE(step.tempoRide);
+    EXPECT_EQ(-1, step.keyShift);
+    EXPECT_EQ(QStringLiteral("8A"), mixstep::heard(makeTrack(2, 3, true, 128), step).camelotText());
+}
+
+TEST(SmartSequencerTest, SortUsesTheKeyMorph) {
+    // Two songs whose keys clash either way, unless the second is pitched.
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 120),
+            makeTrack(2, 3, true, 121),
+    };
+    const auto plain = SmartSequencer(MixScorer()).solve(tracks);
+    EXPECT_EQ(1, plain.clashCount);
+    mixstep::Rules rules;
+    rules.keyMorphLimit = 1;
+    const auto morphed = SmartSequencer(MixScorer(), rules).solve(tracks);
+    EXPECT_EQ(0, morphed.clashCount);
+    EXPECT_TRUE(morphed.orderLines.join('\n').contains(QStringLiteral("key morph")));
+}
+
+TEST(SmartSequencerTest, SortUsesTheTempoRide) {
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 120),
+            makeTrack(2, 8, true, 128), // 6.5%: a clash without the ride
+    };
+    EXPECT_EQ(1, SmartSequencer(MixScorer()).solve(tracks).clashCount);
+    mixstep::Rules rules;
+    rules.tempoRidePct = 9.0;
+    const auto r = SmartSequencer(MixScorer(), rules).solve(tracks);
+    EXPECT_EQ(0, r.clashCount);
+    EXPECT_TRUE(r.orderLines.join('\n').contains(QStringLiteral("tempo ride")));
+}
+
+TEST(SmartSequencerTest, SortKeepsTheSameArtistApart) {
+    // A, A, B: with the rule the two A songs are not played back to back.
+    QVector<TrackFeatures> tracks = {
+            song(1, "Erasure", "A Little Respect"),
+            song(2, "Erasure", "Blue Savannah"),
+            song(3, "Yazoo", "Only You"),
+    };
+    mixstep::Rules rules;
+    rules.sameArtistCost = 2.0;
+    const auto r = SmartSequencer(MixScorer(), rules).solve(tracks);
+    ASSERT_EQ(3, r.order.size());
+    EXPECT_EQ(TrackId(QVariant(3)), r.order[1]); // Yazoo in the middle
+}
+
+TEST(SmartSequencerTest, SortPrefersBeatmatchableNeighbours) {
+    // A drifting grid can only be mixed with a quick switch: the sorter
+    // puts it at an end of the set (one switch) rather than in the middle
+    // (two), all else equal.
+    QVector<TrackFeatures> tracks = {
+            makeTrack(1, 8, true, 120),
+            makeTrack(2, 8, true, 120.5),
+            makeTrack(3, 8, true, 121),
+    };
+    tracks[1].gridUnsteady = true;
+    const auto r = SmartSequencer(MixScorer()).solve(tracks);
+    ASSERT_EQ(3, r.order.size());
+    EXPECT_NE(TrackId(QVariant(2)), r.order[1]);
 }

@@ -27,6 +27,67 @@ std::optional<double> matchRatio(double fromBpm, double toTrackBpm, double toler
     return best;
 }
 
+double deckPower(double faderGain, double bassLevel, double midHighLevel) {
+    const auto sq = [](double x) {
+        return std::isnan(x) ? 0.0 : std::max(0.0, x) * std::max(0.0, x);
+    };
+    return sq(faderGain) * (0.5 * sq(bassLevel) + 0.5 * sq(midHighLevel));
+}
+
+double loudnessGain(double fromPower, double toPower, double minGain) {
+    const double sum = (std::isnan(fromPower) ? 0.0 : fromPower) +
+            (std::isnan(toPower) ? 0.0 : toPower);
+    if (!(sum > 1.0)) {
+        return 1.0; // never louder than one song: leave it
+    }
+    return std::max(minGain, 1.0 / std::sqrt(sum));
+}
+
+std::optional<RidePlan> ridePlan(double fromBpm,
+        double toTrackBpm,
+        double beatmatchPct,
+        double maxGapPct,
+        double maxEachPct) {
+    if (!(fromBpm > 0.0) || !(toTrackBpm > 0.0)) {
+        return std::nullopt;
+    }
+    // The incoming tempo as it would be heard: same, double or half time,
+    // whichever is closest (log scale, so up and down count the same).
+    double toBpm = toTrackBpm;
+    for (const double factor : {2.0, 0.5}) {
+        if (std::fabs(std::log(toTrackBpm * factor / fromBpm)) <
+                std::fabs(std::log(toBpm / fromBpm))) {
+            toBpm = toTrackBpm * factor;
+        }
+    }
+    const double gap = std::log(toBpm / fromBpm); // signed: + = incoming faster
+    const double size = std::fabs(gap);
+    if (size * 100.0 <= beatmatchPct || size * 100.0 > maxGapPct) {
+        return std::nullopt;
+    }
+    const double each = maxEachPct / 100.0;
+    // The outgoing share: half, but at least enough for the incoming song
+    // to reach the meeting tempo within `each`, and at most `each` itself.
+    const double outgoing = std::clamp(size / 2.0, size - each, each);
+    const double sign = gap > 0.0 ? 1.0 : -1.0;
+    RidePlan plan;
+    plan.outgoingRatio = std::exp(sign * outgoing);
+    // The incoming song plays at the meeting tempo (its deck's speed; at
+    // half or double time the tempo heard is twice or half its own).
+    plan.incomingRatio = fromBpm * plan.outgoingRatio / toBpm;
+    plan.gapPct = size * 100.0;
+    return plan;
+}
+
+double rideRatio(double startRatio, double targetRatio, double progress) {
+    if (!(startRatio > 0.0) || !(targetRatio > 0.0)) {
+        return 1.0;
+    }
+    const double p = std::isnan(progress) ? 0.0 : std::clamp(progress, 0.0, 1.0);
+    const double eased = p * p * (3.0 - 2.0 * p); // smoothstep
+    return startRatio * std::exp(std::log(targetRatio / startRatio) * eased);
+}
+
 double glideRatio(double startRatio, double elapsedSeconds, double glideSeconds) {
     if (glideSeconds <= 0.0 || elapsedSeconds >= glideSeconds) {
         return 1.0;

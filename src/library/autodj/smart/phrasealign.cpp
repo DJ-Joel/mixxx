@@ -254,6 +254,174 @@ double bassSwapSec(const Grid& from, double fadeBeginSec, double fadeEndSec) {
     return swapSec;
 }
 
+std::optional<Plan> planHandover(const Grid& from,
+        const Grid& to,
+        double fromNowSec,
+        double fromLimitSec,
+        double toEarliestSec,
+        int bars,
+        double toBodyStartSec,
+        bool toBodyMarked) {
+    if (!from.isValid() || !to.isValid() || bars <= 0) {
+        return std::nullopt;
+    }
+    const double fadeBeats = static_cast<double>(bars) * kBeatsPerBar;
+    // The last phrase boundary of the outgoing track at or before the limit.
+    const double endBeat = std::floor((from.beatAt(fromLimitSec) +
+                                              kEpsSec / from.beatSecAt(fromLimitSec)) /
+                                   kBeatsPerPhrase) *
+            kBeatsPerPhrase;
+    const double startBeat = endBeat - fadeBeats;
+    if (startBeat < 0.0) {
+        return std::nullopt;
+    }
+    const double fadeBegin = from.beatTime(startBeat);
+    const double lateSec = std::max(0.0, fromNowSec - fadeBegin);
+    if (lateSec > kLateStartBeats * from.beatSecAt(fadeBegin) + kEpsSec) {
+        return std::nullopt;
+    }
+    // Incoming: its beat kicks in as the fade ends; the bars before it play
+    // under the outgoing phrase (never before its intro start).
+    double toStartBeat = std::max(0.0, std::ceil(to.beatAt(toEarliestSec) - 1.0));
+    if (toBodyStartSec >= 0.0) {
+        const double entry = entryBeat(to, toBodyStartSec, toBodyMarked);
+        toStartBeat = std::max(toStartBeat, entry - fadeBeats);
+    }
+    Plan p;
+    p.fromFadeBeginSec = fadeBegin;
+    p.fromFadeEndSec = from.beatTime(endBeat);
+    p.toStartSec = to.beatTime(toStartBeat) + lateSec;
+    p.bars = bars;
+    return p;
+}
+
+namespace {
+// Seconds of `sections` inside [a, b].
+double coveredSec(const Sections& sections, double a, double b) {
+    double sum = 0.0;
+    for (const auto& [start, end] : sections) {
+        sum += std::max(0.0, std::min(end, b) - std::max(start, a));
+    }
+    return sum;
+}
+
+// Seconds when both sing during the fade: outgoing sections over [fa, fb],
+// incoming ones over [ta, ta + (fb - fa)], compared on the fade's own clock.
+double overlapSec(const Sections& fromSinging,
+        double fa,
+        double fb,
+        const Sections& toSinging,
+        double ta) {
+    double sum = 0.0;
+    for (const auto& [fs, fe] : fromSinging) {
+        const double a = std::max(fs, fa) - fa;
+        const double b = std::min(fe, fb) - fa;
+        if (b <= a) {
+            continue;
+        }
+        for (const auto& [ts, te] : toSinging) {
+            const double c = std::max(ts - ta, a);
+            const double d = std::min(te - ta, b);
+            sum += std::max(0.0, d - c);
+        }
+    }
+    return sum;
+}
+
+// Costs of a mix shape (tuned to prefer, in this order: no two singers at
+// once, no singer faded out mid-line, the DJ's length, the latest phrase).
+constexpr double kOverlapCostPerSec = 4.0;
+constexpr double kCutSingingCostPerSec = 1.0; // outgoing sings while fading out
+constexpr double kLateSingingCostPerSec = 0.5; // incoming sings while still quiet
+constexpr double kLostMusicCostPerSec = 0.1;  // outgoing song cut short
+constexpr double kShorterCostPerOctave = 1.5; // half the DJ's length
+constexpr double kLongerCostPerOctave = 0.25; // twice the DJ's length...
+constexpr double kCleanLongerBonusPerOctave = 1.0; // ...but when nobody sings in
+                                                   // it, a long blend is smoothest
+} // namespace
+
+std::optional<ShapedPlan> planShaped(const Grid& from,
+        const Grid& to,
+        double fromNowSec,
+        double fromLimitSec,
+        double toEarliestSec,
+        double toBodyStartSec,
+        bool toBodyMarked,
+        const ShapeInput& input) {
+    const int preferred = std::clamp(input.preferredBars, 4, 64);
+    const bool singingKnown = input.pFromSinging || input.pToSinging;
+    std::optional<ShapedPlan> best;
+    double usualOverlap = 0.0;
+    const double limitBeat = from.isValid() ? from.beatAt(fromLimitSec) : 0.0;
+    for (int earlier = 0; earlier <= (singingKnown ? 2 : 0); ++earlier) {
+        const double limit = from.beatTime(limitBeat - earlier * kBeatsPerPhrase);
+        for (const int bars : {preferred, 4, 8, 16, 32}) {
+            if (bars > 2 * preferred || (!singingKnown && bars != preferred)) {
+                continue;
+            }
+            const bool handover = bars < kBarsPerPhrase;
+            const auto plan = handover
+                    ? planHandover(from, to, fromNowSec, limit, toEarliestSec, bars,
+                              toBodyStartSec, toBodyMarked)
+                    : phrasealign::plan(from, to, fromNowSec, limit, toEarliestSec, bars,
+                              toBodyStartSec, toBodyMarked, input.entryAt);
+            if (!plan) {
+                continue;
+            }
+            const double fa = plan->fromFadeBeginSec;
+            const double fb = plan->fromFadeEndSec;
+            const double length = fb - fa;
+            double overlap = 0.0;
+            double cost = 0.0;
+            if (input.pFromSinging && input.pToSinging) {
+                overlap = overlapSec(*input.pFromSinging, fa, fb, *input.pToSinging,
+                        plan->toStartSec);
+                cost += kOverlapCostPerSec * overlap;
+            }
+            if (input.pFromSinging) {
+                // Singing in the second half of the fade is faded out mid-line.
+                cost += kCutSingingCostPerSec * coveredSec(*input.pFromSinging, fa + length / 2, fb);
+            }
+            if (input.pToSinging) {
+                // Incoming singing in the first half is heard only faintly.
+                cost += kLateSingingCostPerSec *
+                        coveredSec(*input.pToSinging, plan->toStartSec,
+                                plan->toStartSec + length / 2);
+            }
+            cost += kLostMusicCostPerSec * std::max(0.0, fromLimitSec - fb);
+            const double octaves = std::log2(static_cast<double>(bars) / preferred);
+            if (octaves < 0.0) {
+                cost += kShorterCostPerOctave * -octaves;
+            } else if (octaves > 0.0) {
+                cost += kLongerCostPerOctave * octaves;
+                const bool clean = input.pFromSinging && input.pToSinging &&
+                        coveredSec(*input.pFromSinging, fa, fb) <= 0.0 &&
+                        coveredSec(*input.pToSinging, plan->toStartSec,
+                                plan->toStartSec + length) <= 0.0;
+                if (clean) {
+                    cost -= kCleanLongerBonusPerOctave * octaves;
+                }
+            }
+            if (earlier == 0 && bars == preferred) {
+                usualOverlap = overlap;
+            }
+            if (!best || cost < best->cost - 1e-9) {
+                ShapedPlan shaped;
+                shaped.plan = *plan;
+                shaped.phrasesEarlier = earlier;
+                shaped.handover = handover;
+                shaped.overlapSec = overlap;
+                shaped.cost = cost;
+                best = shaped;
+            }
+        }
+    }
+    if (best) {
+        best->usualOverlapSec = usualOverlap;
+    }
+    return best;
+}
+
 double fadeNowLimitSec(const Grid& from, double nowSec, int bars, double minLeadSec) {
     if (!from.isValid()) {
         return -1.0;

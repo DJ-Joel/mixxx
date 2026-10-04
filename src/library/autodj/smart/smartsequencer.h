@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "library/autodj/smart/mixscorer.h"
+#include "library/autodj/smart/mixstep.h"
 
 /// A clash in the sorted order and the library tracks that could bridge it.
 struct BridgeGap {
@@ -59,7 +60,10 @@ class SmartSequencer {
     /// Largest set solved exactly. 2^16 * 16 * 16 = ~17M steps, ~12 MB memory.
     static constexpr int kExactLimit = 16;
 
-    explicit SmartSequencer(const MixScorer& scorer);
+    /// `rules`: what Auto DJ can do in a mix (key morph, tempo ride...).
+    /// Every pair is priced by mixstep::judge, the same judge Smart Fill
+    /// uses, so the order favours mixes Auto DJ can beatmatch.
+    explicit SmartSequencer(const MixScorer& scorer, mixstep::Rules rules = mixstep::Rules());
 
     /// @param startId optional track that must stay first (e.g. playing now)
     /// @param timeBudgetMs stop improving after this long, return best so far
@@ -91,4 +95,5 @@ class SmartSequencer {
     static double pathCost(const Costs& c, const QVector<int>& path);
 
     MixScorer m_scorer;
+    mixstep::Rules m_rules;
 };

@@ -421,3 +421,81 @@ TEST(PhraseAlignTest, BassSwapFollowsABendingBeatMap) {
     EXPECT_NEAR(beats[32], swap, 1e-9);
     EXPECT_LT(swap, 0.5 * (beats[0] + beats[64])); // slowing: beat 32 comes early
 }
+
+// Content-aware mix shape (planShaped): what happens at the end of one
+// song and the start of the next.
+namespace {
+// A 240 s outgoing track and a 240 s incoming one, both 120 BPM from 0 s.
+const double kLimit = 200.0; // the outgoing fade must be over by here
+} // namespace
+
+TEST(PhraseAlignTest, ShapeWithoutSingingIsThePlainPlan) {
+    phrasealign::ShapeInput input;
+    input.preferredBars = 8;
+    const auto shaped = phrasealign::planShaped(k120, k120, 100.0, kLimit, 0.0, 32.0, true, input);
+    const auto plain = phrasealign::plan(k120, k120, 100.0, kLimit, 0.0, 8, 32.0, true, 0.0);
+    ASSERT_TRUE(shaped && plain);
+    EXPECT_DOUBLE_EQ(plain->fromFadeBeginSec, shaped->plan.fromFadeBeginSec);
+    EXPECT_DOUBLE_EQ(plain->toStartSec, shaped->plan.toStartSec);
+    EXPECT_EQ(8, shaped->plan.bars);
+    EXPECT_EQ(0, shaped->phrasesEarlier);
+}
+
+TEST(PhraseAlignTest, ShapeAvoidsTwoSingersAtOnce) {
+    // The usual 8-bar fade (176-192 s) overlaps the outgoing singer (who
+    // sings until 186 s) with the incoming one (from 2 s after its entry).
+    const phrasealign::Sections out{{150.0, 186.0}};
+    const phrasealign::Sections in{{34.0, 60.0}};
+    phrasealign::ShapeInput input;
+    input.pFromSinging = &out;
+    input.pToSinging = &in;
+    input.preferredBars = 8;
+    const auto shaped = phrasealign::planShaped(k120, k120, 100.0, kLimit, 0.0, 32.0, true, input);
+    ASSERT_TRUE(shaped.has_value());
+    EXPECT_GT(shaped->usualOverlapSec, 1.0);
+    EXPECT_LT(shaped->overlapSec, shaped->usualOverlapSec);
+    EXPECT_DOUBLE_EQ(0.0, shaped->overlapSec);
+}
+
+TEST(PhraseAlignTest, ShapeHandsOverOnThePhraseEndWhenRoomIsShort) {
+    // The outgoing singer stops at 186 s, the incoming one starts right at
+    // its beat (32 s): a short handover ending on the phrase end (192 s),
+    // the incoming beat (and singer) starting exactly there.
+    const phrasealign::Sections out{{100.0, 186.0}};
+    const phrasealign::Sections in{{32.5, 80.0}};
+    phrasealign::ShapeInput input;
+    input.pFromSinging = &out;
+    input.pToSinging = &in;
+    input.preferredBars = 8;
+    const auto shaped = phrasealign::planShaped(k120, k120, 100.0, kLimit, 0.0, 32.0, true, input);
+    ASSERT_TRUE(shaped.has_value());
+    EXPECT_TRUE(shaped->handover);
+    EXPECT_EQ(4, shaped->plan.bars);
+    EXPECT_DOUBLE_EQ(192.0, shaped->plan.fromFadeEndSec); // a phrase end
+    EXPECT_DOUBLE_EQ(184.0, shaped->plan.fromFadeBeginSec);
+    // The incoming beat (32 s) arrives as the fade ends: it starts 8 s early.
+    EXPECT_DOUBLE_EQ(24.0, shaped->plan.toStartSec);
+}
+
+TEST(PhraseAlignTest, ShapeBlendsLongerWhenNobodySings) {
+    // Instrumental end and a long instrumental start: a long blend.
+    const phrasealign::Sections out{{20.0, 120.0}};
+    const phrasealign::Sections in{{120.0, 200.0}};
+    phrasealign::ShapeInput input;
+    input.pFromSinging = &out;
+    input.pToSinging = &in;
+    input.preferredBars = 8;
+    const auto shaped = phrasealign::planShaped(k120, k120, 100.0, kLimit, 0.0, 32.0, true, input);
+    ASSERT_TRUE(shaped.has_value());
+    EXPECT_EQ(16, shaped->plan.bars);
+    EXPECT_DOUBLE_EQ(192.0, shaped->plan.fromFadeEndSec);
+}
+
+TEST(PhraseAlignTest, HandoverEndsOnAPhraseBoundary) {
+    // Phrases are 16 s (8 bars at 120 BPM): ..., 176, 192 s.
+    const auto p = phrasealign::planHandover(k120, k120, 100.0, 191.0, 0.0, 4, 32.0, true);
+    ASSERT_TRUE(p.has_value());
+    EXPECT_DOUBLE_EQ(176.0, p->fromFadeEndSec); // the last phrase end before 191 s
+    EXPECT_DOUBLE_EQ(168.0, p->fromFadeBeginSec);
+    EXPECT_DOUBLE_EQ(24.0, p->toStartSec);
+}

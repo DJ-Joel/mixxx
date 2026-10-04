@@ -1423,6 +1423,7 @@ add_library(
   src/library/autodj/smart/vocalmap.cpp
   src/library/autodj/smart/downbeat.cpp
   src/library/autodj/smart/bridgefinder.cpp
+  src/library/autodj/smart/mixstep.cpp
   src/library/autodj/smart/energystore.cpp
   src/library/autodj/smart/genrescan.cpp
   src/library/autodj/smart/mixscorer.cpp

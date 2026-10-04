@@ -212,6 +212,42 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
                         m_pAutoDJProcessor->setKeyMorphLimit(value);
                     });
                 }
+                // Tempo ride: songs 5-9% apart meet in the middle.
+                menu.addSection(tr("Tempos 5-9% apart"));
+                QAction* pRide = menu.addAction(tr("Tempo ride: meet in the middle"));
+                pRide->setCheckable(true);
+                pRide->setChecked(m_pAutoDJProcessor->tempoRideEnabled());
+                pRide->setToolTip(tr("Before the mix the old song slowly eases its tempo part of "
+                                     "the way (over about a minute, key lock on), and the new "
+                                     "song beatmatches the rest.\nNeither song moves more than "
+                                     "4.7% from its own tempo. Off: such songs get a quick "
+                                     "switch."));
+                connect(pRide, &QAction::toggled, this, [this](bool on) {
+                    m_pAutoDJProcessor->setTempoRideEnabled(on);
+                });
+                // Mix length and moment from where the songs sing.
+                menu.addSection(tr("Mix length"));
+                QAction* pShape = menu.addAction(tr("Fit the mix to the singing"));
+                pShape->setCheckable(true);
+                pShape->setChecked(m_pAutoDJProcessor->smartMixShapeEnabled());
+                pShape->setToolTip(tr("For songs split into parts: the mix is placed and sized so "
+                                      "two singers never sing at once and no singer is faded "
+                                      "out mid-line.\nA long blend when neither song sings "
+                                      "there, a short handover on the phrase end when there is "
+                                      "little room. Off: always the fade time you set."));
+                connect(pShape, &QAction::toggled, this, [this](bool on) {
+                    m_pAutoDJProcessor->setSmartMixShapeEnabled(on);
+                });
+                QAction* pLoud = menu.addAction(tr("Steady loudness through the mix"));
+                pLoud->setCheckable(true);
+                pLoud->setChecked(m_pAutoDJProcessor->steadyLoudnessEnabled());
+                pLoud->setToolTip(tr("Both songs are turned down a little (at most 2 dB) in the "
+                                     "middle of the mix, so it is never louder than one song.\n"
+                                     "Mostly matters with the additive crossfader; the gain "
+                                     "knobs are put back afterwards."));
+                connect(pLoud, &QAction::toggled, this, [this](bool on) {
+                    m_pAutoDJProcessor->setSteadyLoudnessEnabled(on);
+                });
                 // Where the new song's beat comes in.
                 menu.addSection(tr("The new song's beat comes in"));
                 auto* pEntry = new QActionGroup(&menu);

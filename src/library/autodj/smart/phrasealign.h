@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <utility>
 #include <vector>
 
 /// Auto DJ 2.0 plus Video Mixing, phase 2: line a transition up with musical phrases.
@@ -117,6 +118,51 @@ std::optional<Plan> plan(const Grid& from,
 /// middle (at the bass swap, the classic Auto DJ 2.0 mix), 0 = the start
 /// (the incoming song starts on its first downbeat, so its full sound
 /// comes in gradually over the whole fade; its intro is skipped).
+
+/// Like plan(), but the fade ENDS on a phrase boundary of the outgoing
+/// track and the incoming beat kicks in exactly there (its intro plays under
+/// the end of the outgoing phrase): a short "handover" mix for when there
+/// is little room (singing close to both ends). Beatmatched mixes only.
+std::optional<Plan> planHandover(const Grid& from,
+        const Grid& to,
+        double fromNowSec,
+        double fromLimitSec,
+        double toEarliestSec,
+        int bars,
+        double toBodyStartSec,
+        bool toBodyMarked);
+
+/// Content-aware mix: what is happening at the end of one song and the
+/// start of the next. Times are in the same seconds as the grids.
+using Sections = std::vector<std::pair<double, double>>; ///< (start, end), in order
+struct ShapeInput {
+    const Sections* pFromSinging = nullptr; ///< where the outgoing song sings (null = unknown)
+    const Sections* pToSinging = nullptr;   ///< where the incoming song sings (null = unknown)
+    int preferredBars = 8;  ///< the DJ's mix length (barsForSeconds)
+    double entryAt = 0.0;   ///< as plan()
+};
+struct ShapedPlan {
+    Plan plan;
+    int phrasesEarlier = 0;    ///< the fade moved this many phrases earlier
+    bool handover = false;     ///< a short handover (planHandover)
+    double overlapSec = 0.0;   ///< both sing at once during the fade
+    double usualOverlapSec = 0.0; ///< ... with the usual plan (preferred length, latest)
+    double cost = 0.0;
+};
+/// Tries a few mix lengths (4 bars as a handover, 8, 16, 32 bars, up to
+/// twice the DJ's length) and the last three phrases, and picks the one
+/// that sounds most like one song: no two singers at once, no singer cut
+/// off by the fade, and as much of the outgoing song as possible. Without
+/// singing information this is plan() with the preferred length (the same
+/// choice as before). nullopt if no plan fits.
+std::optional<ShapedPlan> planShaped(const Grid& from,
+        const Grid& to,
+        double fromNowSec,
+        double fromLimitSec,
+        double toEarliestSec,
+        double toBodyStartSec,
+        bool toBodyMarked,
+        const ShapeInput& input);
 
 /// The moment of the bass swap in a mix, in the outgoing track's seconds:
 /// the bar line nearest the middle of the fade, counted in whole bars from

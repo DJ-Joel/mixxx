@@ -258,3 +258,84 @@ TEST(BeatmatchTest, KickOffsetNeedsDrums) {
     std::vector<double> ignored;
     EXPECT_FALSE(beatmatch::kickOffset(drumLevel(0.01, &ignored), 441.0, few));
 }
+
+// Tempo ride: 5-9% apart, the two songs meet in the middle.
+TEST(BeatmatchTest, TempoRideMeetsInTheMiddle) {
+    // 120 -> 129 BPM (7.2% apart, log scale): each song moves about 3.6%.
+    const auto plan = beatmatch::ridePlan(120.0, 129.0);
+    ASSERT_TRUE(plan.has_value());
+    EXPECT_NEAR(7.23, plan->gapPct, 0.01);
+    EXPECT_GT(plan->outgoingRatio, 1.0); // the outgoing song speeds up
+    EXPECT_LT(plan->incomingRatio, 1.0); // the incoming song slows down
+    // They meet: the same tempo at the mix.
+    EXPECT_NEAR(120.0 * plan->outgoingRatio, 129.0 * plan->incomingRatio, 1e-9);
+    // Shared equally.
+    EXPECT_NEAR(std::log(plan->outgoingRatio), -std::log(plan->incomingRatio), 1e-9);
+    // Slower incoming song: the outgoing one slows down.
+    const auto down = beatmatch::ridePlan(129.0, 120.0);
+    ASSERT_TRUE(down.has_value());
+    EXPECT_LT(down->outgoingRatio, 1.0);
+}
+
+TEST(BeatmatchTest, TempoRideOnlyWhereNeededAndInReach) {
+    EXPECT_FALSE(beatmatch::ridePlan(120.0, 124.0).has_value()); // 3.3%: plain beatmatch
+    EXPECT_FALSE(beatmatch::ridePlan(120.0, 135.0).has_value()); // 11.8%: too far
+    EXPECT_FALSE(beatmatch::ridePlan(0.0, 120.0).has_value());   // tempo unknown
+    // Half time counts as close: 62 under 120 is 124 -> 3.3%, no ride.
+    EXPECT_FALSE(beatmatch::ridePlan(120.0, 62.0).has_value());
+    // 66 under 120 is 132 -> 9.5%: too far; 64.5 -> 129: ride at half time.
+    EXPECT_FALSE(beatmatch::ridePlan(120.0, 66.0).has_value());
+    const auto half = beatmatch::ridePlan(120.0, 64.5);
+    ASSERT_TRUE(half.has_value());
+    EXPECT_NEAR(120.0 * half->outgoingRatio, 2.0 * 64.5 * half->incomingRatio, 1e-9);
+}
+
+TEST(BeatmatchTest, TempoRideNeverMovesASongTooFar) {
+    // Whatever the gap in reach, neither song is more than 4.7% off its
+    // tempo, and the incoming one is within the 5% beatmatch rule.
+    for (double to = 126.4; to <= 130.8; to += 0.1) { // 5.2% .. 8.6% apart
+        const auto plan = beatmatch::ridePlan(120.0, to);
+        ASSERT_TRUE(plan.has_value()) << to;
+        EXPECT_LE(std::fabs(std::log(plan->outgoingRatio)) * 100.0, 4.7 + 1e-9) << to;
+        EXPECT_LE(std::fabs(std::log(plan->incomingRatio)) * 100.0, 4.7 + 1e-9) << to;
+        EXPECT_TRUE(beatmatch::matchRatio(120.0 * plan->outgoingRatio, to, 5.0).has_value())
+                << to;
+    }
+}
+
+TEST(BeatmatchTest, TempoRideEasesInAndOut) {
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::rideRatio(1.0, 1.04, 0.0));
+    EXPECT_NEAR(1.04, beatmatch::rideRatio(1.0, 1.04, 1.0), 1e-12);
+    EXPECT_NEAR(1.04, beatmatch::rideRatio(1.0, 1.04, 2.0), 1e-12); // past the end: holds
+    const double mid = beatmatch::rideRatio(1.0, 1.04, 0.5);
+    EXPECT_NEAR(std::sqrt(1.04), mid, 1e-12); // halfway on a log scale
+    // Slow at the start: the first 10% of the time moves less than 10% of the way.
+    EXPECT_LT(std::log(beatmatch::rideRatio(1.0, 1.04, 0.1)), 0.1 * std::log(1.04));
+}
+
+// Steady loudness: the middle of an additive-crossfader mix is turned down
+// a little so it is not louder than one song.
+TEST(BeatmatchTest, SteadyLoudnessLeavesOneSongAlone) {
+    // One song at full volume, the other silent: no change.
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::loudnessGain(beatmatch::deckPower(1, 1, 1), 0.0));
+    // The incoming song barely in (fader low, bass cut, mids/highs down).
+    const double quietIn = beatmatch::deckPower(0.3, 0.0, 0.5);
+    EXPECT_NEAR(1.0, beatmatch::loudnessGain(beatmatch::deckPower(1, 1, 1), quietIn), 0.02);
+}
+
+TEST(BeatmatchTest, SteadyLoudnessTurnsTheMiddleOfTheMixDown) {
+    // Middle of the mix (additive crossfader: both faders full), one bass
+    // (the swap), both songs' mids and highs open: 1.5 songs of power.
+    const double from = beatmatch::deckPower(1.0, 0.0, 1.0);
+    const double to = beatmatch::deckPower(1.0, 1.0, 1.0);
+    const double gain = beatmatch::loudnessGain(from, to);
+    EXPECT_NEAR(1.0 / std::sqrt(1.5), gain, 1e-12); // about -1.8 dB
+    // Both full with both basses: limited to -2 dB.
+    EXPECT_DOUBLE_EQ(beatmatch::kMinLoudnessGain,
+            beatmatch::loudnessGain(beatmatch::deckPower(1, 1, 1), beatmatch::deckPower(1, 1, 1)));
+    // A constant-power crossfader in the middle (0.707 each): already level.
+    EXPECT_NEAR(1.0,
+            beatmatch::loudnessGain(beatmatch::deckPower(0.7071, 1, 1),
+                    beatmatch::deckPower(0.7071, 1, 1)),
+            1e-3);
+}

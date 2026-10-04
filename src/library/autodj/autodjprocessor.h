@@ -7,6 +7,7 @@
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -20,6 +21,8 @@
 #include "library/autodj/smart/bridgefinder.h"
 #include "library/autodj/smart/phrasealign.h"
 #include "library/autodj/smart/smartsequencer.h"
+#include "library/autodj/smart/vocalmap.h"
+#include "waveform/waveform.h"
 #include "preferences/usersettings.h"
 #include "stems/stemcache.h"
 #include "track/beats.h"
@@ -255,6 +258,23 @@ class AutoDJProcessor : public QObject {
     /// the default) or at its middle, with the bass swap (false).
     bool beatEntryAtStart() const;
     void setBeatEntryAtStart(bool atStart);
+    /// Tempo ride: beatmatch songs 5-9% apart by meeting in the middle
+    /// (beatmatch::ridePlan). Config [Auto DJ] TempoRide, default on.
+    bool tempoRideEnabled() const;
+    void setTempoRideEnabled(bool enabled);
+    /// Content-aware mix shape: mix length and phrase chosen from where the
+    /// two songs sing (phrasealign::planShaped). Config [Auto DJ]
+    /// SmartMixShape, default on.
+    bool smartMixShapeEnabled() const;
+    void setSmartMixShapeEnabled(bool enabled);
+    /// Steady loudness: both decks turned down a little in the middle of a
+    /// mix so it is not louder than one song (beatmatch::loudnessGain).
+    /// Config [Auto DJ] SteadyLoudness, default on.
+    bool steadyLoudnessEnabled() const;
+    void setSteadyLoudnessEnabled(bool enabled);
+    /// What Auto DJ can do in a mix, for Smart Fill, Smart Sort, bridges and
+    /// the Live Assistant (key morph and tempo ride, when beatmatch is on).
+    mixstep::Rules mixRules() const;
 
     // Auto DJ 2.0 plus Video Mixing Live Assistant: the best next tracks for the deck that is
     // playing live (the one heard most), from the whole library.
@@ -468,6 +488,16 @@ class AutoDJProcessor : public QObject {
         phrasealign::Grid grid;
     };
     mutable QHash<TrackId, GridCacheEntry> m_gridCache;
+    /// Where a song sings (from its waveform with parts), in real seconds at
+    /// `rateRatio`. False when not known (no parts yet).
+    bool singingSections(const TrackPointer& pTrack,
+            double rateRatio,
+            phrasealign::Sections* pSections) const;
+    struct SingingCacheEntry {
+        ConstWaveformPointer pWaveform;
+        std::optional<std::vector<vocalmap::Section>> sections;
+    };
+    mutable QHash<TrackId, SingingCacheEntry> m_singingCache;
     bool gridsAllowBeatmatch(const TrackPointer& pFromTrack,
             const TrackPointer& pToTrack,
             QString* pWhy) const;
@@ -485,6 +515,8 @@ class AutoDJProcessor : public QObject {
     /// A loaded track's analysis finished: plan the mix again.
     void trackAnalyzed();
     void endSmartTransition(bool completed);
+    /// Steady loudness: from each deck's open bass and mids/highs (0..1).
+    void applySteadyLoudness(double fromBass, double fromMidHigh, double toBass, double toMidHigh);
     /// Bass swap on the beat: start the precise timer once the swap is
     /// less than a quarter of a second away.
     void armBassSwap();
@@ -524,6 +556,11 @@ class AutoDJProcessor : public QObject {
         double swapTrackSec = -1.0;
         double swapProgress = 0.5;
         bool swapped = false;
+        // Steady loudness: the DJ's gain knobs (NaN = control missing).
+        bool steadyLoudness = false;
+        double fromPregain = std::numeric_limits<double>::quiet_NaN();
+        double toPregain = std::numeric_limits<double>::quiet_NaN();
+        double lowestLoudnessGain = 1.0;
         int resyncs = 0;             // jumps back in line (early in the mix)
         int lastResyncUpdate = -1000;
         int loggedBar = -1000;       // the slip is logged once per bar
@@ -569,8 +606,32 @@ class AutoDJProcessor : public QObject {
         TrackId fromId;
         TrackId toId;
         bool matched = false;
+        // Tempo ride (beatmatch::ridePlan): the outgoing speed at the mix and
+        // where to ease towards it (fractions of the outgoing track).
+        bool ride = false;
+        double rideTargetRatio = 1.0;
+        double rideGapPct = 0.0;
+        double rideStartPos = 1.0;
+        double rideEndPos = 1.0;
     };
     PlannedMix m_plannedMix;
+    // The tempo ride under way on the outgoing deck.
+    struct TempoRide {
+        bool active = false;
+        DeckAttributes* pDeck = nullptr;
+        TrackId trackId;
+        double startRatio = 1.0;
+        double targetRatio = 1.0;
+        double startPos = 0.0;
+        double endPos = 1.0;
+        double lastWritten = 1.0; // to notice the DJ moving the tempo
+    };
+    TempoRide m_ride;
+    /// The outgoing deck moved on: ease its tempo towards the planned ride.
+    void updateRide(DeckAttributes* pDeck, double playPosition);
+    /// The ride is no longer wanted (another plan, Auto DJ off): ease the
+    /// deck back to its own tempo (or hold it, when the mix has started).
+    void stopRide(bool easeBack);
     struct Glide {
         DeckAttributes* pDeck = nullptr;
         double startRatio = 1.0;

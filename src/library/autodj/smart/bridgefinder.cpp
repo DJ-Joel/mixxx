@@ -1,4 +1,5 @@
 #include "library/autodj/smart/bridgefinder.h"
+#include "library/autodj/smart/mixstep.h"
 
 #include <cmath>
 
@@ -215,8 +216,9 @@ QString BridgeFinder::nameKey(const TrackFeatures& track) {
     return normalizeTitle(title, normalizeArtist(artist));
 }
 
-BridgeFinder::BridgeFinder(const MixScorer& scorer)
-        : m_scorer(scorer) {
+BridgeFinder::BridgeFinder(const MixScorer& scorer, mixstep::Rules rules)
+        : m_scorer(scorer),
+          m_rules(rules) {
 }
 
 // static
@@ -270,13 +272,19 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
         bool avoidSameArtist,
         quint32 randomSeed,
         int keyMorphLimit,
-        QList<int>* pKeyShifts) const {
+        QList<int>* pKeyShifts,
+        QList<mixstep::Step>* pSteps) const {
     QList<TrackFeatures> chain;
     if (pKeyShifts) {
         pKeyShifts->clear();
     }
+    if (pSteps) {
+        pSteps->clear();
+    }
+    mixstep::Rules rules = m_rules;
+    rules.keyMorphLimit = std::max(rules.keyMorphLimit, keyMorphLimit);
     std::mt19937 rng(randomSeed);
-    TrackFeatures current = last;
+    TrackFeatures current = last; // as it will be heard (key morph applied)
     int sameKeyRun = 1; // tracks in a row in current's key, current included
     excludeIds.insert(last.id);
     if (!last.displayName.isEmpty()) {
@@ -289,7 +297,7 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
     struct Option {
         double cost;
         const TrackFeatures* pTrack;
-        int keyShift; // key morph, semitones
+        mixstep::Step step;
     };
     while (static_cast<int>(chain.size()) < count) {
         QVector<Option> options;
@@ -310,42 +318,15 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
                         continue;
                     }
                 }
-                MixScore s = m_scorer.score(current, x);
-                int keyShift = 0;
-                if (!MixScorer::clashLabel(s).isEmpty()) {
-                    // Key morph: only in a beatmatched mix (steady grids,
-                    // no tempo clash), and only if it makes the keys fit.
-                    if (keyMorphLimit <= 0 || current.gridUnsteady || x.gridUnsteady ||
-                            s.tempoCost >= MixScorer::kClashTempoCost) {
-                        continue;
-                    }
-                    keyShift = MixScorer::keyMorphSemitones(current, x, keyMorphLimit);
-                    if (keyShift == 0) {
-                        continue;
-                    }
-                    s = m_scorer.score(current, MixScorer::shiftKey(x, keyShift));
-                    if (!MixScorer::clashLabel(s).isEmpty()) {
-                        continue;
-                    }
+                const mixstep::Step step = mixstep::judge(m_scorer, current, x, rules);
+                if (!step.smooth) {
+                    continue;
                 }
-                double cost = s.total + genreCost(current.genre, x.genre) +
-                        (x.gridUnsteady ? kUnsteadyGridCost : 0.0) +
-                        kKeyMorphCost * std::abs(keyShift);
-                if (sameKeyRun >= 2 &&
-                        sameKey(current, keyShift ? MixScorer::shiftKey(x, keyShift) : x)) {
+                double cost = step.cost;
+                if (sameKeyRun >= 2 && sameKey(current, mixstep::heard(x, step))) {
                     cost += kSameKeyRunCost;
                 }
-                // Close tempos beatmatch safely (half or double time counts
-                // as close, as in the scorer).
-                if (current.hasBpm()) {
-                    const double ratio = std::fabs(std::log(x.bpm / current.bpm));
-                    const double pct = 100.0 *
-                            std::min({ratio,
-                                    std::fabs(std::log(2.0 * x.bpm / current.bpm)),
-                                    std::fabs(std::log(x.bpm / (2.0 * current.bpm)))});
-                    cost += std::max(0.0, pct - kFillTempoComfortPct) * kFillTempoCostPerPct;
-                }
-                options.append(Option{cost, &x, keyShift});
+                options.append(Option{cost, &x, step});
             }
         };
         collect(true);
@@ -369,12 +350,14 @@ QList<TrackFeatures> BridgeFinder::extend(const TrackFeatures& last,
                 options[static_cast<qsizetype>(std::uniform_int_distribution<int>(0, pool - 1)(rng))];
         const TrackFeatures* pBest = best.pTrack;
         // The next track must fit the key this one will really play in.
-        const TrackFeatures heard =
-                best.keyShift ? MixScorer::shiftKey(*pBest, best.keyShift) : *pBest;
+        const TrackFeatures heard = mixstep::heard(*pBest, best.step);
         sameKeyRun = sameKey(current, heard) ? sameKeyRun + 1 : 1;
         chain.append(*pBest);
         if (pKeyShifts) {
-            pKeyShifts->append(best.keyShift);
+            pKeyShifts->append(best.step.keyShift);
+        }
+        if (pSteps) {
+            pSteps->append(best.step);
         }
         excludeIds.insert(pBest->id);
         if (!pBest->displayName.isEmpty()) {
@@ -410,14 +393,15 @@ QList<NextSuggestion> BridgeFinder::suggestNext(const TrackFeatures& now,
         if (!nowArtist.isEmpty() && nowArtist == artistKey(x)) {
             continue;
         }
-        NextSuggestion s;
-        s.score = m_scorer.score(now, x);
-        if (!MixScorer::clashLabel(s.score).isEmpty()) {
+        const mixstep::Step step = mixstep::judge(m_scorer, now, x, m_rules);
+        if (!step.smooth) {
             continue;
         }
+        NextSuggestion s;
         s.track = x;
-        s.cost = s.score.total + genreCost(now.genre, x.genre) +
-                (x.gridUnsteady ? kUnsteadyGridCost : 0.0);
+        s.score = step.score;
+        s.step = step;
+        s.cost = step.cost;
         found.append(s);
     }
     std::sort(found.begin(), found.end(), [](const NextSuggestion& a, const NextSuggestion& b) {
@@ -470,16 +454,21 @@ QList<BridgeSuggestion> BridgeFinder::find(const TrackFeatures& from,
         if (!usableBridge(x, from, to, excludeIds, excludeNames)) {
             continue;
         }
-        BridgeSuggestion s;
-        s.in = m_scorer.score(from, x);
-        s.out = m_scorer.score(x, to);
-        // A bridge must make both mixes smooth, or it is no bridge.
-        if (!MixScorer::clashLabel(s.in).isEmpty() ||
-                !MixScorer::clashLabel(s.out).isEmpty()) {
+        // A bridge must make both mixes smooth, or it is no bridge (with
+        // the key morph and tempo ride Auto DJ would use).
+        const mixstep::Step in = mixstep::judge(m_scorer, from, x, m_rules);
+        if (!in.smooth) {
             continue;
         }
+        const mixstep::Step out = mixstep::judge(m_scorer, mixstep::heard(x, in), to, m_rules);
+        if (!out.smooth) {
+            continue;
+        }
+        BridgeSuggestion s;
         s.track = x;
-        s.cost = s.in.total + s.out.total + videoCost(x, from, to);
+        s.in = in.score;
+        s.out = out.score;
+        s.cost = in.cost + out.cost + videoCost(x, from, to);
         found.append(s);
     }
     sortAndCut(&found, maxResults);
@@ -495,23 +484,30 @@ QList<BridgeSuggestion> BridgeFinder::findPairs(const TrackFeatures& from,
     // First steps (from -> x) and last steps (y -> to) that are smooth, the
     // cheapest few of each; then the pairs whose middle step is smooth too.
     constexpr int kMaxPerSide = 80;
-    QList<std::pair<double, const TrackFeatures*>> firsts;
-    QList<std::pair<double, const TrackFeatures*>> lasts;
+    struct Side {
+        double cost;
+        const TrackFeatures* pTrack;
+        mixstep::Step step;
+    };
+    QList<Side> firsts;
+    QList<Side> lasts;
     for (const TrackFeatures& x : candidates) {
         if (!usableBridge(x, from, to, excludeIds, excludeNames)) {
             continue;
         }
-        const MixScore in = m_scorer.score(from, x);
-        if (MixScorer::clashLabel(in).isEmpty()) {
-            firsts.append(std::make_pair(in.total + videoCost(x, from, to), &x));
+        const mixstep::Step in = mixstep::judge(m_scorer, from, x, m_rules);
+        if (in.smooth) {
+            firsts.append(Side{in.cost + videoCost(x, from, to), &x, in});
         }
-        const MixScore out = m_scorer.score(x, to);
-        if (MixScorer::clashLabel(out).isEmpty()) {
-            lasts.append(std::make_pair(out.total + videoCost(x, from, to), &x));
+        // (The last step is judged with x in its own key; with a key morph
+        // on x it is checked again below.)
+        const mixstep::Step out = mixstep::judge(m_scorer, x, to, m_rules);
+        if (out.smooth) {
+            lasts.append(Side{out.cost + videoCost(x, from, to), &x, out});
         }
     }
-    const auto byCost = [](const auto& a, const auto& b) {
-        return a.first < b.first;
+    const auto byCost = [](const Side& a, const Side& b) {
+        return a.cost < b.cost;
     };
     std::sort(firsts.begin(), firsts.end(), byCost);
     std::sort(lasts.begin(), lasts.end(), byCost);
@@ -522,24 +518,36 @@ QList<BridgeSuggestion> BridgeFinder::findPairs(const TrackFeatures& from,
         lasts = lasts.mid(0, kMaxPerSide);
     }
     QList<BridgeSuggestion> found;
-    for (const auto& [firstCost, pFirst] : firsts) {
-        for (const auto& [lastCost, pSecond] : lasts) {
+    for (const Side& first : std::as_const(firsts)) {
+        for (const Side& last : std::as_const(lasts)) {
+            const TrackFeatures* pFirst = first.pTrack;
+            const TrackFeatures* pSecond = last.pTrack;
             if (pFirst->id == pSecond->id ||
                     (!pFirst->displayName.isEmpty() && !pSecond->displayName.isEmpty() &&
                             nameKey(*pFirst) == nameKey(*pSecond))) {
                 continue; // not the same song twice
             }
-            const MixScore mid = m_scorer.score(*pFirst, *pSecond);
-            if (!MixScorer::clashLabel(mid).isEmpty()) {
+            const TrackFeatures firstHeard = mixstep::heard(*pFirst, first.step);
+            const mixstep::Step mid = mixstep::judge(m_scorer, firstHeard, *pSecond, m_rules);
+            if (!mid.smooth) {
                 continue;
+            }
+            mixstep::Step out = last.step;
+            double outCost = last.cost;
+            if (mid.keyShift != 0) {
+                out = mixstep::judge(m_scorer, mixstep::heard(*pSecond, mid), to, m_rules);
+                if (!out.smooth) {
+                    continue;
+                }
+                outCost = out.cost + videoCost(*pSecond, from, to);
             }
             BridgeSuggestion s;
             s.track = *pFirst;
             s.second = *pSecond;
             s.isPair = true;
-            s.in = m_scorer.score(from, *pFirst);
-            s.out = m_scorer.score(*pSecond, to);
-            s.cost = firstCost + mid.total + lastCost;
+            s.in = first.step.score;
+            s.out = out.score;
+            s.cost = first.cost + mid.cost + outCost;
             found.append(s);
         }
     }

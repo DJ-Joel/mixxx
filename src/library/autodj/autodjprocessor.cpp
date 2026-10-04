@@ -18,6 +18,7 @@
 
 #include "analyzer/analyzerenergy.h"
 #include "engine/channels/enginedeck.h"
+#include "engine/enginexfader.h"
 #include "control/controlobject.h"
 #include "library/autodj/smart/beatmatch.h"
 #include "library/autodj/smart/downbeat.h"
@@ -67,6 +68,9 @@ constexpr double kBeatmatchTolerancePct = 5.0; // the DJ's 5% rule
 // that do not match, for many seconds).
 constexpr double kNoGridSwitchSec = 4.0;
 constexpr double kMissing = std::numeric_limits<double>::quiet_NaN();
+// Smart Sort: the cost of the same artist twice in a row (when the DJ's
+// "never the same artist twice" Smart Fill option is on).
+constexpr double kSortSameArtistCost = 2.0;
 // The bass swap timer is started this much before the swap (see armBassSwap).
 constexpr double kSwapTimerEarlyMs = 16.0;
 
@@ -688,8 +692,19 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
         startId = rows.first().id;
     }
 
-    // TODO(autodj-2): read weights from the Auto DJ preferences.
-    const MixScorer scorer;
+    // The DJ's Smart Fill choices count for Smart Sort too: the energy
+    // direction (build up / keep level / up and down) and the same artist
+    // twice in a row.
+    MixScoreWeights weights;
+    {
+        const int energyChoice = m_pConfig->getValue(
+                ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillEnergy")), 0);
+        weights.direction = energyChoice == 1
+                ? MixScoreWeights::EnergyDirection::Hold
+                : (energyChoice == 2 ? MixScoreWeights::EnergyDirection::Wave
+                                     : MixScoreWeights::EnergyDirection::Build);
+    }
+    const MixScorer scorer(weights);
 
     m_smartSortRunning = true;
     auto* pWatcher = new QFutureWatcher<SequenceResult>(this);
@@ -706,8 +721,14 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
         bridgeCandidates = loadBridgeCandidates(
                 m_pTrackCollectionManager->internalCollection()->database());
     }
-    pWatcher->setFuture(QtConcurrent::run([features, startId, scorer, bridgeCandidates]() {
-        return SmartSequencer(scorer).solve(features, startId, 2000, bridgeCandidates);
+    // The same rules as the mixes and Smart Fill: key morph, tempo ride.
+    mixstep::Rules rules = mixRules();
+    if (m_pConfig->getValue(
+                ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillAvoidSameArtist")), true)) {
+        rules.sameArtistCost = kSortSameArtistCost;
+    }
+    pWatcher->setFuture(QtConcurrent::run([features, startId, scorer, rules, bridgeCandidates]() {
+        return SmartSequencer(scorer, rules).solve(features, startId, 2000, bridgeCandidates);
     }));
     return ADJ_OK;
 }
@@ -736,6 +757,72 @@ void AutoDJProcessor::setBeatEntryAtStart(bool atStart) {
     m_pConfig->setValue(ConfigKey(kPreferenceGroup, QStringLiteral("BeatEntryAtStart")), atStart);
     kLogger.info() << "The new song's beat comes in at the"
                    << (atStart ? "start" : "middle") << "of the mix";
+}
+
+bool AutoDJProcessor::steadyLoudnessEnabled() const {
+    return m_pConfig->getValue(ConfigKey(kPreferenceGroup, QStringLiteral("SteadyLoudness")), true);
+}
+
+void AutoDJProcessor::setSteadyLoudnessEnabled(bool enabled) {
+    m_pConfig->setValue(ConfigKey(kPreferenceGroup, QStringLiteral("SteadyLoudness")), enabled);
+    kLogger.info() << "Steady loudness" << (enabled ? "on" : "off");
+}
+
+bool AutoDJProcessor::smartMixShapeEnabled() const {
+    return m_pConfig->getValue(ConfigKey(kPreferenceGroup, QStringLiteral("SmartMixShape")), true);
+}
+
+void AutoDJProcessor::setSmartMixShapeEnabled(bool enabled) {
+    m_pConfig->setValue(ConfigKey(kPreferenceGroup, QStringLiteral("SmartMixShape")), enabled);
+    kLogger.info() << "Mix shape from the singing" << (enabled ? "on" : "off");
+}
+
+bool AutoDJProcessor::singingSections(const TrackPointer& pTrack,
+        double rateRatio,
+        phrasealign::Sections* pSections) const {
+    pSections->clear();
+    if (!pTrack || !pTrack->getId().isValid() || !(rateRatio > 0.0)) {
+        return false;
+    }
+    // Found from the waveform with parts; kept until that waveform changes.
+    const ConstWaveformPointer pWaveform = pTrack->getWaveform();
+    auto it = m_singingCache.find(pTrack->getId());
+    if (it == m_singingCache.end() || it->pWaveform != pWaveform) {
+        SingingCacheEntry entry;
+        entry.pWaveform = pWaveform;
+        entry.sections = singingOf(pTrack);
+        if (m_singingCache.size() > 16) {
+            m_singingCache.clear();
+        }
+        it = m_singingCache.insert(pTrack->getId(), entry);
+    }
+    if (!it->sections) {
+        return false;
+    }
+    for (const vocalmap::Section& section : *it->sections) {
+        // Track seconds -> real seconds at the deck's speed (as the grids).
+        pSections->emplace_back(section.startSec / rateRatio, section.endSec / rateRatio);
+    }
+    return true;
+}
+
+bool AutoDJProcessor::tempoRideEnabled() const {
+    return isBeatmatchEnabled() &&
+            m_pConfig->getValue(ConfigKey(kPreferenceGroup, QStringLiteral("TempoRide")), true);
+}
+
+void AutoDJProcessor::setTempoRideEnabled(bool enabled) {
+    m_pConfig->setValue(ConfigKey(kPreferenceGroup, QStringLiteral("TempoRide")), enabled);
+    kLogger.info() << "Tempo ride" << (enabled ? "on" : "off");
+}
+
+mixstep::Rules AutoDJProcessor::mixRules() const {
+    mixstep::Rules rules;
+    if (isBeatmatchEnabled()) {
+        rules.keyMorphLimit = keyMorphLimit();
+        rules.tempoRidePct = tempoRideEnabled() ? beatmatch::kTempoRideMaxGapPct : 0.0;
+    }
+    return rules;
 }
 
 void AutoDJProcessor::setKeyMorphLimit(int semitones) {
@@ -812,7 +899,7 @@ AutoDJProcessor::LiveSuggestions AutoDJProcessor::liveSuggestions(int count) {
                                  : MixScoreWeights::EnergyDirection::Build);
     const bool avoidArtist = m_pConfig->getValue(
             ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillAvoidSameArtist")), true);
-    result.next = BridgeFinder(MixScorer(weights))
+    result.next = BridgeFinder(MixScorer(weights), mixRules())
                           .suggestNext(now,
                                   library,
                                   excludeIds,
@@ -907,6 +994,15 @@ void AutoDJProcessor::beginSmartTransition(
         DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
     m_fadeNowLimit = FadeNowLimit(); // the mix has started
     endSmartTransition(false); // safety: never two at once
+    // Tempo ride: the outgoing song is (now exactly) at the meeting tempo;
+    // the beatmatch below brings the incoming song to it. Its deck is put
+    // back to its own tempo once it has faded out (resetDeckTempo).
+    if (m_ride.active && m_ride.pDeck == pFromDeck) {
+        writeControl(ConfigKey(pFromDeck->group, QStringLiteral("rate_ratio")), m_ride.targetRatio);
+        m_ride.active = false;
+        kLogger.info() << "Tempo ride" << pFromDeck->group << "done: the mix starts at ratio"
+                       << m_ride.targetRatio;
+    }
     // If the outgoing track is still gliding back (a short track), hold its
     // tempo steady during this mix; it is reset once it has faded out.
     m_glide.pDeck = nullptr;
@@ -939,6 +1035,10 @@ void AutoDJProcessor::beginSmartTransition(
         }
     }
     m_smart.fromMid = readControl(eqGainKey(pFromDeck->group, 2));
+    // Steady loudness: the DJ's gain knobs, put back after the mix.
+    m_smart.steadyLoudness = steadyLoudnessEnabled();
+    m_smart.fromPregain = readControl(ConfigKey(pFromDeck->group, QStringLiteral("pregain")));
+    m_smart.toPregain = readControl(ConfigKey(pToDeck->group, QStringLiteral("pregain")));
     m_smart.fromHigh = readControl(eqGainKey(pFromDeck->group, 3));
     m_smart.toMid = readControl(eqGainKey(pToDeck->group, 2));
     m_smart.toHigh = readControl(eqGainKey(pToDeck->group, 3));
@@ -1246,6 +1346,14 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
         writeStem(to, "stem_drums", level(t.drums, t.drumsKill) * b.toDrums);
         // The bass (inside the instrumental) swaps with the drums.
         writeStem(to, "stem_bass", t.bass * b.toBass);
+        // Loudness: the bass part, and the other parts together.
+        const auto mean = [](double a, double b, double c) {
+            return std::sqrt((a * a + b * b + c * c) / 3.0);
+        };
+        applySteadyLoudness(b.fromBass,
+                mean(b.fromVocals, b.fromInstrumental, b.fromDrums),
+                b.toBass,
+                mean(b.toVocals, b.toInstrumental, b.toDrums));
     } else {
         // The bass swaps at the timed swap (see armBassSwap).
         beatmatch::BassState bass;
@@ -1277,6 +1385,47 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
     writeControl(eqGainKey(m_smart.pFrom->group, 3), m_smart.fromHigh * eq.fromMidHigh);
     writeControl(eqGainKey(m_smart.pTo->group, 2), m_smart.toMid * eq.toMidHigh);
     writeControl(eqGainKey(m_smart.pTo->group, 3), m_smart.toHigh * eq.toMidHigh);
+    applySteadyLoudness(m_smart.swapped ? 0.0 : 1.0,
+            eq.fromMidHigh,
+            m_smart.swapped ? 1.0 : 0.0,
+            eq.toMidHigh);
+}
+
+void AutoDJProcessor::applySteadyLoudness(
+        double fromBass, double fromMidHigh, double toBass, double toMidHigh) {
+    if (!m_smart.active || !m_smart.steadyLoudness || std::isnan(m_smart.fromPregain) ||
+            std::isnan(m_smart.toPregain)) {
+        return;
+    }
+    // The crossfader gains exactly as the engine computes them.
+    const ConfigKey curveKey(QStringLiteral("[Mixer Profile]"), QStringLiteral("xFaderCurve"));
+    const ConfigKey calibrationKey(
+            QStringLiteral("[Mixer Profile]"), QStringLiteral("xFaderCalibration"));
+    const ConfigKey modeKey(QStringLiteral("[Mixer Profile]"), QStringLiteral("xFaderMode"));
+    const ConfigKey reverseKey(QStringLiteral("[Mixer Profile]"), QStringLiteral("xFaderReverse"));
+    const double curve = readControl(curveKey);
+    const double calibration = readControl(calibrationKey);
+    const double mode = readControl(modeKey);
+    if (std::isnan(curve) || std::isnan(calibration) || std::isnan(mode)) {
+        return;
+    }
+    const double reverse = readControl(reverseKey);
+    CSAMPLE_GAIN left = 1.0f;
+    CSAMPLE_GAIN right = 1.0f;
+    EngineXfader::getXfadeGains(m_coCrossfader.get(),
+            curve,
+            calibration,
+            mode,
+            !std::isnan(reverse) && reverse > 0.5,
+            &left,
+            &right);
+    const double fromGain = m_smart.pFrom->isLeft() ? left : right;
+    const double toGain = m_smart.pTo->isLeft() ? left : right;
+    const double gain = beatmatch::loudnessGain(beatmatch::deckPower(fromGain, fromBass, fromMidHigh),
+            beatmatch::deckPower(toGain, toBass, toMidHigh));
+    m_smart.lowestLoudnessGain = std::min(m_smart.lowestLoudnessGain, gain);
+    writeControl(ConfigKey(m_smart.pFrom->group, QStringLiteral("pregain")), m_smart.fromPregain * gain);
+    writeControl(ConfigKey(m_smart.pTo->group, QStringLiteral("pregain")), m_smart.toPregain * gain);
 }
 
 void AutoDJProcessor::armBassSwap() {
@@ -1335,6 +1484,16 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
     m_swapTimer.stop();
     if (!m_smart.active) {
         return;
+    }
+    // Put the gain knobs back (steady loudness).
+    if (m_smart.steadyLoudness) {
+        writeControl(ConfigKey(m_smart.pFrom->group, QStringLiteral("pregain")), m_smart.fromPregain);
+        writeControl(ConfigKey(m_smart.pTo->group, QStringLiteral("pregain")), m_smart.toPregain);
+        if (m_smart.lowestLoudnessGain < 0.999) {
+            kLogger.info() << "Steady loudness" << m_smart.pTo->group << ": the mix was turned down"
+                           << "by up to" << 20.0 * std::log10(m_smart.lowestLoudnessGain)
+                           << "dB in the middle";
+        }
     }
     // Put the EQ kills back as the DJ had them.
     writeControl(eqKillKey(m_smart.pFrom->group), m_smart.fromLowKill);
@@ -1547,6 +1706,85 @@ void AutoDJProcessor::followBeats() {
     }
     ControlObject::set(ConfigKey(m_smart.pTo->group, QStringLiteral("rate_ratio")), ratio);
     m_smart.toRatio = ratio; // the glide back starts from here
+}
+
+void AutoDJProcessor::updateRide(DeckAttributes* pDeck, double playPosition) {
+    const TrackPointer pTrack = pDeck->getLoadedTrack();
+    const bool wanted = m_plannedMix.valid && m_plannedMix.ride && pTrack &&
+            m_plannedMix.fromId == pTrack->getId();
+    if (m_ride.active && (m_ride.pDeck != pDeck || !wanted)) {
+        stopRide(true); // the plan changed (another next song, another track)
+    }
+    if (!wanted) {
+        return;
+    }
+    const ConfigKey rateKey(pDeck->group, QStringLiteral("rate_ratio"));
+    if (!m_ride.active) {
+        if (playPosition < m_plannedMix.rideStartPos) {
+            return;
+        }
+        // Start easing. Late (e.g. after Skip to Mix): over the time left.
+        m_ride = TempoRide();
+        m_ride.active = true;
+        m_ride.pDeck = pDeck;
+        m_ride.trackId = pTrack->getId();
+        m_ride.startRatio = pDeck->rateRatio();
+        m_ride.targetRatio = m_plannedMix.rideTargetRatio;
+        m_ride.startPos = std::max(m_plannedMix.rideStartPos, playPosition);
+        m_ride.endPos = std::max(m_ride.startPos, m_plannedMix.rideEndPos);
+        m_ride.lastWritten = m_ride.startRatio;
+        if (m_glide.pDeck == pDeck) {
+            m_glide.pDeck = nullptr; // the ride takes over from a glide back
+        }
+        // Key lock on, so only the tempo moves; put back after the song.
+        const ConfigKey keylockKey(pDeck->group, QStringLiteral("keylock"));
+        if (!m_keylockBefore.contains(pDeck->group)) {
+            m_keylockBefore.insert(pDeck->group, readControl(keylockKey));
+        }
+        writeControl(keylockKey, 1.0);
+        const double duration = getEndSecond(pDeck);
+        kLogger.info() << "Tempo ride" << pDeck->group << ": easing from ratio"
+                       << m_ride.startRatio << "to" << m_ride.targetRatio << "over"
+                       << (m_ride.endPos - m_ride.startPos) * duration << "s (songs"
+                       << m_plannedMix.rideGapPct << "% apart meet in the middle)";
+    } else {
+        const double now = pDeck->rateRatio();
+        if (std::fabs(now - m_ride.lastWritten) > 0.001) {
+            kLogger.info() << "Tempo ride" << pDeck->group << "stopped: tempo changed by hand";
+            m_ride.active = false;
+            m_plannedMix.ride = false;
+            return;
+        }
+        // Planned again (e.g. Fade Now moved the mix earlier): carry on from
+        // here, over the time now left, without a jump.
+        if (std::fabs(m_plannedMix.rideEndPos - m_ride.endPos) > 1e-6 ||
+                std::fabs(m_plannedMix.rideTargetRatio - m_ride.targetRatio) > 1e-6) {
+            m_ride.startRatio = now;
+            m_ride.startPos = playPosition;
+            m_ride.targetRatio = m_plannedMix.rideTargetRatio;
+            m_ride.endPos = std::max(playPosition, m_plannedMix.rideEndPos);
+        }
+    }
+    const double span = m_ride.endPos - m_ride.startPos;
+    const double progress = span > 0.0 ? (playPosition - m_ride.startPos) / span : 1.0;
+    const double ratio = beatmatch::rideRatio(m_ride.startRatio, m_ride.targetRatio, progress);
+    if (std::fabs(ratio - m_ride.lastWritten) > 1e-6) {
+        m_ride.lastWritten = ratio; // before writing: playerRateChanged ignores it
+        writeControl(rateKey, ratio);
+    }
+}
+
+void AutoDJProcessor::stopRide(bool easeBack) {
+    if (!m_ride.active) {
+        return;
+    }
+    m_ride.active = false;
+    DeckAttributes* pDeck = m_ride.pDeck;
+    if (easeBack && pDeck && pDeck->isPlaying()) {
+        kLogger.info() << "Tempo ride" << pDeck->group
+                       << "no longer needed: easing back to its own tempo";
+        startGlide(pDeck, pDeck->rateRatio());
+    }
 }
 
 void AutoDJProcessor::startGlide(DeckAttributes* pDeck, double startRatio) {
@@ -1787,7 +2025,10 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     // has where the mix happens (a beat map may bend away from its average).
     // An outgoing deck still easing back to its own tempo after the previous
     // mix will be there by the time this mix starts.
-    const double fromMixRatio = m_glide.pDeck == pFromDeck ? 1.0 : fromRatio;
+    // (Likewise a deck riding its tempo towards this very mix: the plan is
+    // made from its own tempo, so it asks for the same ride again.)
+    const bool riding = m_ride.active && m_ride.pDeck == pFromDeck;
+    const double fromMixRatio = m_glide.pDeck == pFromDeck || riding ? 1.0 : fromRatio;
     // The steady tempo there: a beat map often goes wrong where the music
     // stops (Xymox "A Million Things": 159 and 235 BPM in its fade-out),
     // which made mixes of songs 2-4% apart quick switches.
@@ -1797,24 +2038,50 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
             ? 60.0 / (to.steadyBeatSecAt(toBodyStartSec >= 0.0 ? toBodyStartSec : toEarliestSec) *
                              toRatio)
             : 0.0;
-    const bool matched = gridsOk && toHasGrid && to.isValid() &&
+    const bool directMatch = gridsOk && toHasGrid && to.isValid() &&
             beatmatch::matchRatio(fromMixBpm, toMixBpm, kBeatmatchTolerancePct).has_value();
+    // Tempo ride: too far apart for one beatmatch (5-9%), both grids steady:
+    // the outgoing song eases part of the way before the mix, the incoming
+    // song beatmatches the rest (each stays within 4.7% of its own tempo).
+    std::optional<beatmatch::RidePlan> ride;
+    if (!directMatch && gridsOk && toHasGrid && to.isValid() && tempoRideEnabled()) {
+        ride = beatmatch::ridePlan(fromMixBpm, toMixBpm, kBeatmatchTolerancePct);
+    }
+    const bool matched = directMatch || ride.has_value();
     const QString notMatchedWhy = !to.isValid()
             ? QStringLiteral("the incoming track has no beat grid")
             : (gridsOk ? QStringLiteral("%1 vs %2 BPM")
                                  .arg(fromMixBpm, 0, 'f', 1)
                                  .arg(toMixBpm, 0, 'f', 1)
                        : gridWhy);
+    // Content-aware mix shape (beatmatched mixes): where each song sings,
+    // from its vocal part (songs split into stems), decides the mix length
+    // and the phrase: no two singers at once, no singer faded out
+    // mid-line, a long blend when nobody sings, a short handover on the
+    // phrase end when there is little room. Unknown singing: the usual plan.
+    std::optional<phrasealign::ShapedPlan> shaped;
+    if (matched) {
+        phrasealign::Sections fromSinging;
+        phrasealign::Sections toSinging;
+        const bool shapeOn = smartMixShapeEnabled();
+        const bool fromKnown = shapeOn && singingSections(pFromTrack, fromRatio, &fromSinging);
+        const bool toKnown = shapeOn && singingSections(pToTrack, toRatio, &toSinging);
+        phrasealign::ShapeInput input;
+        input.pFromSinging = fromKnown ? &fromSinging : nullptr;
+        input.pToSinging = toKnown ? &toSinging : nullptr;
+        input.preferredBars = bars;
+        input.entryAt = beatEntryAtStart() ? 0.0 : 0.5;
+        shaped = phrasealign::planShaped(from,
+                to,
+                fromDeckPositionSec,
+                fromLimitSec, // the fade must be over by here
+                toEarliestSec,
+                toBodyStartSec,
+                true, // body start is precise (analysis v5)
+                input);
+    }
     const auto plan = matched
-            ? phrasealign::plan(from,
-                      to,
-                      fromDeckPositionSec,
-                      fromLimitSec, // the fade must be over by here
-                      toEarliestSec,
-                      bars,
-                      toBodyStartSec,
-                      true, // body start is precise (analysis v5)
-                      beatEntryAtStart() ? 0.0 : 0.5)
+            ? (shaped ? std::optional<phrasealign::Plan>(shaped->plan) : std::nullopt)
             : phrasealign::planUnmatched(from,
                       to,
                       fromDeckPositionSec,
@@ -1830,12 +2097,37 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                         .arg(fromDeckPositionSec));
         return;
     }
+    QString shapeText;
+    if (shaped && (shaped->handover || shaped->phrasesEarlier > 0 || shaped->plan.bars != bars)) {
+        shapeText = QStringLiteral("MIX SHAPE: %1%2, singing together %3 s (usual plan %4 s): ")
+                            .arg(shaped->handover
+                                            ? QStringLiteral("%1-bar handover on the phrase end")
+                                                      .arg(shaped->plan.bars)
+                                            : QStringLiteral("%1 bars").arg(shaped->plan.bars))
+                            .arg(shaped->phrasesEarlier > 0
+                                            ? QStringLiteral(", %1 phrase(s) earlier")
+                                                      .arg(shaped->phrasesEarlier)
+                                            : QString())
+                            .arg(shaped->overlapSec, 0, 'f', 1)
+                            .arg(shaped->usualOverlapSec, 0, 'f', 1);
+    }
+    const QString rideText = shapeText + (ride
+            ? QStringLiteral("TEMPO RIDE (%1 vs %2 BPM, %3% apart: the outgoing song eases to "
+                             "%4% of its tempo before the mix, the incoming one beatmatches at "
+                             "%5%): ")
+                      .arg(fromMixBpm, 0, 'f', 1)
+                      .arg(toMixBpm, 0, 'f', 1)
+                      .arg(ride->gapPct, 0, 'f', 1)
+                      .arg(fromMixRatio * ride->outgoingRatio * 100.0, 0, 'f', 1)
+                      .arg(ride->incomingRatio * 100.0, 0, 'f', 1)
+            : QString());
     // Key on track time (not real time), so the outgoing track easing back
     // to its own tempo does not log a new line many times a second.
-    logOnce(QStringLiteral(" %1 %2")
+    logOnce(QStringLiteral(" %1 %2%3")
                     .arg(plan->fromFadeBeginSec * fromRatio, 0, 'f', 1)
-                    .arg(plan->toStartSec * pToDeck->rateRatio(), 0, 'f', 1),
-            QString(matched ? QString()
+                    .arg(plan->toStartSec * pToDeck->rateRatio(), 0, 'f', 1)
+                    .arg(ride ? QStringLiteral(" ride") : QString()),
+            rideText + QString(matched ? QString()
                             : QStringLiteral("NOT beatmatched (%1), new beat at the END "
                                              "of the fade: ")
                                       .arg(notMatchedWhy)) +
@@ -1854,6 +2146,21 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     m_plannedMix.fromId = pFromTrack->getId();
     m_plannedMix.toId = pToTrack->getId();
     m_plannedMix.matched = matched;
+    m_plannedMix.ride = ride.has_value();
+    if (ride) {
+        // The outgoing speed at the mix, and when to start easing towards it
+        // (fractions of the track, like the fade positions).
+        const double fromDuration = getEndSecond(pFromDeck);
+        m_plannedMix.rideTargetRatio = fromMixRatio * ride->outgoingRatio;
+        m_plannedMix.rideGapPct = ride->gapPct;
+        if (fromDuration > 0.0) {
+            // (Seconds here are real time at the deck's speed now.)
+            const double startSec = std::max(fromDeckPositionSec,
+                    plan->fromFadeBeginSec - beatmatch::kTempoRideSeconds);
+            m_plannedMix.rideStartPos = startSec / fromDuration;
+            m_plannedMix.rideEndPos = plan->fromFadeBeginSec / fromDuration;
+        }
+    }
     pFromDeck->fadeBeginPos = plan->fromFadeBeginSec;
     pFromDeck->fadeEndPos = plan->fromFadeEndSec;
     pToDeck->startPos = plan->toStartSec;
@@ -2176,9 +2483,10 @@ QStringList AutoDJProcessor::smartFill(int count,
     weights.direction = energy;
     // Key morph: a song whose key clashes may still be chosen when Auto DJ
     // will pitch it to fit (only in beatmatched mixes: see extend).
-    const int morphLimit = isBeatmatchEnabled() ? keyMorphLimit() : 0;
+    // The same rules as the mixes: key morph and tempo ride (when on).
     QList<int> keyShifts;
-    const QList<TrackFeatures> found = BridgeFinder(MixScorer(weights))
+    QList<mixstep::Step> steps;
+    const QList<TrackFeatures> found = BridgeFinder(MixScorer(weights), mixRules())
                                                .extend(*pLast,
                                                        library,
                                                        excludeIds,
@@ -2187,36 +2495,42 @@ QStringList AutoDJProcessor::smartFill(int count,
                                                        avoidSameArtist,
                                                        // never 0 (0 = no randomness)
                                                        QRandomGenerator::global()->generate() | 1u,
-                                                       morphLimit,
-                                                       &keyShifts);
-    QHash<TrackId, int> shiftOf;
-    for (int i = 0; i < found.size() && i < keyShifts.size(); ++i) {
-        shiftOf.insert(found[i].id, keyShifts[i]);
+                                                       0,
+                                                       &keyShifts,
+                                                       &steps);
+    QHash<TrackId, mixstep::Step> stepOf;
+    for (int i = 0; i < found.size() && i < steps.size(); ++i) {
+        stepOf.insert(found[i].id, steps[i]);
     }
     chain += found;
     PlaylistDAO& playlistDao = m_pTrackCollectionManager->internalCollection()->getPlaylistDAO();
     const int playlistId = m_pAutoDJTableModel->getPlaylist();
     int morphed = 0;
+    int rides = 0;
     for (const TrackFeatures& t : chain) {
         if (playlistDao.appendTrackToPlaylist(t.id, playlistId)) {
             QString text = opener && t.id == opener->id
                     ? tr("Opening track (chosen for you): %1").arg(MixScorer::trackText(t))
                     : MixScorer::trackText(t);
-            const int shift = shiftOf.value(t.id);
-            if (shift != 0) {
+            const mixstep::Step step = stepOf.value(t.id);
+            if (step.keyShift != 0) {
                 ++morphed;
                 text += tr("  (key morph %1%2 semitone: plays in %3)")
-                                .arg(shift > 0 ? QStringLiteral("+") : QString())
-                                .arg(shift)
-                                .arg(MixScorer::shiftKey(t, shift).camelotText());
+                                .arg(step.keyShift > 0 ? QStringLiteral("+") : QString())
+                                .arg(step.keyShift)
+                                .arg(MixScorer::shiftKey(t, step.keyShift).camelotText());
+            }
+            if (step.tempoRide) {
+                ++rides;
+                text += tr("  (tempo ride: %1% apart, the two songs meet in the middle)")
+                                .arg(step.tempoGapPct, 0, 'f', 1);
             }
             added << text;
         }
     }
-    if (morphed > 0) {
-        kLogger.info() << "Smart fill:" << morphed
-                       << "of the songs fit thanks to a key morph (Auto DJ pitches them"
-                       << "in the mix)";
+    if (morphed > 0 || rides > 0) {
+        kLogger.info() << "Smart fill:" << morphed << "songs fit thanks to a key morph,"
+                       << rides << "thanks to the tempo ride";
     }
     m_pAutoDJTableModel->select();
     kLogger.info() << "Smart fill: added" << added.size() << "tracks";
@@ -2756,6 +3070,7 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::toggleAutoDJ(bool enable) {
         // at the mix tempo. Ease it back to its own tempo, as after a mix
         // that finished (key lock is put back when the glide ends; a key
         // morph stays for the rest of that song, as in a normal mix).
+        stopRide(true); // a ride towards a mix that will not come
         DeckAttributes* pMixTo = m_smart.active && m_smart.beatmatched ? m_smart.pTo : nullptr;
         const double mixToRatio = m_smart.toRatio;
         endSmartTransition(false);
@@ -3032,6 +3347,10 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
         } else if (thisDeck->isRepeat()) {
             // repeat pauses auto DJ
             return;
+        }
+        // Tempo ride towards the next mix (when planned).
+        if (thisDeck->isFromDeck && thisDeckPlaying) {
+            updateRide(thisDeck, thisPlayPosition);
         }
     }
 
@@ -4057,6 +4376,11 @@ void AutoDJProcessor::playerRateChanged(DeckAttributes* pAttributes) {
     // plan the mix again; the glide plans once more when it ends.
     if (pAttributes == m_glide.pDeck &&
             std::fabs(pAttributes->rateRatio() - m_glide.lastWritten) < 1e-6) {
+        return;
+    }
+    // The same for the tempo ride's steps (the plan was made for them).
+    if (m_ride.active && pAttributes == m_ride.pDeck &&
+            std::fabs(pAttributes->rateRatio() - m_ride.lastWritten) < 1e-6) {
         return;
     }
 
