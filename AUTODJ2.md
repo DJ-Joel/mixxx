@@ -37,6 +37,7 @@ All changes are on the branch **`autodj-2`**.
    - 4.15 [Video mixing](#415-video-mixing)
    - 4.16 [The Windows installer](#416-the-windows-installer)
    - 4.17 [Stems: splitting songs into parts](#417-stems-splitting-songs-into-parts)
+   - 4.18 [Seamless mixing: one judge, tempo ride, mix shape, steady loudness](#418-seamless-mixing-one-judge-tempo-ride-mix-shape-steady-loudness)
 5. [Where the code is](#5-where-the-code-is)
 6. [Stored data](#6-stored-data)
 7. [Tests](#7-tests)
@@ -81,7 +82,7 @@ Everything is on the **Auto DJ** page, in the row of buttons above the queue:
 | Button | What it does |
 |---|---|
 | **Shuffle**, **Repeat** | As in Mixxx (Repeat was moved next to Shuffle). |
-| **Beatmatch** | Turns the smart transitions on or off (beatmatch, bass swap, EQ blend, phrase alignment). Right-click: key morph limit (off, 1 or 2 semitones). |
+| **Beatmatch** | Turns the smart transitions on or off (beatmatch, bass swap, EQ blend, phrase alignment). Right-click: key morph limit (off, 1 or 2 semitones), tempo ride (songs 5-9% apart meet in the middle), fit the mix to the singing, steady loudness through the mix (4.18). |
 | **Skip to Mix** | Jumps to just before the next planned mix, for testing transitions quickly. |
 | **Energy** | Rate the energy of the selected songs by hand (1 to 10), or clear the rating. |
 | **Smart Sort** | Sorts the queue. Shows the running order, the clashes, and bridge tracks to choose from. |
@@ -240,6 +241,17 @@ This is the "travelling salesperson path" problem:
 What remains is reported to the DJ: the whole running order, each clash with
 its reason, and for each clash the bridge tracks from section 4.4. Songs
 whose beat grid drifts are marked: "no beatmatch: quick switch".
+
+Smart Sort judges each step with the same rules as Smart Fill and the Live
+Assistant (4.18): a key clash that the key morph can fix is not a clash, two
+songs 5-9% apart that the tempo ride can bring together count as
+beatmatchable, songs with steady grids are preferred as neighbours, the
+energy direction chosen for Smart Fill (build up / keep level / up and down)
+is used, and with "never the same artist twice" on, the same artist back to
+back costs extra. The report says which steps use the key morph or the tempo
+ride ("~ Auto DJ: ..."). On a 318-song library, random 20-song queues went
+from 51% to 67% beatmatchable steps, and the same artist back to back from
+30 to 16 times in the same test.
 
 ### 4.4 Bridge tracks
 
@@ -745,6 +757,56 @@ converted to ONNX (github.com/mixxxdj/demucs).
   agrees" / "DIFFERENT"). Auto DJ uses it, when sure, only for a song that
   has no Intro End marker.
 
+### 4.18 Seamless mixing: one judge, tempo ride, mix shape, steady loudness
+
+The goal: mixes so smooth that you can hardly tell where one song ends.
+
+**One judge for every step** (`src/library/autodj/smart/mixstep.*`).
+Smart Fill, Smart Sort and the Live Assistant ask the same question - "how
+smooth is the step from this song to that one, as Auto DJ will play it?" -
+and get the same answer. `mixstep::judge` looks at the song **as it will be
+heard** (after a key morph or a tempo ride), decides whether the mix will be
+beatmatched, whether a key morph (1 semitone by default) fixes the key, and
+whether the tempo ride is needed, and gives a cost: key, tempo and energy
+from the mix score, plus small costs for an unsteady grid, a key morph, a
+tempo ride, tempos close to the 5% limit, a genre change and (Smart Sort
+with "never the same artist twice") the same artist. Before, each of the
+three had its own rules and could disagree.
+
+**Tempo ride** (right-click Beatmatch, "Tempos 5-9% apart: meet in the
+middle", on by default; needs Beatmatch). Two songs more than 5% apart could
+only be mixed with a quick switch. Now, when both grids are steady and the
+tempos are at most 9% apart, they meet in the middle: during the last minute
+before the mix the outgoing song eases its tempo (very slowly, key lock on,
+so the pitch does not change) part of the way, and the incoming song starts
+at that tempo. Neither song moves more than 4.7% from its own tempo, and the
+incoming song glides back to its own tempo after the mix, as before.
+Half and double time count. Log: "TEMPO RIDE".
+
+**Mix shape** (right-click Beatmatch, "Mix length: fit the mix to the
+singing", on by default). Two singers at once is the most obvious sign of a
+mix. When the singing is known (from the vocal map of the stem parts), the
+mix length (4, 8, 16 or 32 bars, never more than twice the length the DJ
+set) and where it starts (up to 2 phrases earlier) are chosen so that the
+outgoing singing has finished before the second half of the fade and the
+incoming singing starts after the first half. A short mix of under 8 bars
+is a **handover**: the fade ends on a phrase boundary and the incoming song
+comes in there. Long, clean mixes are preferred when both songs are
+instrumental at that point. Songs without a vocal map keep the plain
+phrase plan (4.10). Log: "MIX SHAPE".
+
+**Steady loudness** (right-click Beatmatch, "Steady loudness through the
+mix", on by default). In the middle of a crossfade both songs play at full
+volume (Mixxx's additive crossfader curve), so the mix got louder than
+either song. Auto DJ now works out the combined loudness from the
+crossfader and the EQ levels as the mix goes, and turns the pregain of both
+decks down just enough to keep it level (never more than about 2 dB). The
+pregains are put back when the mix ends. Log: "Steady loudness ... turned
+down by up to X dB".
+
+All three show their reasons in the log, so a mix that sounds wrong can be
+checked, and each can be switched off to compare.
+
 ## 5. Where the code is
 
 | Path | What |
@@ -752,9 +814,10 @@ converted to ONNX (github.com/mixxxdj/demucs).
 | `src/library/autodj/smart/trackfeatures.*` | The track data used for mixing decisions. |
 | `src/library/autodj/smart/mixscorer.*` | The mix score (key, tempo, energy, set shape, key morph). |
 | `src/library/autodj/smart/smartsequencer.*` | Smart Sort (the running order) and its report. |
+| `src/library/autodj/smart/mixstep.*` | The one judge of a step (key morph, tempo ride, steady grids, costs) used by Smart Fill, Smart Sort and the Live Assistant. |
 | `src/library/autodj/smart/bridgefinder.*` | Bridge tracks, Smart Fill, Live Assistant suggestions, genre families, same-song detection. |
-| `src/library/autodj/smart/beatmatch.*` | Tempo ratio, glide back, bass swap, EQ blend, beat lock. |
-| `src/library/autodj/smart/phrasealign.*` | Beat grids and beat maps, phrase-aligned plans, quick switch, Fade Now. |
+| `src/library/autodj/smart/beatmatch.*` | Tempo ratio, glide back, tempo ride, bass swap, EQ blend, steady loudness, beat lock. |
+| `src/library/autodj/smart/phrasealign.*` | Beat grids and beat maps, phrase-aligned plans, mix shape and handover, quick switch, Fade Now. |
 | `src/library/autodj/smart/energystore.*` | Database tables for energy, song body, automatic markers, grid checks, DJ ratings. |
 | `src/library/autodj/smart/genrescan.*` | Genre Scan logic (choosing a genre from MusicBrainz answers). |
 | `src/library/autodj/genrescanner.*` | Genre Scan network requests (MusicBrainz, 1 per second). |
@@ -799,10 +862,10 @@ card, the folder of the last video recording).
 Unit tests are in `src/test/` and run with the other Mixxx tests:
 
 ```
-mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*
+mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*
 ```
 
-189 tests. EnginePositionTest checks the timing the beat lock relies on:
+206 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -827,6 +890,11 @@ music, many of them music videos.
   (at +5% the picture simply runs 5% faster, which is what you want).
 - Video recording is Windows only, and needs the sound at 44100 or 48000 Hz.
 - Stems: Windows only for now; the engine folder (about 1.8 GB with the NVIDIA files) is not part of the source and is not yet in the installer. Stem files are always 44100 Hz.
+- Tempo ride, mix shape and steady loudness were checked in unit tests and
+  simulations on a real library, not yet by ear on many mixes. Each can be
+  switched off (right-click Beatmatch).
+- Mix shape needs the vocal map of the stem parts; without it the plain
+  phrase plan is used.
 - Tested mainly on Windows 11.
 
 ---
@@ -943,3 +1011,12 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     for the mix to end. Smart Fill picks songs Auto DJ can beatmatch (steady
     grids, close tempos, no DJ mixes, no unreachable songs) and counts on
     the key morph.
+41. **Seamless mixing.** Smart Fill, Smart Sort and the Live Assistant use
+    one judge for each step, so they agree; Smart Sort now counts on the key
+    morph and the tempo ride, follows the Smart Fill energy direction and
+    keeps the same artist apart (51% to 67% beatmatchable steps in tests on
+    a real library). New: the tempo ride (songs 5-9% apart meet in the
+    middle), the mix shape (mix length and start fitted around the singing,
+    short mixes as a handover on a phrase boundary) and steady loudness (no
+    louder middle in a mix). Each can be switched off with a right-click on
+    Beatmatch. 206 tests.
