@@ -2244,15 +2244,36 @@ phrasealign::Grid AutoDJProcessor::gridForNow(const TrackPointer& pTrack) const 
                            << "(the grid's beat" << phase + 1 << ")";
         }
     }
-    if (!known || phase <= 0) {
-        return grid; // the grid's first line is beat 1
+    if (known && phase > 0) {
+        if (grid.isMap()) {
+            const phrasealign::Grid moved =
+                    phrasealign::Grid::fromBeats(downbeat::fromBeatOne(grid.beats, phase));
+            if (moved.isValid()) {
+                grid = moved;
+            }
+        } else {
+            grid.firstBeatSec += phase * grid.beatSec;
+        }
     }
-    if (grid.isMap()) {
-        const phrasealign::Grid moved =
-                phrasealign::Grid::fromBeats(downbeat::fromBeatOne(grid.beats, phase));
-        return moved.isValid() ? moved : grid;
+    // An intro read at another tempo than the song (often a misread intro
+    // without a kick): counted back from beat 1 at the song's tempo, so the
+    // incoming song is started, beatmatched and locked by its real beat.
+    const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
+    const mixxx::audio::FramePos introEnd =
+            pIntro ? pIntro->getEndPosition() : mixxx::audio::kInvalidFramePos;
+    const double sampleRate = pTrack->getSampleRate().value();
+    if (grid.isMap() && introEnd.isValid() && sampleRate > 0.0) {
+        double introBpm = 0.0;
+        double songBpm = 0.0;
+        const phrasealign::Grid steady = phrasealign::steadyIntro(
+                grid, introEnd.value() / sampleRate, &introBpm, &songBpm);
+        if (introBpm > 0.0) {
+            kLogger.info() << "Beat map of" << pTrack->getInfo() << ": the intro reads"
+                           << introBpm << "BPM, the song" << songBpm
+                           << "BPM - Auto DJ counts the intro at the song's tempo";
+            return steady;
+        }
     }
-    grid.firstBeatSec += phase * grid.beatSec;
     return grid;
 }
 

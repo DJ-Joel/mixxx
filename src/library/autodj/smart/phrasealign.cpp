@@ -133,6 +133,56 @@ Grid Grid::fromBeats(std::vector<double> beatTimes) {
     return g;
 }
 
+Grid steadyIntro(const Grid& grid, double beatOneSec, double* pIntroBpm, double* pSongBpm) {
+    if (!grid.isMap() || !(beatOneSec > 0.0)) {
+        return grid;
+    }
+    const int last = static_cast<int>(grid.beats.size()) - 1;
+    const int one = static_cast<int>(std::lround(grid.beatAt(beatOneSec)));
+    if (one < 8 || one + 16 > last ||
+            std::fabs(grid.beats[one] - beatOneSec) > 0.25 * grid.beatSecAt(beatOneSec)) {
+        return grid;
+    }
+    // The middle beat length (one odd beat does not count).
+    auto middle = [&grid](int a, int b) {
+        std::vector<double> lengths;
+        for (int i = a; i < b; ++i) {
+            lengths.push_back(grid.beats[i + 1] - grid.beats[i]);
+        }
+        const std::size_t mid = lengths.size() / 2;
+        std::nth_element(lengths.begin(), lengths.begin() + mid, lengths.end());
+        return lengths[mid];
+    };
+    const double intro = middle(0, one);
+    const double song = middle(one, std::min(last, one + 32));
+    if (!(intro > 0.0) || !(song > 0.0) || std::fabs(intro / song - 1.0) <= kIntroTempoTolerance) {
+        return grid;
+    }
+    const double oneSec = grid.beats[one];
+    // Whole bars before beat 1, from about where the first beat was read
+    // (half a beat of leeway), never before the start of the song.
+    const double introSec = std::min(oneSec, oneSec - grid.beats.front() + 0.5 * song);
+    const int count =
+            kBeatsPerBar * static_cast<int>(std::floor(introSec / (kBeatsPerBar * song)));
+    std::vector<double> beats;
+    beats.reserve(grid.beats.size() - one + count);
+    for (int k = count; k >= 1; --k) {
+        beats.push_back(oneSec - k * song);
+    }
+    beats.insert(beats.end(), grid.beats.begin() + one, grid.beats.end());
+    const Grid steady = Grid::fromBeats(std::move(beats));
+    if (!steady.isValid()) {
+        return grid;
+    }
+    if (pIntroBpm) {
+        *pIntroBpm = 60.0 / intro;
+    }
+    if (pSongBpm) {
+        *pSongBpm = 60.0 / song;
+    }
+    return steady;
+}
+
 int barsForSeconds(double wantedSec, double beatSec) {
     if (!(beatSec > 0.0) || !(wantedSec > 0.0)) {
         return kBarsPerPhrase;

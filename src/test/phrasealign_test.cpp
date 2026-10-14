@@ -499,3 +499,54 @@ TEST(PhraseAlignTest, HandoverEndsOnAPhraseBoundary) {
     EXPECT_DOUBLE_EQ(168.0, p->fromFadeBeginSec);
     EXPECT_DOUBLE_EQ(24.0, p->toStartSec);
 }
+
+namespace {
+// A song at 114 BPM whose intro the beat analysis read as 106 BPM (60
+// beats from 2.4 s), beat 1 at 36 s.
+phrasealign::Grid misreadIntro(double introBpm) {
+    std::vector<double> beats;
+    const double one = 36.0;
+    const int introBeats = 60;
+    for (int i = introBeats; i >= 1; --i) {
+        beats.push_back(one - i * 60.0 / introBpm);
+    }
+    for (int i = 0; i < 200; ++i) {
+        beats.push_back(one + i * 60.0 / 114.0);
+    }
+    return phrasealign::Grid::fromBeats(beats);
+}
+} // namespace
+
+TEST(PhraseAlignTest, SteadyIntroCountsAMisreadIntroAtTheSongTempo) {
+    const phrasealign::Grid read = misreadIntro(106.0);
+    double introBpm = 0.0;
+    double songBpm = 0.0;
+    const phrasealign::Grid fixed = phrasealign::steadyIntro(read, 36.0, &introBpm, &songBpm);
+    EXPECT_NEAR(106.0, introBpm, 0.01);
+    EXPECT_NEAR(114.0, songBpm, 0.01);
+    // Beat 1 is where it was, and it is still on a bar line.
+    const double one = fixed.beatAt(36.0);
+    EXPECT_NEAR(std::round(one), one, 1e-9);
+    EXPECT_EQ(0, static_cast<int>(std::lround(one)) % 4);
+    // The intro now has the song's tempo, with whole bars before beat 1.
+    EXPECT_NEAR(60.0 / 114.0, fixed.beatSecAt(20.0), 1e-9);
+    EXPECT_GE(fixed.beats.front(), 0.0);
+    // The first read beat was at 2.0 s: 16 whole bars before beat 1 = 64
+    // beats at 114 BPM = 33.7 s (from 2.3 s).
+    EXPECT_NEAR(36.0 - 64 * 60.0 / 114.0, fixed.beats.front(), 1e-9);
+    // After beat 1 nothing changes.
+    EXPECT_DOUBLE_EQ(read.beatTime(read.beatAt(50.0)), fixed.beatTime(fixed.beatAt(50.0)));
+}
+
+TEST(PhraseAlignTest, SteadyIntroLeavesAMatchingIntroAlone) {
+    const phrasealign::Grid read = misreadIntro(112.0); // 1.8% off: fine
+    double introBpm = 0.0;
+    const phrasealign::Grid same = phrasealign::steadyIntro(read, 36.0, &introBpm);
+    EXPECT_EQ(read.beats, same.beats);
+    EXPECT_DOUBLE_EQ(0.0, introBpm);
+    // A steady grid, or beat 1 at the very start: nothing to do.
+    phrasealign::Grid steady;
+    steady.beatSec = 0.5;
+    EXPECT_FALSE(phrasealign::steadyIntro(steady, 36.0).isMap());
+    EXPECT_EQ(read.beats, phrasealign::steadyIntro(read, read.beats[2]).beats);
+}

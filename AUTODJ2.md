@@ -402,6 +402,15 @@ Works "Whisper to a Scream": intro 106 BPM, the song 115). **Skip to Mix**
 lands 35 s before a mix with a tempo ride (instead of 10 s), so the ride has
 time to ease the tempo slowly.
 
+**Intros read at another tempo.** Beat analysis often misreads an intro
+without a kick: in a 216-song library, 34 intros read more than 6% off the
+song (155 BPM for 110, 133 for 100; Icicle Works "Whisper to a Scream": 106
+for an intro of exactly 16 bars at 114). Following such beats pushed a mix
+half a beat apart. Auto DJ's own grid (`phrasealign::steadyIntro`; the
+song's beat grid is not changed) counts those intros back from beat 1 at
+the song's tempo, in whole bars, so the incoming song is started,
+beatmatched and locked by its real beat. Log: "the intro reads ... BPM".
+
 **Auto DJ switched off during a mix:** the EQ and stem levels are put back,
 and the incoming song eases back to its own tempo (as after a finished mix)
 instead of staying at the mix tempo.
@@ -869,7 +878,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*
 ```
 
-206 tests. EnginePositionTest checks the timing the beat lock relies on:
+208 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -1030,3 +1039,7 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     a mix planned as beatmatched became a plain crossfade because the
     incoming tempo was measured in a slower intro instead of where the beat
     kicks in. Skip to Mix leaves time for a tempo ride.
+43. **Misread intros.** A second test of the same mix showed the beats
+    drifting half a beat apart over the incoming intro, read by the beat
+    analysis at 106 BPM for a 114 BPM song. Intros read more than 6% off
+    the song are now counted at the song's tempo from beat 1. 208 tests.

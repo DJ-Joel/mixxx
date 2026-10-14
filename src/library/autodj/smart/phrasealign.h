@@ -62,6 +62,30 @@ struct Grid {
     static Grid fromBeats(std::vector<double> beatTimes);
 };
 
+/// A beat map whose intro (before beat 1, where the main beat kicks in)
+/// reads a clearly different tempo than the song after it: the intro beats
+/// are counted back from beat 1 at the song's tempo instead. Beat analysis
+/// often misreads an intro without a kick (Icicle Works "Whisper to a
+/// Scream": 106 BPM read for an intro of exactly 16 bars at 114 BPM; in a
+/// 216-song library 39 intros read 4% or more off, most like 155 for 110
+/// or 133 for 100), and a real intro that far off cannot be beatmatched
+/// anyway (following it needs more than the beat lock's 10%): this way
+/// beat 1 still lands on time. Up to 6% the intro is left alone: the beat
+/// lock can follow it, and a live drummer may really start slower. Only for Auto DJ's own use; the song's grid is not
+/// changed. Beat 1 stays on a bar line: whole bars before it, starting
+/// about where the first beat was read.
+///
+/// @param beatOneSec where beat 1 is (the Intro End marker), in seconds
+/// @param pIntroBpm, pSongBpm if not null: the two tempos, when changed
+/// @return the grid with a steady intro, or `grid` unchanged when the intro
+///         agrees (within kIntroTempoTolerance), is too short (under 8
+///         beats), or there is too little song after beat 1 (16 beats)
+constexpr double kIntroTempoTolerance = 0.06;
+Grid steadyIntro(const Grid& grid,
+        double beatOneSec,
+        double* pIntroBpm = nullptr,
+        double* pSongBpm = nullptr);
+
 /// What the transition should be.
 struct Plan {
     double fromFadeBeginSec = 0.0; ///< outgoing track: fade starts (a phrase start)
