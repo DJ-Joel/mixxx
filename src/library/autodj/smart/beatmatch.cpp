@@ -259,4 +259,70 @@ std::optional<double> kickOffset(const std::vector<float>& level,
     return offsets[mid];
 }
 
+std::optional<double> fourThirdsMargin(const std::vector<float>& level,
+        double rate,
+        double beatSec,
+        double fromSec,
+        double toSec) {
+    if (!(rate > 0.0) || !(beatSec > 0.0) || level.size() < 2) {
+        return std::nullopt;
+    }
+    // Hits: where the level rises.
+    std::vector<double> onset(level.size(), 0.0);
+    for (std::size_t i = 1; i < level.size(); ++i) {
+        onset[i] = std::max(0.0, static_cast<double>(level[i]) - level[i - 1]);
+    }
+    constexpr double kWindowSec = 12.0;
+    constexpr double kStepSec = 6.0;
+    constexpr int kSlack = 2; // the tempo bends a little
+    const int window = static_cast<int>(kWindowSec * rate);
+    const int lagBeat = static_cast<int>(std::lround(beatSec * rate));
+    const int lagSlower = static_cast<int>(std::lround(4.0 / 3.0 * beatSec * rate));
+    if (lagSlower + kSlack >= window) {
+        return std::nullopt;
+    }
+    double sumBeat = 0.0;
+    double sumSlower = 0.0;
+    int windows = 0;
+    std::vector<double> seg(window);
+    for (double start = std::max(0.0, fromSec); start + kWindowSec <= toSec; start += kStepSec) {
+        const auto first = static_cast<std::size_t>(std::lround(start * rate));
+        if (first + window > onset.size()) {
+            break;
+        }
+        double mean = 0.0;
+        for (int i = 0; i < window; ++i) {
+            mean += onset[first + i];
+        }
+        mean /= window;
+        double energy = 0.0;
+        for (int i = 0; i < window; ++i) {
+            seg[i] = onset[first + i] - mean;
+            energy += seg[i] * seg[i];
+        }
+        if (!(energy > 0.0)) {
+            continue;
+        }
+        auto repeat = [&](int lag) {
+            double best = -1e300;
+            for (int d = -kSlack; d <= kSlack; ++d) {
+                const int l = lag + d;
+                double sum = 0.0;
+                for (int i = 0; i + l < window; ++i) {
+                    sum += seg[i] * seg[i + l];
+                }
+                best = std::max(best, sum);
+            }
+            return best / energy;
+        };
+        sumBeat += repeat(lagBeat);
+        sumSlower += repeat(lagSlower);
+        ++windows;
+    }
+    if (windows < 3) {
+        return std::nullopt;
+    }
+    return (sumSlower - sumBeat) / windows;
+}
+
 } // namespace beatmatch

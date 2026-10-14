@@ -422,6 +422,18 @@ outgoing phrase. In a 317-song library: 55 such intros, 7 with the marker
 in the intro or no marker (Night Drive "After Dark": 85 BPM for 15 s, then
 113). Log: "the main beat starts at ... after an intro at another tempo".
 
+**Tempo check: a beat read 4/3 too fast.** A rhythm of three hits for
+every four beats (a dotted rhythm) can be read by the beat analysis as the
+beat: Night Drive "After Dark" is 85 BPM but was read 113, so it was
+beatmatched with 115 BPM songs - clashing beats and bars that feel wrong.
+`beatmatch::fourThirdsMargin` measures, on the song's drum part (or the
+high band), how well the hits repeat after one grid beat and after 4/3 of
+one. Margin above 0.1: no beatmatch for that song (a plain crossfade), and
+the log says so: "its real beat looks 4/3 slower than its beat grid ... Set
+its BPM to 3/4 to fix it". In a 318-song library the margin was 0.20 for
+Night Drive and at most -0.01 for every other song. A beat read too slow is
+not checked (swing fooled it: George Michael "Freedom! '90").
+
 **Auto DJ switched off during a mix:** the EQ and stem levels are put back,
 and the incoming song eases back to its own tempo (as after a finished mix)
 instead of staying at the mix tempo.
@@ -889,7 +901,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*
 ```
 
-211 tests. EnginePositionTest checks the timing the beat lock relies on:
+213 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -1058,3 +1070,6 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     on their main beat, never in the intro (a mix into Night Drive started
     in its 85 BPM intro and the beat lock could not follow). Intros counted
     in whole phrases before beat 1. 211 tests.
+45. **Tempo check.** Night Drive "After Dark" (85 BPM, read 113) is no
+    longer beatmatched by its wrong grid: the drum part shows its real beat
+    is 4/3 slower. 213 tests.

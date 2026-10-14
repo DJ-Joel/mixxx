@@ -160,4 +160,26 @@ std::optional<double> kickOffset(const std::vector<float>& level,
         double rate,
         const std::vector<double>& beatTimes);
 
+/// Tempo check: is the song's real beat 4/3 slower than its beat grid? A
+/// dotted rhythm (three hits for every four beats) is read by the beat
+/// analysis as the beat: Night Drive "After Dark" is 85 BPM but read 113.
+/// Such a song cannot be beatmatched by its grid (it clashes and its bars
+/// feel wrong). Measured on the drum part (or the high band): how well the
+/// hits repeat after one grid beat and after 4/3 of one, in 12 s windows.
+/// In a 318-song library this margin was 0.20 for Night Drive and at most
+/// -0.01 for every other song. (The other way round, a beat read too slow,
+/// is not checked: swing fooled it, George Michael "Freedom! '90".)
+///
+/// @param level drum level (0..1), `rate` values per second
+/// @param beatSec the grid's beat length
+/// @return how much better the hits repeat at 4/3 of the beat than at the
+///         beat (> kFourThirdsMargin: the real beat is 4/3 slower), or
+///         nothing when there is too little music between fromSec and toSec
+constexpr double kFourThirdsMargin = 0.1;
+std::optional<double> fourThirdsMargin(const std::vector<float>& level,
+        double rate,
+        double beatSec,
+        double fromSec,
+        double toSec);
+
 } // namespace beatmatch

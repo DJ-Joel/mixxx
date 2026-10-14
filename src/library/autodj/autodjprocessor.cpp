@@ -190,6 +190,36 @@ double kickOffsetOf(const TrackPointer& pTrack, const phrasealign::Grid& grid) {
     return beatmatch::kickOffset(level, frames / seconds, beats).value_or(0.0);
 }
 
+/// Tempo check (beatmatch::fourThirdsMargin) from the drum part, or the
+/// high band of songs without parts. Nothing when the waveform is not there.
+std::optional<double> fourThirdsMarginOf(const TrackPointer& pTrack) {
+    if (!pTrack || !(pTrack->getBpm() > 0.0)) {
+        return std::nullopt;
+    }
+    const ConstWaveformPointer pWaveform = pTrack->getWaveform();
+    const double seconds = pTrack->getDuration();
+    if (!pWaveform || !(seconds > 60.0)) {
+        return std::nullopt;
+    }
+    const int frames = pWaveform->getDataSize() / 2; // left and right
+    if (frames < 1000) {
+        return std::nullopt;
+    }
+    const bool drums = pWaveform->hasStem() && pTrack->getStemInfo().size() >= 4;
+    const WaveformData* pData = pWaveform->data();
+    std::vector<float> level(frames);
+    for (int f = 0; f < frames; ++f) {
+        const WaveformData& l = pData[2 * f];
+        const WaveformData& r = pData[2 * f + 1];
+        level[f] = (drums ? 0.5f * (l.stems[0] + r.stems[0])
+                          : 0.5f * (l.filtered.high + r.filtered.high)) /
+                255.0f;
+    }
+    // The body of the song (not its intro and fade-out).
+    return beatmatch::fourThirdsMargin(
+            level, frames / seconds, 60.0 / pTrack->getBpm(), 20.0, seconds - 20.0);
+}
+
 QString minutesText(double seconds) {
     const int s = static_cast<int>(std::lround(std::max(0.0, seconds)));
     return QStringLiteral("%1:%2").arg(s / 60).arg(s % 60, 2, 10, QLatin1Char('0'));
@@ -804,6 +834,35 @@ bool AutoDJProcessor::singingSections(const TrackPointer& pTrack,
         pSections->emplace_back(section.startSec / rateRatio, section.endSec / rateRatio);
     }
     return true;
+}
+
+bool AutoDJProcessor::realBeatSlower(const TrackPointer& pTrack) const {
+    if (!pTrack || !pTrack->getId().isValid()) {
+        return false;
+    }
+    const ConstWaveformPointer pWaveform = pTrack->getWaveform();
+    const double bpm = pTrack->getBpm();
+    auto it = m_tempoCheckCache.find(pTrack->getId());
+    if (it == m_tempoCheckCache.end() || it->pWaveform != pWaveform || it->bpm != bpm) {
+        TempoCheckEntry entry;
+        entry.pWaveform = pWaveform;
+        entry.bpm = bpm;
+        const auto margin = fourThirdsMarginOf(pTrack);
+        entry.slower = margin && *margin > beatmatch::kFourThirdsMargin;
+        if (entry.slower) {
+            kLogger.info() << "Tempo check of" << pTrack->getInfo()
+                           << ": its real beat looks 4/3 slower than its beat grid ("
+                           << bpm * 0.75 << "BPM, not" << bpm
+                           << "- a rhythm of three hits for every four beats was read as the "
+                              "beat; margin"
+                           << *margin << "): no beatmatch. Set its BPM to 3/4 to fix it.";
+        }
+        if (m_tempoCheckCache.size() > 16) {
+            m_tempoCheckCache.clear();
+        }
+        it = m_tempoCheckCache.insert(pTrack->getId(), entry);
+    }
+    return it->slower;
 }
 
 bool AutoDJProcessor::tempoRideEnabled() const {
@@ -2023,7 +2082,9 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     }
     // An intro at another tempo (slower, or misread by the beat analysis):
     // the incoming song starts on its main beat, never in that intro.
-    const double toMainTrackSec = mainBeatSec(pToTrack);
+    // (Not when its real beat is 4/3 slower than its grid: then its intro
+    // had the right tempo and the "main beat" is the misread part.)
+    const double toMainTrackSec = realBeatSlower(pToTrack) ? -1.0 : mainBeatSec(pToTrack);
     const bool toStartsOnMainBeat = toMainTrackSec >= 0.0;
     if (toStartsOnMainBeat) {
         const double mainSec = toMainTrackSec / pToDeck->rateRatio();
@@ -2364,6 +2425,17 @@ bool AutoDJProcessor::gridsAllowBeatmatch(const TrackPointer& pFromTrack,
     for (const TrackPointer& pTrack : {pFromTrack, pToTrack}) {
         if (!pTrack) {
             continue;
+        }
+        if (realBeatSlower(pTrack)) {
+            if (pWhy) {
+                *pWhy = QStringLiteral(
+                        "the real beat of \"%1\" looks 4/3 slower than its beat grid "
+                        "(%2 BPM, not %3)")
+                                .arg(pTrack->getInfo())
+                                .arg(pTrack->getBpm() * 0.75, 0, 'f', 1)
+                                .arg(pTrack->getBpm(), 0, 'f', 1);
+            }
+            return false;
         }
         double bpm = 0.0;
         double firstBeatSec = 0.0;

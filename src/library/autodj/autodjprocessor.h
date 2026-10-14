@@ -500,6 +500,15 @@ class AutoDJProcessor : public QObject {
     bool singingSections(const TrackPointer& pTrack,
             double rateRatio,
             phrasealign::Sections* pSections) const;
+    /// Tempo check: the song's real beat is 4/3 slower than its beat grid
+    /// (beatmatch::fourThirdsMargin): never beatmatched by that grid.
+    bool realBeatSlower(const TrackPointer& pTrack) const;
+    struct TempoCheckEntry {
+        ConstWaveformPointer pWaveform;
+        double bpm = 0.0;
+        bool slower = false;
+    };
+    mutable QHash<TrackId, TempoCheckEntry> m_tempoCheckCache;
     struct SingingCacheEntry {
         ConstWaveformPointer pWaveform;
         std::optional<std::vector<vocalmap::Section>> sections;

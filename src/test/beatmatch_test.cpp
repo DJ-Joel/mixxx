@@ -339,3 +339,47 @@ TEST(BeatmatchTest, SteadyLoudnessTurnsTheMiddleOfTheMixDown) {
                     beatmatch::deckPower(0.7071, 1, 1)),
             1e-3);
 }
+
+namespace {
+// A drum level at 441 values a second: a hit every `periodSec`, and
+// optionally a dotted rhythm (a hit every 3/4 of that) more quietly.
+std::vector<float> drumHits(double periodSec, double dottedLevel, double seconds) {
+    constexpr double kRate = 441.0;
+    std::vector<float> level(static_cast<std::size_t>(seconds * kRate), 0.0f);
+    auto hit = [&](double t, float height) {
+        for (int k = 0; k < 20; ++k) { // a short decay
+            const auto i = static_cast<std::size_t>(t * kRate) + k;
+            if (i < level.size()) {
+                level[i] = std::max(level[i], height * (1.0f - k / 20.0f));
+            }
+        }
+    };
+    for (double t = 0.0; t < seconds; t += periodSec) {
+        hit(t, 1.0f);
+    }
+    if (dottedLevel > 0.0) {
+        for (double t = 0.0; t < seconds; t += 0.75 * periodSec) {
+            hit(t, static_cast<float>(dottedLevel));
+        }
+    }
+    return level;
+}
+} // namespace
+
+TEST(BeatmatchTest, FourThirdsMarginFindsADottedRhythmReadAsTheBeat) {
+    // The real beat is 85 BPM; the grid says 113.3 (the dotted rhythm).
+    const auto level = drumHits(60.0 / 85.0, 0.6, 200.0);
+    const auto margin = beatmatch::fourThirdsMargin(level, 441.0, 60.0 / 113.33, 20.0, 180.0);
+    ASSERT_TRUE(margin.has_value());
+    EXPECT_GT(*margin, beatmatch::kFourThirdsMargin);
+}
+
+TEST(BeatmatchTest, FourThirdsMarginLeavesARightGridAlone) {
+    // A plain 4-to-the-floor song at 113 BPM, read right.
+    const auto level = drumHits(60.0 / 113.0, 0.0, 200.0);
+    const auto margin = beatmatch::fourThirdsMargin(level, 441.0, 60.0 / 113.0, 20.0, 180.0);
+    ASSERT_TRUE(margin.has_value());
+    EXPECT_LT(*margin, 0.0);
+    // Too short a song: no answer.
+    EXPECT_FALSE(beatmatch::fourThirdsMargin(level, 441.0, 60.0 / 113.0, 20.0, 40.0).has_value());
+}
