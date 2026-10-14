@@ -159,11 +159,12 @@ Grid steadyIntro(const Grid& grid, double beatOneSec, double* pIntroBpm, double*
         return grid;
     }
     const double oneSec = grid.beats[one];
-    // Whole bars before beat 1, from about where the first beat was read
-    // (half a beat of leeway), never before the start of the song.
+    // Whole phrases before beat 1 (so phrases count from it), from about
+    // where the first beat was read (half a beat of leeway), never before
+    // the start of the song.
     const double introSec = std::min(oneSec, oneSec - grid.beats.front() + 0.5 * song);
-    const int count =
-            kBeatsPerBar * static_cast<int>(std::floor(introSec / (kBeatsPerBar * song)));
+    const int count = kBeatsPerPhrase *
+            static_cast<int>(std::floor(introSec / (kBeatsPerPhrase * song)));
     std::vector<double> beats;
     beats.reserve(grid.beats.size() - one + count);
     for (int k = count; k >= 1; --k) {
@@ -181,6 +182,60 @@ Grid steadyIntro(const Grid& grid, double beatOneSec, double* pIntroBpm, double*
         *pSongBpm = 60.0 / song;
     }
     return steady;
+}
+
+double mainBeatStart(const Grid& grid) {
+    if (!grid.isMap() || grid.beats.size() < 49) {
+        return -1.0;
+    }
+    const int last = static_cast<int>(grid.beats.size()) - 1;
+    std::vector<double> lengths;
+    lengths.reserve(last);
+    for (int i = 0; i < last; ++i) {
+        lengths.push_back(grid.beats[i + 1] - grid.beats[i]);
+    }
+    auto middleOf = [](std::vector<double> v) {
+        const std::size_t mid = v.size() / 2;
+        std::nth_element(v.begin(), v.begin() + mid, v.end());
+        return v[mid];
+    };
+    const double song = middleOf(lengths);
+    if (!(song > 0.0)) {
+        return -1.0;
+    }
+    auto good = [&](int i) {
+        return std::fabs(lengths[i] / song - 1.0) <= kMainBeatTolerance;
+    };
+    constexpr int kRun = 16;
+    int start = -1;
+    for (int i = 0; i + kRun <= last; ++i) {
+        if (!good(i)) {
+            continue; // the main beat starts on a good beat
+        }
+        int bad = 0;
+        // One misplaced beat makes two odd beat lengths.
+        for (int k = i; k < i + kRun && bad <= 2; ++k) {
+            bad += good(k) ? 0 : 1;
+        }
+        if (bad <= 2) {
+            start = i;
+            break;
+        }
+    }
+    if (start < 8) {
+        return -1.0; // no intro to speak of
+    }
+    const double startSec = grid.beats[start];
+    if (startSec > kMaxIntroSec || startSec - grid.beats.front() >
+                    kMaxIntroShare * (grid.beats.back() - grid.beats.front())) {
+        return -1.0; // not an intro: a long stretch read at another tempo
+    }
+    const double intro =
+            middleOf(std::vector<double>(lengths.begin(), lengths.begin() + start));
+    if (std::fabs(intro / song - 1.0) <= kIntroTempoTolerance) {
+        return -1.0; // the intro has the song's tempo, just a few odd beats
+    }
+    return grid.beats[start];
 }
 
 int barsForSeconds(double wantedSec, double beatSec) {
@@ -409,12 +464,13 @@ std::optional<ShapedPlan> planShaped(const Grid& from,
             if (bars > 2 * preferred || (!singingKnown && bars != preferred)) {
                 continue;
             }
-            const bool handover = bars < kBarsPerPhrase;
+            const bool handover = bars < kBarsPerPhrase && !input.startOnEntry;
             const auto plan = handover
                     ? planHandover(from, to, fromNowSec, limit, toEarliestSec, bars,
                               toBodyStartSec, toBodyMarked)
                     : phrasealign::plan(from, to, fromNowSec, limit, toEarliestSec, bars,
-                              toBodyStartSec, toBodyMarked, input.entryAt);
+                              toBodyStartSec, toBodyMarked,
+                              input.startOnEntry ? 0.0 : input.entryAt);
             if (!plan) {
                 continue;
             }

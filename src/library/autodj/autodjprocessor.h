@@ -480,12 +480,19 @@ class AutoDJProcessor : public QObject {
     /// The track's beats counted from beat 1 of the bar: the grid, moved on to
     /// the downbeat the analysis found when it is sure (downbeat.h).
     phrasealign::Grid gridFor(const TrackPointer& pTrack) const;
-    phrasealign::Grid gridForNow(const TrackPointer& pTrack) const; // no cache
+    /// No cache. `pMainBeatSec`: where the song is started when its intro
+    /// has another tempo (track seconds), else -1.
+    phrasealign::Grid gridForNow(
+            const TrackPointer& pTrack, double* pMainBeatSec = nullptr) const;
+    /// Where the song must start, after an intro at another tempo (track
+    /// seconds), or -1 (phrasealign::mainBeatStart).
+    double mainBeatSec(const TrackPointer& pTrack) const;
     struct GridCacheEntry {
         mixxx::BeatsPointer pBeats;
         double introEndFrame = -1.0;
         double durationSec = 0.0;
         phrasealign::Grid grid;
+        double mainBeatSec = -1.0;
     };
     mutable QHash<TrackId, GridCacheEntry> m_gridCache;
     /// Where a song sings (from its waveform with parts), in real seconds at

@@ -72,8 +72,8 @@ struct Grid {
 /// anyway (following it needs more than the beat lock's 10%): this way
 /// beat 1 still lands on time. Up to 6% the intro is left alone: the beat
 /// lock can follow it, and a live drummer may really start slower. Only for Auto DJ's own use; the song's grid is not
-/// changed. Beat 1 stays on a bar line: whole bars before it, starting
-/// about where the first beat was read.
+/// changed. Beat 1 stays on a phrase start: whole phrases before it,
+/// starting about where the first beat was read.
 ///
 /// @param beatOneSec where beat 1 is (the Intro End marker), in seconds
 /// @param pIntroBpm, pSongBpm if not null: the two tempos, when changed
@@ -81,6 +81,22 @@ struct Grid {
 ///         agrees (within kIntroTempoTolerance), is too short (under 8
 ///         beats), or there is too little song after beat 1 (16 beats)
 constexpr double kIntroTempoTolerance = 0.06;
+
+/// Where the main beat starts, in a beat map whose intro has another tempo
+/// (a slower intro, or one the beat analysis misread: Night Drive "After
+/// Dark" reads 85 BPM for 16 s, then 113 BPM). The first beat from which
+/// 16 beats in a row (one misplaced beat allowed) are within kMainBeatTolerance of
+/// the song's tempo, when the beats before it are more than
+/// kIntroTempoTolerance off. The incoming song is started there, never in
+/// that intro.
+/// An "intro" longer than kMaxIntroSec or kMaxIntroShare of the song is not
+/// one (neuroticfish "Velocity": 93 BPM read for 130 s, then 140 BPM).
+/// @return the time of that beat, or -1 when the intro has the song's tempo
+///         (or there is no intro, or no beat map)
+constexpr double kMainBeatTolerance = 0.03;
+constexpr double kMaxIntroSec = 90.0;
+constexpr double kMaxIntroShare = 0.4;
+double mainBeatStart(const Grid& grid);
 Grid steadyIntro(const Grid& grid,
         double beatOneSec,
         double* pIntroBpm = nullptr,
@@ -164,6 +180,10 @@ struct ShapeInput {
     const Sections* pToSinging = nullptr;   ///< where the incoming song sings (null = unknown)
     int preferredBars = 8;  ///< the DJ's mix length (barsForSeconds)
     double entryAt = 0.0;   ///< as plan()
+    /// The incoming song starts on its main beat (its intro has another
+    /// tempo, see mainBeatStart): no handover with the intro under the
+    /// outgoing phrase, and entryAt 0.
+    bool startOnEntry = false;
 };
 struct ShapedPlan {
     Plan plan;

@@ -2017,9 +2017,23 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                     : QStringLiteral("Intro End marker, set by DJ");
         }
     }
-    const bool toBodyMarked = toMarkedBeatSec >= 0.0;
+    bool toBodyMarked = toMarkedBeatSec >= 0.0;
     if (toBodyMarked) {
         toBodyStartSec = toMarkedBeatSec;
+    }
+    // An intro at another tempo (slower, or misread by the beat analysis):
+    // the incoming song starts on its main beat, never in that intro.
+    const double toMainTrackSec = mainBeatSec(pToTrack);
+    const bool toStartsOnMainBeat = toMainTrackSec >= 0.0;
+    if (toStartsOnMainBeat) {
+        const double mainSec = toMainTrackSec / pToDeck->rateRatio();
+        if (!toBodyMarked || std::fabs(mainSec - toBodyStartSec) > 0.02) {
+            introSource = QStringLiteral("main beat after an intro at another tempo");
+        } else {
+            introSource += QStringLiteral(", after an intro at another tempo");
+        }
+        toBodyStartSec = mainSec;
+        toBodyMarked = true;
     }
     // The incoming track starts no earlier than this. When we know where
     // its beat kicks in, use its intro start (first sound): the deck's cue
@@ -2082,6 +2096,7 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
         input.pToSinging = toKnown ? &toSinging : nullptr;
         input.preferredBars = bars;
         input.entryAt = beatEntryAtStart() ? 0.0 : 0.5;
+        input.startOnEntry = toStartsOnMainBeat;
         shaped = phrasealign::planShaped(from,
                 to,
                 fromDeckPositionSec,
@@ -2097,7 +2112,8 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                       to,
                       fromDeckPositionSec,
                       fromLimitSec,
-                      toEarliestSec,
+                      toStartsOnMainBeat ? std::max(toEarliestSec, toBodyStartSec)
+                                         : toEarliestSec,
                       bars,
                       toBodyStartSec,
                       true); // body start is precise (analysis v5)
@@ -2209,7 +2225,7 @@ phrasealign::Grid AutoDJProcessor::gridFor(const TrackPointer& pTrack) const {
             it->introEndFrame == key.introEndFrame && it->durationSec == key.durationSec) {
         return it->grid;
     }
-    key.grid = gridForNow(pTrack);
+    key.grid = gridForNow(pTrack, &key.mainBeatSec);
     if (m_gridCache.size() > 16) {
         m_gridCache.clear(); // only the tracks on the decks matter
     }
@@ -2217,32 +2233,88 @@ phrasealign::Grid AutoDJProcessor::gridFor(const TrackPointer& pTrack) const {
     return key.grid;
 }
 
-phrasealign::Grid AutoDJProcessor::gridForNow(const TrackPointer& pTrack) const {
+phrasealign::Grid AutoDJProcessor::gridForNow(
+        const TrackPointer& pTrack, double* pMainBeatSec) const {
+    if (pMainBeatSec) {
+        *pMainBeatSec = -1.0;
+    }
     phrasealign::Grid grid = AnalyzerEnergy::beatGrid(pTrack);
     if (!grid.isValid() || !m_pTrackCollectionManager ||
             !m_pTrackCollectionManager->internalCollection()) {
         return grid;
     }
-    // Beat 1 = where the main beat kicks in (the Intro End marker).
-    bool known = false;
-    int phase = AnalyzerEnergy::beatOnePhase(pTrack, &known);
-    if (!known) {
-        // No marker: beat 1 found on the song's stem parts, when sure (see
-        // AnalyzerStemDownbeat). Otherwise the grid's first line.
-        double bpm = 0.0;
-        double firstBeatSec = 0.0;
-        AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec);
-        const auto parts = EnergyStore::loadDownbeat(
-                m_pTrackCollectionManager->internalCollection()->database(),
-                pTrack->getId(),
-                true);
-        if (parts && parts->sure && parts->isFor(bpm, firstBeatSec)) {
-            phase = parts->phase;
-            known = true;
-            kLogger.info() << "Beat 1 of" << pTrack->getInfo()
-                           << ": no Intro End marker, using the one found on its parts"
-                           << "(the grid's beat" << phase + 1 << ")";
+    const QSqlDatabase db = m_pTrackCollectionManager->internalCollection()->database();
+    const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
+    const mixxx::audio::FramePos introEnd =
+            pIntro ? pIntro->getEndPosition() : mixxx::audio::kInvalidFramePos;
+    const double sampleRate = pTrack->getSampleRate().value();
+    const double markerSec = introEnd.isValid() && sampleRate > 0.0
+            ? introEnd.value() / sampleRate
+            : -1.0;
+    // The stem parts' beat 1 (AnalyzerStemDownbeat), when sure.
+    double bpm = 0.0;
+    double firstBeatSec = 0.0;
+    AnalyzerEnergy::gridOf(pTrack, &bpm, &firstBeatSec);
+    const auto parts = EnergyStore::loadDownbeat(db, pTrack->getId(), true);
+    const bool partsSure = parts && parts->sure && parts->isFor(bpm, firstBeatSec);
+
+    // An intro at another tempo than the song (slower, or misread by the beat
+    // analysis: Night Drive "After Dark" 85 BPM for 16 s, then 113): the
+    // song is started on its main beat, never in that intro. Beat 1 is that
+    // beat, unless the DJ put the Intro End marker somewhere else, or the
+    // marker is already on the main beat (within a bar).
+    double mainSec = phrasealign::mainBeatStart(grid);
+    if (mainSec >= 0.0) {
+        const auto autoMarkers = EnergyStore::loadAutoMarkers(db, pTrack->getId());
+        const bool markerByDj = markerSec >= 0.0 &&
+                !(autoMarkers.introEndSec >= 0.0 &&
+                        std::fabs(markerSec - autoMarkers.introEndSec) < 0.02);
+        const double barSec = phrasealign::kBeatsPerBar * grid.beatSecAt(mainSec + 1.0);
+        if (markerSec >= mainSec - barSec || markerByDj) {
+            mainSec = markerSec; // the marker is beat 1, and the start
+        } else {
+            // On a bar line: the parts' beat 1 when sure, a beat or two on.
+            if (partsSure) {
+                const int at = static_cast<int>(std::lround(grid.beatAt(mainSec)));
+                for (int j = at; j < at + 4 && j < static_cast<int>(grid.beats.size()); ++j) {
+                    if (((j - parts->phase) % 4 + 4) % 4 == 0) {
+                        mainSec = grid.beats[j];
+                        break;
+                    }
+                }
+            }
+            kLogger.info() << "Beat 1 of" << pTrack->getInfo() << ": the main beat starts at"
+                           << mainSec << "s after an intro at another tempo"
+                           << (markerSec >= 0.0
+                                              ? QStringLiteral("(the Intro End marker, set by "
+                                                               "analysis, is in that intro)")
+                                              : QStringLiteral("(no Intro End marker)"))
+                           << (partsSure ? "- on the parts' beat 1" : "");
         }
+        if (pMainBeatSec) {
+            *pMainBeatSec = mainSec;
+        }
+    }
+    const double beatOneSec = mainSec >= 0.0 ? mainSec : markerSec;
+
+    // Beat 1 = where the main beat kicks in.
+    bool known = false;
+    int phase = 0;
+    if (beatOneSec >= 0.0) {
+        const long beat = std::lround(grid.beatAt(beatOneSec));
+        if (beat >= 0) {
+            phase = static_cast<int>(beat % 4);
+            known = true;
+        }
+    }
+    if (!known && partsSure) {
+        // No marker: beat 1 found on the song's stem parts. Otherwise the
+        // grid's first line.
+        phase = parts->phase;
+        known = true;
+        kLogger.info() << "Beat 1 of" << pTrack->getInfo()
+                       << ": no Intro End marker, using the one found on its parts"
+                       << "(the grid's beat" << phase + 1 << ")";
     }
     if (known && phase > 0) {
         if (grid.isMap()) {
@@ -2256,17 +2328,13 @@ phrasealign::Grid AutoDJProcessor::gridForNow(const TrackPointer& pTrack) const 
         }
     }
     // An intro read at another tempo than the song (often a misread intro
-    // without a kick): counted back from beat 1 at the song's tempo, so the
-    // incoming song is started, beatmatched and locked by its real beat.
-    const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
-    const mixxx::audio::FramePos introEnd =
-            pIntro ? pIntro->getEndPosition() : mixxx::audio::kInvalidFramePos;
-    const double sampleRate = pTrack->getSampleRate().value();
-    if (grid.isMap() && introEnd.isValid() && sampleRate > 0.0) {
+    // without a kick): counted back from beat 1 at the song's tempo, so
+    // phrases count from beat 1 and nothing follows the intro's beats.
+    if (grid.isMap() && beatOneSec >= 0.0) {
         double introBpm = 0.0;
         double songBpm = 0.0;
-        const phrasealign::Grid steady = phrasealign::steadyIntro(
-                grid, introEnd.value() / sampleRate, &introBpm, &songBpm);
+        const phrasealign::Grid steady =
+                phrasealign::steadyIntro(grid, beatOneSec, &introBpm, &songBpm);
         if (introBpm > 0.0) {
             kLogger.info() << "Beat map of" << pTrack->getInfo() << ": the intro reads"
                            << introBpm << "BPM, the song" << songBpm
@@ -2275,6 +2343,15 @@ phrasealign::Grid AutoDJProcessor::gridForNow(const TrackPointer& pTrack) const 
         }
     }
     return grid;
+}
+
+double AutoDJProcessor::mainBeatSec(const TrackPointer& pTrack) const {
+    if (!pTrack || !pTrack->getId().isValid()) {
+        return -1.0;
+    }
+    gridFor(pTrack); // fills the cache
+    const auto it = m_gridCache.constFind(pTrack->getId());
+    return it != m_gridCache.constEnd() ? it->mainBeatSec : -1.0;
 }
 
 bool AutoDJProcessor::gridsAllowBeatmatch(const TrackPointer& pFromTrack,

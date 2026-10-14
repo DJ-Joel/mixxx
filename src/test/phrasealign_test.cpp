@@ -550,3 +550,61 @@ TEST(PhraseAlignTest, SteadyIntroLeavesAMatchingIntroAlone) {
     EXPECT_FALSE(phrasealign::steadyIntro(steady, 36.0).isMap());
     EXPECT_EQ(read.beats, phrasealign::steadyIntro(read, read.beats[2]).beats);
 }
+
+namespace {
+// `introBeats` beats at `introBpm` from 0.2 s, then 300 beats at 113 BPM.
+phrasealign::Grid introThenSong(int introBeats, double introBpm) {
+    std::vector<double> beats;
+    double t = 0.2;
+    for (int i = 0; i < introBeats; ++i) {
+        beats.push_back(t);
+        t += 60.0 / introBpm;
+    }
+    for (int i = 0; i < 300; ++i) {
+        beats.push_back(t);
+        t += 60.0 / 113.0;
+    }
+    return phrasealign::Grid::fromBeats(beats);
+}
+} // namespace
+
+TEST(PhraseAlignTest, MainBeatStartFindsTheBeatAfterAnIntroAtAnotherTempo) {
+    // Night Drive "After Dark": 85 BPM read for about 16 s, then 113.
+    const phrasealign::Grid grid = introThenSong(22, 85.0);
+    const double expected = 0.2 + 22 * 60.0 / 85.0;
+    EXPECT_NEAR(expected, phrasealign::mainBeatStart(grid), 1e-9);
+    // One odd beat in the main beat does not move it.
+    std::vector<double> beats = grid.beats;
+    beats[30] += 0.05;
+    EXPECT_NEAR(expected, phrasealign::mainBeatStart(phrasealign::Grid::fromBeats(beats)), 1e-9);
+}
+
+TEST(PhraseAlignTest, MainBeatStartIgnoresSameTempoAndLongStretches) {
+    // An intro at the song's tempo (2% off): nothing to skip.
+    EXPECT_DOUBLE_EQ(-1.0, phrasealign::mainBeatStart(introThenSong(32, 110.8)));
+    // No intro at all.
+    EXPECT_DOUBLE_EQ(-1.0, phrasealign::mainBeatStart(introThenSong(0, 113.0)));
+    // Half the song read at another tempo is not an intro.
+    EXPECT_DOUBLE_EQ(-1.0, phrasealign::mainBeatStart(introThenSong(200, 93.0)));
+    // A steady grid.
+    phrasealign::Grid steady;
+    steady.beatSec = 0.5;
+    EXPECT_DOUBLE_EQ(-1.0, phrasealign::mainBeatStart(steady));
+}
+
+TEST(PhraseAlignTest, ShapeStartsOnTheMainBeatAfterAnIntroAtAnotherTempo) {
+    // As the handover above, but the incoming intro has another tempo: the
+    // song starts on its main beat (32 s), never in that intro.
+    const phrasealign::Sections out{{100.0, 186.0}};
+    const phrasealign::Sections in{{32.5, 80.0}};
+    phrasealign::ShapeInput input;
+    input.pFromSinging = &out;
+    input.pToSinging = &in;
+    input.preferredBars = 8;
+    input.entryAt = 0.5; // even when the DJ wants the beat at the bass swap
+    input.startOnEntry = true;
+    const auto shaped = phrasealign::planShaped(k120, k120, 100.0, kLimit, 0.0, 32.0, true, input);
+    ASSERT_TRUE(shaped.has_value());
+    EXPECT_FALSE(shaped->handover);
+    EXPECT_DOUBLE_EQ(32.0, shaped->plan.toStartSec);
+}

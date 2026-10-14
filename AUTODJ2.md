@@ -411,6 +411,17 @@ song's beat grid is not changed) counts those intros back from beat 1 at
 the song's tempo, in whole bars, so the incoming song is started,
 beatmatched and locked by its real beat. Log: "the intro reads ... BPM".
 
+**Songs start on the main beat.** An incoming song whose intro has another
+tempo than the main beat (slower, or misread) is never started in that
+intro: `phrasealign::mainBeatStart` finds the first beat from which 16
+beats in a row are at the song's tempo (one misplaced beat allowed; not an
+intro if longer than 90 s or 40% of the song). That beat is beat 1 and the
+start, unless the Intro End marker is already on the main beat (within a
+bar) or was set by the DJ. No 4-bar handover with such an intro under the
+outgoing phrase. In a 317-song library: 55 such intros, 7 with the marker
+in the intro or no marker (Night Drive "After Dark": 85 BPM for 15 s, then
+113). Log: "the main beat starts at ... after an intro at another tempo".
+
 **Auto DJ switched off during a mix:** the EQ and stem levels are put back,
 and the incoming song eases back to its own tempo (as after a finished mix)
 instead of staying at the mix tempo.
@@ -878,7 +889,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*
 ```
 
-208 tests. EnginePositionTest checks the timing the beat lock relies on:
+211 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -1043,3 +1054,7 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     drifting half a beat apart over the incoming intro, read by the beat
     analysis at 106 BPM for a 114 BPM song. Intros read more than 6% off
     the song are now counted at the song's tempo from beat 1. 208 tests.
+44. **Start on the main beat.** Songs whose intro has another tempo start
+    on their main beat, never in the intro (a mix into Night Drive started
+    in its 85 BPM intro and the beat lock could not follow). Intros counted
+    in whole phrases before beat 1. 211 tests.
