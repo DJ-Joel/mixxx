@@ -1052,8 +1052,19 @@ void AutoDJProcessor::beginSmartTransition(
     // is not the same as its average BPM.
     const phrasealign::Grid toGrid = gridFor(pToTrack);
     const double toStartSec = trackSecond(pToDeck);
+    // Judged where its beat kicks in, as the phrase plan does: an intro
+    // before it can be slower or read wrong by the beat analysis (Icicle
+    // Works "Whisper to a Scream": intro 106 BPM, the song 115), which made
+    // a planned beatmatch a plain crossfade.
+    const TrackPointer pFromTrackPlan = pFromDeck->getLoadedTrack();
+    const bool samePlan = m_plannedMix.valid && pFromTrackPlan && pToTrack &&
+            m_plannedMix.fromId == pFromTrackPlan->getId() &&
+            m_plannedMix.toId == pToTrack->getId();
+    const double toTempoSec = samePlan && m_plannedMix.toBeatSec > toStartSec
+            ? m_plannedMix.toBeatSec
+            : toStartSec;
     const double toTrackBpm = toGrid.isValid() && toStartSec >= 0.0
-            ? 60.0 / toGrid.steadyBeatSecAt(toStartSec)
+            ? 60.0 / toGrid.steadyBeatSecAt(toTempoSec)
             : (pToTrack ? pToTrack->getBpm() : 0.0);
     std::optional<double> ratio;
     if (!std::isnan(fromBpm)) {
@@ -2146,6 +2157,7 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
     m_plannedMix.fromId = pFromTrack->getId();
     m_plannedMix.toId = pToTrack->getId();
     m_plannedMix.matched = matched;
+    m_plannedMix.toBeatSec = toBodyStartSec;
     m_plannedMix.ride = ride.has_value();
     if (ride) {
         // The outgoing speed at the mix, and when to start easing towards it
@@ -2539,7 +2551,10 @@ QStringList AutoDJProcessor::smartFill(int count,
 
 double AutoDJProcessor::skipToMix() {
     // Land this long before the mix, so the end of the track is heard first.
+    // With a tempo ride planned, earlier: the ride needs time to ease the
+    // tempo slowly enough not to be heard.
     constexpr double kLeadSec = 10.0;
+    constexpr double kRideLeadSec = 35.0;
     if (m_eState != ADJ_IDLE) {
         return 0.0;
     }
@@ -2553,7 +2568,11 @@ double AutoDJProcessor::skipToMix() {
     }
     // fadeBeginPos is a fraction of the track here (see calculateTransition).
     const double nowSec = pFromDeck->playPosition() * duration;
-    const double targetSec = pFromDeck->fadeBeginPos * duration - kLeadSec;
+    const TrackPointer pFromTrack = pFromDeck->getLoadedTrack();
+    const bool ridePlanned = m_plannedMix.valid && m_plannedMix.ride && pFromTrack &&
+            m_plannedMix.fromId == pFromTrack->getId();
+    const double targetSec =
+            pFromDeck->fadeBeginPos * duration - (ridePlanned ? kRideLeadSec : kLeadSec);
     if (targetSec <= nowSec) {
         return 0.0;
     }

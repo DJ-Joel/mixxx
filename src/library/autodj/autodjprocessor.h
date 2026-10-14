@@ -606,6 +606,10 @@ class AutoDJProcessor : public QObject {
         TrackId fromId;
         TrackId toId;
         bool matched = false;
+        // Where the incoming song's beat kicks in (track seconds, -1 =
+        // unknown): its tempo is judged there, not in an intro that may be
+        // slower or read wrong.
+        double toBeatSec = -1.0;
         // Tempo ride (beatmatch::ridePlan): the outgoing speed at the mix and
         // where to ease towards it (fractions of the outgoing track).
         bool ride = false;

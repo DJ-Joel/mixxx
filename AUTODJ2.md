@@ -396,7 +396,11 @@ phrase plan (4.10), which also places the incoming song for it; the mix
 itself follows that decision. (Deciding twice, a moment apart, could
 disagree for tempos right at the 5% limit.) A song that is still easing back
 to its own tempo after the previous mix is judged at its own tempo, since it
-will be there when the mix starts.
+will be there when the mix starts. The incoming tempo is measured where
+its beat kicks in, not where the song starts: an intro can be slower (Icicle
+Works "Whisper to a Scream": intro 106 BPM, the song 115). **Skip to Mix**
+lands 35 s before a mix with a tempo ride (instead of 10 s), so the ride has
+time to ease the tempo slowly.
 
 **Auto DJ switched off during a mix:** the EQ and stem levels are put back,
 and the incoming song eases back to its own tempo (as after a finished mix)
@@ -1020,3 +1024,9 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     short mixes as a handover on a phrase boundary) and steady loudness (no
     louder middle in a mix). Each can be switched off with a right-click on
     Beatmatch. 206 tests.
+42. **First real test of seamless mixing.** 7 mixes: 6 beatmatched, beats
+    within about 5 ms, every bass swap 0 ms off the bar line, the loudness
+    trimmed by 1.2-1.8 dB in the middle, the mix shape used 3 times. Fixed:
+    a mix planned as beatmatched became a plain crossfade because the
+    incoming tempo was measured in a slower intro instead of where the beat
+    kicks in. Skip to Mix leaves time for a tempo ride.
