@@ -487,13 +487,13 @@ Review review(const Found& found, const Song& song) {
             misses.push_back((beat - std::round(beat)) * local);
             halves.push_back(std::fabs(local / beatSec - 1.0) < 0.1 ? local : -1.0);
         }
-        std::vector<double> near;
+        std::vector<double> closeMisses;
         for (double m : misses) {
             if (std::fabs(m) < beatSec / 3.0) {
-                near.push_back(m);
+                closeMisses.push_back(m);
             }
         }
-        r.lineOffsetSec = near.size() >= misses.size() / 3 ? median(near) : 0.0;
+        r.lineOffsetSec = closeMisses.size() >= misses.size() / 3 ? median(closeMisses) : 0.0;
         int on = 0;
         for (double m : misses) {
             on += std::fabs(m - r.lineOffsetSec) <= kOnBeatSec ? 1 : 0;
