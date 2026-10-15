@@ -253,6 +253,35 @@ TEST(BeatCheckTest, AWobblyBeatCheckDoesNotSpoilARightMainPart) {
     }
 }
 
+TEST(BeatCheckTest, StrayBeatsDoNotMakeAMadeUpIntro) {
+    // A live drummer (the tempo bends, so a beat map), heard with stray half
+    // beats and off-beat hits in the first 20 s (Beborn Beton, Apoptygma
+    // Berzerk). Mixxx's tempo is wrong, so a map from the beats heard is made:
+    // every beat in it one beat long, strays or not.
+    const auto beatAt = [](int n) {
+        return 0.5 + 0.5 * n + 1.2 * std::sin(n / 50.0);
+    };
+    beatcheck::Found found;
+    for (int n = 0; beatAt(n) < 240.0; ++n) {
+        found.beats.push_back(beatAt(n));
+        if (beatAt(n) < 20.0 && n % 3 == 1) {
+            found.beats.push_back(0.5 * (beatAt(n) + beatAt(n + 1)) + 0.04); // stray
+        }
+        if (n % 4 == 0) {
+            found.downbeats.push_back(beatAt(n));
+        }
+    }
+    std::sort(found.beats.begin(), found.beats.end());
+    const auto r = beatcheck::review(found, song(steadyGrid(91.0, 0.5)));
+    ASSERT_TRUE(r.tempoWrong);
+    ASSERT_TRUE(r.newGrid);
+    ASSERT_FALSE(r.steady);
+    for (std::size_t i = 1; i < r.newBeats.size() && r.newBeats[i] < 30.0; ++i) {
+        const double gap = r.newBeats[i] - r.newBeats[i - 1];
+        EXPECT_NEAR(0.5, gap, 0.04) << r.newBeats[i];
+    }
+}
+
 TEST(BeatCheckTest, KeptLevelsGiveTheSameGridCheck) {
     // A kick every 0.5 s for 200 s, checked straight and from the kept
     // (packed) levels, with a right and a slightly wrong grid.

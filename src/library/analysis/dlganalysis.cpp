@@ -664,14 +664,15 @@ QString minutesSeconds(double sec) {
 // What the DJ ignored: the same answer again stays ignored, a different
 // one (the grid or the marker changed since) is shown again.
 QString beatCheckSignature(const beatcheck::Review& r) {
-    return QStringLiteral("1|%1%2%3%4%5|%6|%7")
+    return QStringLiteral("1|%1%2%3%4%5%8|%6|%7")
             .arg(r.tempoWrong ? 1 : 0)
             .arg(r.introMisread ? 1 : 0)
             .arg(r.linesOff ? 1 : 0)
             .arg(r.halfBeat ? 1 : 0)
             .arg(r.beatOneOff ? 1 : 0)
             .arg(qRound(r.newGrid ? r.newBpm * 10.0 : 0.0))
-            .arg(qRound(r.newIntroEndSec * 20.0));
+            .arg(qRound(r.newIntroEndSec * 20.0))
+            .arg(r.firstVersionMap ? 1 : 0);
 }
 
 QByteArray beatsHash(const mixxx::BeatsPointer& pBeats) {
@@ -758,13 +759,10 @@ void DlgAnalysis::slotBeatCheck() {
         if (!pTrack || !stored) {
             continue;
         }
-        // Fixed by the beat check and not changed since: done.
-        if (const auto undo = EnergyStore::loadBeatCheckUndo(db, id)) {
-            if (stillAsFixed(*undo, pTrack)) {
-                ++fixedBefore;
-                continue;
-            }
-        }
+        // Fixed by the beat check and not changed since: done, unless the
+        // beat check now has a better grid for it (a first-version map).
+        const auto undo = EnergyStore::loadBeatCheckUndo(db, id);
+        const bool asFixed = undo && stillAsFixed(*undo, pTrack);
         const double sampleRate = pTrack->getSampleRate().value();
         beatcheck::Song song;
         song.grid = AnalyzerEnergy::beatGrid(pTrack);
@@ -784,6 +782,10 @@ void DlgAnalysis::slotBeatCheck() {
         found.downbeats = stored->downbeats;
         beatcheck::Review r = beatcheck::review(found, song);
         if (!r.checked) {
+            continue;
+        }
+        if (asFixed && !r.newGrid) {
+            ++fixedBefore;
             continue;
         }
         ++checked;
@@ -827,6 +829,10 @@ void DlgAnalysis::slotBeatCheck() {
                 r = beatcheck::review(found, song);
             }
         }
+        if (asFixed && !r.newGrid) {
+            ++fixedBefore; // its new grid did not pass: as the Fix left it
+            continue;
+        }
         Row row;
         row.pTrack = pTrack;
         row.review = r;
@@ -855,6 +861,10 @@ void DlgAnalysis::slotBeatCheck() {
         } else if (r.linesOff) {
             problems << tr("Beat lines: only %1% are on the beat.")
                                 .arg(qRound(r.linesOnBeat * 100.0));
+        }
+        if (r.firstVersionMap) {
+            problems << tr("Beat map from the beat check's first version: it went through stray "
+                           "beats, so its start can be at a made-up tempo.");
         }
         if (r.beatOneOff) {
             const double beats = std::fabs(r.beatOneOffBeats);

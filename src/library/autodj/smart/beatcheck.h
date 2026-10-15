@@ -119,6 +119,10 @@ struct Review {
     bool halfBeat = false;
     double beatOneOffBeats = 0.0; ///< Intro End marker from the nearest heard bar line, in beats
     bool beatOneOff = false;   ///< more than kBeatOneTolerance (and at most kBeatOneMaxBeats)
+    /// The song has the beat map the beat check's first version made (through
+    /// stray beats: its start can be at a made-up tempo, Apoptygma Berzerk
+    /// "Until The End Of The World" speeds up to 260 BPM in its first bars).
+    bool firstVersionMap = false;
     // The fix (only what the DJ has not locked or set).
     bool newGrid = false;      ///< replace the beat grid
     bool replacesLock = false; ///< ... of a song with a locked BPM (only if the DJ picks it)
@@ -132,7 +136,7 @@ struct Review {
     double newIntroEndSec = -1.0;  ///< move the Intro End marker here (-1 = leave it)
 
     bool anyProblem() const {
-        return tempoWrong || introMisread || linesOff || beatOneOff;
+        return tempoWrong || introMisread || linesOff || beatOneOff || firstVersionMap;
     }
     bool anyFix() const {
         return newGrid || newIntroEndSec >= 0.0;

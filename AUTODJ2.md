@@ -885,6 +885,16 @@ first run 4 of about 40 new grids failed it afterwards (Ward Brothers,
 Dramarama, Ventirati "Sin City" half a beat off, DJ Snake "Turn Down For
 What"); now they would not be offered.
 
+The beats heard are cleaned before a map is made from them: Beat This
+hears stray half beats and off-beat hits in many intros, and the first
+version smoothed through them, giving made-up intro tempos (Apoptygma
+Berzerk "Until The End Of The World" sped up to 260 BPM in its first bars,
+Beborn Beton, Kissing The Pink). A map that first version made is
+recognised (it is made again from the same beats) and listed with the
+cleaned map as its fix; the lock that Fix set does not count as the
+DJ's. A proposed grid that puts every line where the song has one already
+is not offered (nothing to fix), so fixed songs do not come back.
+
 Intro End markers the DJ set are never moved. A song whose BPM the DJ
 locked can still be fixed, but only when the DJ picks Fix for it (**Fix
 all** leaves those out, and the *listen first* songs). **Every Fix can be
@@ -979,7 +989,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*:BeatCheckTest.*
 ```
 
-225 tests. EnginePositionTest checks the timing the beat lock relies on:
+226 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -1160,3 +1170,6 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     grid check against the music; every Fix can be undone; fixed songs are
     not listed again; a locked BPM can be fixed when the DJ picks it.
     225 tests.
+48. **Beat check, no made-up intros.** Stray beats are left out before a
+    map is made; maps from the first version are found and offered again
+    cleaned; a grid the same as the song's is not offered. 226 tests.

@@ -25,6 +25,13 @@ double besselI0(double x) {
     return sum;
 }
 
+// Intro beats heard on the counted-back intro: this close, this share.
+constexpr double kIntroFitSec = 0.04;
+constexpr double kIntroFitShare = 0.5; // by chance: about 1 in 6
+// A beat heard this far (in beats) from a whole number of beats after the
+// last one kept is a stray one.
+constexpr double kStrayTolerance = 0.15;
+
 double median(std::vector<double> values) {
     if (values.empty()) {
         return 0.0;
@@ -202,6 +209,43 @@ Fit fitLine(const std::vector<double>& beats, double beatSec) {
     return fit;
 }
 
+// The beats heard without the stray ones between them: the beat check hears
+// half beats and off-beat hits in many intros (Beborn Beton "Another
+// World", Apoptygma Berzerk "Until The End Of The World"), and a map made
+// through them gets a made-up intro tempo. A beat is kept when it is a
+// whole number of beats after the last one kept (within kStrayTolerance of
+// a beat); after 4 s without one that fits (the tempo really changed) the
+// count starts again from the next beat.
+std::vector<double> cleanBeats(const std::vector<double>& beats, double beatSec) {
+    std::vector<double> kept;
+    std::vector<double> gaps; // recent one-beat gaps kept
+    for (double t : beats) {
+        if (kept.empty()) {
+            kept.push_back(t);
+            continue;
+        }
+        double local = beatSec;
+        if (gaps.size() >= 4) {
+            const std::size_t n = std::min<std::size_t>(gaps.size(), 8);
+            local = median(std::vector<double>(gaps.end() - static_cast<std::ptrdiff_t>(n), gaps.end()));
+        }
+        const double gap = t - kept.back();
+        const double k = std::round(gap / local);
+        // Over several beats a slightly wrong tempo adds up: 2% a beat more.
+        const double tolerance = (kStrayTolerance + 0.02 * k) * local;
+        if (k >= 1.0 && k <= 8.0 && std::fabs(gap - k * local) <= tolerance) {
+            if (k == 1.0) {
+                gaps.push_back(gap);
+            }
+            kept.push_back(t);
+        } else if (gap > 4.0) {
+            kept.push_back(t); // a new start
+            gaps.clear();
+        }
+    }
+    return kept;
+}
+
 // A beat map from the heard beats: missing beats filled in, the 20 ms
 // steps of the beat check smoothed (a short straight line through each
 // beat and its neighbours).
@@ -213,7 +257,7 @@ std::vector<double> smoothMap(const std::vector<double>& beats, double beatSec) 
             const double local = localBeatSec(beats, static_cast<int>(i), beatSec);
             const double gap = beats[i + 1] - beats[i];
             const long n = std::lround(gap / local);
-            if (n >= 2 && n <= 8) {
+            if (n >= 2 && n <= 32) {
                 for (long k = 1; k < n; ++k) {
                     filled.push_back(beats[i] + gap * static_cast<double>(k) / n);
                 }
@@ -257,6 +301,47 @@ std::vector<double> smoothMap(const std::vector<double>& beats, double beatSec) 
         out[i] = std::max(out[i], out[i - 1] + 0.05);
     }
     return out;
+}
+
+// The proposed grid puts its lines where `now` has them already, and the
+// other way round (within 15 ms; at most 2 lines apart, for the ends), all
+// through the song: nothing to fix. Without this, a song fixed with the
+// beat check's own grid could come back. (Only a redone intro is a small
+// part of a song, so nearly all lines the same is not the same.)
+std::vector<double> linesOf(const phrasealign::Grid& grid, double endSec) {
+    if (grid.isMap()) {
+        return grid.beats;
+    }
+    std::vector<double> lines;
+    for (double t = grid.firstBeatSec; t < endSec; t += grid.beatSec) {
+        lines.push_back(t);
+    }
+    return lines;
+}
+int linesApart(const phrasealign::Grid& from, const phrasealign::Grid& to, double endSec, int* pCount) {
+    const double lo = std::max(from.isMap() ? from.beats.front() : 0.0, to.isMap() ? to.beats.front() : 0.0);
+    const double hi = std::min(from.isMap() ? from.beats.back() : endSec, to.isMap() ? to.beats.back() : endSec);
+    int apart = 0;
+    *pCount = 0;
+    for (double t : linesOf(from, endSec)) {
+        if (t < lo || t > hi) {
+            continue;
+        }
+        ++*pCount;
+        const double b = to.beatAt(t);
+        apart += std::fabs(b - std::round(b)) * to.beatSecAt(t) > 0.015 ? 1 : 0;
+    }
+    return apart;
+}
+bool sameLines(const phrasealign::Grid& now, const phrasealign::Grid& proposed, double endSec) {
+    if (!now.isValid() || !proposed.isValid()) {
+        return false;
+    }
+    int countA = 0;
+    int countB = 0;
+    const int apartA = linesApart(proposed, now, endSec, &countA);
+    const int apartB = linesApart(now, proposed, endSec, &countB);
+    return countA >= 16 && countB >= 16 && apartA <= 2 && apartB <= 2;
 }
 
 // An intro misread, the main part right: Mixxx's own beats from where the
@@ -307,21 +392,22 @@ std::vector<double> repairIntro(const phrasealign::Grid& grid,
     }
     *pBeatSec = mainBeatSec;
     std::vector<double> out;
-    // Counted back from the main part.
-    std::vector<double> miss;
+    // Counted back from the main part: most intro beats heard on it (the
+    // beat check hears stray half beats in many intros, Beborn Beton).
+    int onCount = 0;
     for (double t : intro) {
         const double k = (mainSec - t) / mainBeatSec;
-        miss.push_back(std::fabs(k - std::round(k)) * mainBeatSec);
+        onCount += std::fabs(k - std::round(k)) * mainBeatSec <= kIntroFitSec ? 1 : 0;
     }
-    if (median(miss) <= 0.035) {
+    if (onCount >= kIntroFitShare * static_cast<double>(intro.size())) {
         for (long k = static_cast<long>(std::floor(mainSec / mainBeatSec - 1e-9)); k >= 1; --k) {
             out.push_back(mainSec - static_cast<double>(k) * mainBeatSec);
         }
     } else {
         // Its own steady tempo, close to the main one.
-        const Fit fit = fitLine(intro, mainBeatSec);
+        const Fit fit = fitLine(cleanBeats(intro, mainBeatSec), mainBeatSec);
         if (!(fit.beatSec > 0.0) || std::fabs(fit.beatSec / mainBeatSec - 1.0) > 0.04 ||
-                fit.medianMiss > 0.015 || fit.missP90 > 0.04) {
+                fit.medianMiss > 0.015 || fit.missP90 > 0.05) {
             return {};
         }
         const double from = std::max(0.0, intro.front() - 4.0 * fit.beatSec);
@@ -610,15 +696,42 @@ Review review(const Found& found, const Song& song) {
         }
     }
 
+    // A beat map the beat check's first version made, from the same beats
+    // (it smoothed through the stray ones): made again, as it is made now.
+    // Only where leaving out the stray beats changes it (else it is the
+    // same map, and Mixxx's own map can match it when both agree).
+    if (song.grid.isMap() && !r.tempoWrong) {
+        const auto onBarLine = [&counted](std::vector<double> map) {
+            if (!counted.downbeats.empty() && !map.empty()) {
+                const int d = nearest(map, counted.downbeats.front());
+                map.erase(map.begin(), map.begin() + d % phrasealign::kBeatsPerBar);
+            }
+            return map;
+        };
+        const std::vector<double> first = onBarLine(smoothMap(counted.beats, beatSec));
+        if (first.size() >= 16 &&
+                sameLines(song.grid, phrasealign::Grid::fromBeats(first), song.durationSec)) {
+            const std::vector<double> now =
+                    onBarLine(smoothMap(cleanBeats(counted.beats, beatSec), beatSec));
+            r.firstVersionMap = now.size() >= 16 &&
+                    !sameLines(phrasealign::Grid::fromBeats(first),
+                            phrasealign::Grid::fromBeats(now),
+                            song.durationSec);
+        }
+    }
+
     // The new beat grid. An intro misread with the rest right: Mixxx's own
     // beats kept, only the intro redone. Otherwise from the beats heard.
     // (For a locked BPM too, but only if the DJ picks it.)
-    if ((r.tempoWrong || r.linesOff || r.introMisread) && song.allowNewGrid) {
+    if ((r.tempoWrong || r.linesOff || r.introMisread || r.firstVersionMap) && song.allowNewGrid) {
         r.newGrid = true;
-        r.replacesLock = song.bpmLocked;
+        // The lock on a first-version map was set by that Fix, not the DJ.
+        r.replacesLock = song.bpmLocked && !r.firstVersionMap;
         double introBeatSec = 0.0;
         std::vector<double> repaired;
-        if (r.introMisread && !r.tempoWrong && !r.linesOff && song.allowIntroOnly) {
+        // (Not for a first-version map: its main part is that map too.)
+        if (r.introMisread && !r.tempoWrong && !r.linesOff && !r.firstVersionMap &&
+                song.allowIntroOnly) {
             repaired = repairIntro(song.grid, mainSec, counted.beats, &introBeatSec);
         }
         r.introOnly = !repaired.empty();
@@ -637,7 +750,8 @@ Review review(const Found& found, const Song& song) {
             const double barSec = phrasealign::kBeatsPerBar * fit.beatSec;
             r.newFirstBeatSec = bar - std::floor(bar / barSec) * barSec;
         } else {
-            std::vector<double> map = r.introOnly ? repaired : smoothMap(counted.beats, beatSec);
+            std::vector<double> map =
+                    r.introOnly ? repaired : smoothMap(cleanBeats(counted.beats, beatSec), beatSec);
             // Starting on a bar line, so Mixxx's beat 1 is beat 1.
             if (!counted.downbeats.empty() && !map.empty()) {
                 const int d = nearest(map, counted.downbeats.front());
@@ -646,6 +760,27 @@ Review review(const Found& found, const Song& song) {
             }
             r.newBeats = std::move(map);
             r.newBpm = r.introOnly ? 60.0 / introBeatSec : r.songBpm;
+        }
+    }
+
+    if (r.newGrid) {
+        phrasealign::Grid proposed;
+        if (r.steady) {
+            proposed.firstBeatSec = r.newFirstBeatSec;
+            proposed.beatSec = 60.0 / r.newBpm;
+        } else {
+            proposed = phrasealign::Grid::fromBeats(r.newBeats);
+        }
+        if (sameLines(song.grid, proposed, song.durationSec)) {
+            // Already so: the "problem" was the grid against itself.
+            r.newGrid = false;
+            r.replacesLock = false;
+            r.introOnly = false;
+            r.introMisread = false;
+            r.firstVersionMap = false;
+            r.linesOff = false;
+            r.halfBeat = false;
+            r.linesOnBeat = 1.0;
         }
     }
 
