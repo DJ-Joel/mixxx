@@ -4,6 +4,7 @@
 #include <QList>
 #include <QSqlDatabase>
 #include <optional>
+#include <vector>
 
 #include "analyzer/energycalculator.h"
 #include "track/trackid.h"
@@ -114,4 +115,22 @@ class EnergyStore {
     /// value. Tracks with neither are left out.
     static QHash<TrackId, Value> loadEnergies(
             const QSqlDatabase& db, const QList<TrackId>& trackIds);
+
+    /// The beat check (beatcheck.h): the beats and downbeats the second
+    /// beat finder heard, kept so the review can be shown at any time (it
+    /// compares them with the song's grid and markers as they are then).
+    struct BeatCheck {
+        static constexpr int kVersion = 1;
+        int version = 0;
+        QString model;             ///< which beat model heard them
+        double durationSec = 0.0;  ///< the song's length then
+        std::vector<double> beats; ///< seconds
+        std::vector<double> downbeats;
+        QString ignored;           ///< what the DJ chose to Ignore (see DlgAnalysis)
+    };
+    static std::optional<BeatCheck> loadBeatCheck(const QSqlDatabase& db, TrackId trackId);
+    static bool saveBeatCheck(const QSqlDatabase& db, TrackId trackId, const BeatCheck& check);
+    static bool setBeatCheckIgnored(const QSqlDatabase& db, TrackId trackId, const QString& ignored);
+    /// The songs with a beat check result.
+    static QList<TrackId> beatCheckedTracks(const QSqlDatabase& db);
 };

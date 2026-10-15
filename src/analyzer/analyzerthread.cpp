@@ -5,6 +5,7 @@
 #include "analyzer/analyzerbeats.h"
 #include "analyzer/analyzerebur128.h"
 #include "analyzer/analyzerenergy.h"
+#include "analyzer/analyzerbeatcheck.h"
 #include "analyzer/analyzerstemdownbeat.h"
 #include "analyzer/analyzergain.h"
 #include "analyzer/analyzerkey.h"
@@ -131,6 +132,12 @@ void AnalyzerThread::doRun() {
     if (dbConnectionPooler.isPooling()) {
         QSqlDatabase dbConnection = mixxx::DbConnectionPooled(m_dbConnectionPool);
         m_analyzers.push_back(AnalyzerWithState(std::make_unique<AnalyzerEnergy>(dbConnection)));
+        // The beat check: a second beat finder, compared on the Analyze
+        // page (after the beat grid and the markers, so it sees them).
+        if (AnalyzerBeatCheck::isEnabled(m_pConfig)) {
+            m_analyzers.push_back(AnalyzerWithState(
+                    std::make_unique<AnalyzerBeatCheck>(m_pConfig, dbConnection)));
+        }
         // Only takes part in the second pass over a song's stem file (it
         // needs the parts); the normal pass over the song leaves it out.
         auto pStemDownbeat = std::make_unique<AnalyzerStemDownbeat>(dbConnection);

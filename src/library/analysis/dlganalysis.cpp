@@ -17,12 +17,22 @@
 #include <QVBoxLayout>
 #include <cmath>
 
+#include <QComboBox>
+#include <QGuiApplication>
+
+#include "analyzer/analyzerbeatcheck.h"
+#include "analyzer/analyzerenergy.h"
 #include "analyzer/analyzerprogress.h"
+#include "library/autodj/smart/beatcheck.h"
+#include "library/autodj/smart/energystore.h"
+#include "track/beats.h"
+#include "track/cue.h"
 #include "analyzer/analyzerscheduledtrack.h"
 #include "control/controlobject.h"
 #include "library/analysis/ui_dlganalysis.h"
 #include "library/dao/trackschema.h"
 #include "library/library.h"
+#include "library/trackcollection.h"
 #include "library/trackcollectionmanager.h"
 #include "stems/stemcache.h"
 #include "stems/stemsplitter.h"
@@ -135,6 +145,12 @@ DlgAnalysis::DlgAnalysis(WLibrary* parent,
             "with their parts ready. Songs you load into a deck meanwhile go first.\n"
             "Click again to stop. Where the parts are saved: Auto DJ > Stems."));
     connect(pushButtonStemSplit, &QPushButton::clicked, this, &DlgAnalysis::slotStemSplit);
+    pushButtonBeatCheck->setToolTip(tr(
+            "Songs whose tempo, beat lines or beat 1 look wrong to a second beat finder\n"
+            "(\"Beat This!\"), which listens to every song during Analyze.\n"
+            "You choose Fix or Ignore for each one; nothing changes without that.\n"
+            "BPMs you locked and Intro End markers you set are never changed."));
+    connect(pushButtonBeatCheck, &QPushButton::clicked, this, &DlgAnalysis::slotBeatCheck);
     connect(m_pGenreScanner,
             &GenreScanner::finished,
             this,
@@ -633,6 +649,300 @@ void DlgAnalysis::slotGenreScanFinished(
     QMessageBox::information(this,
             tr("Genre Scan"),
             tr("Updated the genre of %n song(s).", "", applied));
+}
+
+namespace {
+QString minutesSeconds(double sec) {
+    const double s = std::max(0.0, sec);
+    const int minutes = static_cast<int>(s / 60.0);
+    return QStringLiteral("%1:%2").arg(minutes).arg(s - minutes * 60.0, 5, 'f', 2, QLatin1Char('0'));
+}
+
+// What the DJ ignored: the same answer again stays ignored, a different
+// one (the grid or the marker changed since) is shown again.
+QString beatCheckSignature(const beatcheck::Review& r) {
+    return QStringLiteral("1|%1%2%3%4%5|%6|%7")
+            .arg(r.tempoWrong ? 1 : 0)
+            .arg(r.introMisread ? 1 : 0)
+            .arg(r.linesOff ? 1 : 0)
+            .arg(r.halfBeat ? 1 : 0)
+            .arg(r.beatOneOff ? 1 : 0)
+            .arg(qRound(r.newGrid ? r.newBpm * 10.0 : 0.0))
+            .arg(qRound(r.newIntroEndSec * 20.0));
+}
+} // namespace
+
+void DlgAnalysis::slotBeatCheck() {
+    TrackCollectionManager* pManager = m_pLibrary->trackCollectionManager();
+    if (!pManager || !pManager->internalCollection()) {
+        return;
+    }
+    const QSqlDatabase db = pManager->internalCollection()->database();
+    const QList<TrackId> ids = EnergyStore::beatCheckedTracks(db);
+    if (ids.isEmpty()) {
+        QString why;
+        const bool ready = QFileInfo::exists(AnalyzerBeatCheck::runtimeFile(m_pConfig));
+        QMessageBox::information(this,
+                tr("Beat Check"),
+                ready ? tr("No song has been checked yet. The beat check listens to each song "
+                           "during Analyze: select the songs (or all of them) and press "
+                           "Analyze, then come back here.")
+                      : tr("The beat check needs ONNX Runtime, which comes with the stems "
+                           "engine (Auto DJ > Stems), and it was not found:\n%1")
+                                .arg(QDir::toNativeSeparators(
+                                        AnalyzerBeatCheck::runtimeFile(m_pConfig))));
+        return;
+    }
+
+    struct Row {
+        TrackPointer pTrack;
+        beatcheck::Review review;
+        QString signature;
+        QString problem;
+        QString fix;
+        int order = 0;
+    };
+    auto rows = std::make_shared<std::vector<Row>>();
+    int checked = 0;
+    int ignored = 0;
+    int fine = 0;
+    QGuiApplication::setOverrideCursor(Qt::WaitCursor);
+    for (const TrackId& id : ids) {
+        const TrackPointer pTrack = pManager->getTrackById(id);
+        const auto stored = EnergyStore::loadBeatCheck(db, id);
+        if (!pTrack || !stored) {
+            continue;
+        }
+        const double sampleRate = pTrack->getSampleRate().value();
+        beatcheck::Song song;
+        song.grid = AnalyzerEnergy::beatGrid(pTrack);
+        song.durationSec = pTrack->getDuration();
+        song.bpmLocked = pTrack->isBpmLocked();
+        const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
+        const mixxx::audio::FramePos introEnd =
+                pIntro ? pIntro->getEndPosition() : mixxx::audio::kInvalidFramePos;
+        if (introEnd.isValid() && sampleRate > 0.0) {
+            song.introEndSec = introEnd.value() / sampleRate;
+            const auto autoMarkers = EnergyStore::loadAutoMarkers(db, id);
+            song.introEndByDj = !(autoMarkers.introEndSec >= 0.0 &&
+                    std::fabs(autoMarkers.introEndSec - song.introEndSec) < 0.02);
+        }
+        beatcheck::Found found;
+        found.beats = stored->beats;
+        found.downbeats = stored->downbeats;
+        const beatcheck::Review r = beatcheck::review(found, song);
+        if (!r.checked) {
+            continue;
+        }
+        ++checked;
+        if (!r.anyProblem()) {
+            ++fine;
+            continue;
+        }
+        Row row;
+        row.pTrack = pTrack;
+        row.review = r;
+        row.signature = beatCheckSignature(r);
+        if (stored->ignored == row.signature) {
+            ++ignored;
+            continue;
+        }
+        QStringList problems;
+        if (r.tempoWrong) {
+            problems << tr("Tempo: Mixxx says %1 BPM, the beat check hears %2 BPM.")
+                                .arg(r.mixxxBpm, 0, 'f', 1)
+                                .arg(r.songBpm, 0, 'f', 1);
+        }
+        if (r.introMisread) {
+            problems << tr("Intro read at %1 BPM; the beat check hears the song's %2 BPM there "
+                           "too.")
+                                .arg(r.introBpm, 0, 'f', 1)
+                                .arg(r.songBpm, 0, 'f', 1);
+        }
+        if (r.linesOff && r.halfBeat) {
+            problems << tr("Beat lines half a beat from the beat check's in %1% of the song. "
+                           "Listen first: one of the two is on the off-beat.")
+                                .arg(qRound((1.0 - r.linesOnBeat) * 100.0));
+        } else if (r.linesOff) {
+            problems << tr("Beat lines: only %1% are on the beat.")
+                                .arg(qRound(r.linesOnBeat * 100.0));
+        }
+        if (r.beatOneOff) {
+            const double beats = std::fabs(r.beatOneOffBeats);
+            problems << (r.beatOneOffBeats > 0.0
+                                        ? tr("Beat 1: the Intro End marker (%1) is %2 beat(s) "
+                                             "after beat 1.")
+                                        : tr("Beat 1: the Intro End marker (%1) is %2 beat(s) "
+                                             "before beat 1."))
+                                .arg(minutesSeconds(song.introEndSec))
+                                .arg(beats, 0, 'f', 1);
+        }
+        row.problem = problems.join(QChar('\n'));
+        QStringList fixes;
+        if (r.newGrid) {
+            fixes << (r.steady ? tr("New beat grid at %1 BPM from the beat check (BPM locked).")
+                                         .arg(r.newBpm, 0, 'f', 2)
+                               : tr("New beat map from the beat check, about %1 BPM (BPM "
+                                    "locked).")
+                                         .arg(r.newBpm, 0, 'f', 1));
+        }
+        if (r.newIntroEndSec >= 0.0) {
+            fixes << tr("Intro End marker %1 -> %2.")
+                             .arg(minutesSeconds(song.introEndSec))
+                             .arg(minutesSeconds(r.newIntroEndSec));
+        }
+        if (fixes.isEmpty()) {
+            fixes << (song.bpmLocked && !r.beatOneOff
+                            ? tr("Nothing: you locked the BPM.")
+                            : tr("Nothing: you set the Intro End marker yourself."));
+        }
+        row.fix = fixes.join(QChar('\n'));
+        row.order = r.anyFix() ? (r.halfBeat ? 1 : 0) : 2;
+        rows->push_back(row);
+    }
+    QGuiApplication::restoreOverrideCursor();
+    std::stable_sort(rows->begin(), rows->end(), [](const Row& a, const Row& b) {
+        return a.order < b.order;
+    });
+
+    auto* pDialog = new QDialog(this);
+    pDialog->setAttribute(Qt::WA_DeleteOnClose);
+    pDialog->setWindowTitle(tr("Beat Check"));
+    auto* pLayout = new QVBoxLayout(pDialog);
+    auto* pSummary = new QLabel(
+            tr("%1 songs checked: %2 look right, %3 to look at (%4 ignored before). "
+               "%5 songs in the library have not been checked yet: they are checked "
+               "during Analyze.\n"
+               "Choose Fix or Ignore for each song, then press Do it. Double-click a song to "
+               "load it on a deck and listen first. BPMs you locked and Intro End markers "
+               "you set are never changed.")
+                    .arg(checked)
+                    .arg(fine)
+                    .arg(rows->size())
+                    .arg(ignored)
+                    .arg(std::max(0,
+                            m_pAnalysisLibraryTableModel->rowCount() - static_cast<int>(ids.size()))),
+            pDialog);
+    pSummary->setWordWrap(true);
+    pLayout->addWidget(pSummary);
+
+    auto* pTable = new QTableWidget(static_cast<int>(rows->size()), 4, pDialog);
+    pTable->setHorizontalHeaderLabels({tr("Choice"), tr("Song"), tr("What looks wrong"), tr("Fix does")});
+    pTable->verticalHeader()->hide();
+    pTable->setWordWrap(true);
+    pTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    pTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    for (int i = 0; i < static_cast<int>(rows->size()); ++i) {
+        const Row& row = (*rows)[i];
+        auto* pChoice = new QComboBox(pTable);
+        pChoice->addItem(tr("Decide later"), 0);
+        if (row.review.anyFix()) {
+            pChoice->addItem(tr("Fix"), 1);
+        }
+        pChoice->addItem(tr("Ignore"), 2);
+        pTable->setCellWidget(i, 0, pChoice);
+        const QString song = row.pTrack->getArtist().isEmpty()
+                ? row.pTrack->getTitle()
+                : row.pTrack->getArtist() + QStringLiteral(" - ") + row.pTrack->getTitle();
+        pTable->setItem(i, 1, new QTableWidgetItem(song));
+        pTable->setItem(i, 2, new QTableWidgetItem(row.problem));
+        pTable->setItem(i, 3, new QTableWidgetItem(row.fix));
+    }
+    pTable->resizeColumnsToContents();
+    pTable->setColumnWidth(1, std::min(pTable->columnWidth(1), 280));
+    pTable->setColumnWidth(2, std::min(std::max(pTable->columnWidth(2), 200), 380));
+    pTable->horizontalHeader()->setStretchLastSection(true);
+    pTable->resizeRowsToContents();
+    connect(pTable, &QTableWidget::cellDoubleClicked, this, [this, rows](int r, int) {
+        if (r >= 0 && r < static_cast<int>(rows->size())) {
+            emit loadTrack((*rows)[r].pTrack);
+        }
+    });
+    pLayout->addWidget(pTable);
+
+    auto* pButtons = new QDialogButtonBox(pDialog);
+    QPushButton* pDo = pButtons->addButton(tr("Do it"), QDialogButtonBox::AcceptRole);
+    QPushButton* pAllFix = pButtons->addButton(tr("Fix all"), QDialogButtonBox::ActionRole);
+    pButtons->addButton(QDialogButtonBox::Close);
+    pAllFix->setToolTip(tr("Every song that can be fixed, except the ones marked \"Listen first\"."));
+    connect(pAllFix, &QPushButton::clicked, pDialog, [pTable, rows]() {
+        for (int i = 0; i < pTable->rowCount(); ++i) {
+            if ((*rows)[i].review.halfBeat) {
+                continue; // needs listening
+            }
+            auto* pChoice = qobject_cast<QComboBox*>(pTable->cellWidget(i, 0));
+            const int fix = pChoice ? pChoice->findData(1) : -1;
+            if (fix >= 0) {
+                pChoice->setCurrentIndex(fix);
+            }
+        }
+    });
+    connect(pButtons, &QDialogButtonBox::rejected, pDialog, &QDialog::reject);
+    connect(pDo, &QPushButton::clicked, pDialog, [this, pDialog, pTable, rows, db]() {
+        int fixed = 0;
+        int ignoredNow = 0;
+        for (int i = 0; i < pTable->rowCount(); ++i) {
+            auto* pChoice = qobject_cast<QComboBox*>(pTable->cellWidget(i, 0));
+            const int choice = pChoice ? pChoice->currentData().toInt() : 0;
+            const Row& row = (*rows)[i];
+            if (choice == 2) {
+                EnergyStore::setBeatCheckIgnored(db, row.pTrack->getId(), row.signature);
+                ++ignoredNow;
+                continue;
+            }
+            if (choice != 1) {
+                continue;
+            }
+            const beatcheck::Review& r = row.review;
+            const auto sampleRate = row.pTrack->getSampleRate();
+            if (!sampleRate.isValid()) {
+                continue;
+            }
+            const auto frame = [sampleRate](double sec) {
+                return mixxx::audio::FramePos(sec * sampleRate.value()).toNearestFrameBoundary();
+            };
+            bool changed = false;
+            if (r.newGrid && !row.pTrack->isBpmLocked()) {
+                mixxx::BeatsPointer pBeats;
+                if (r.steady) {
+                    pBeats = mixxx::Beats::fromConstTempo(
+                            sampleRate, frame(r.newFirstBeatSec), mixxx::Bpm(r.newBpm));
+                } else {
+                    QVector<mixxx::audio::FramePos> positions;
+                    positions.reserve(static_cast<int>(r.newBeats.size()));
+                    for (double t : r.newBeats) {
+                        positions.append(frame(t));
+                    }
+                    pBeats = mixxx::Beats::fromBeatPositions(sampleRate, positions);
+                }
+                if (pBeats && row.pTrack->trySetBeats(pBeats)) {
+                    row.pTrack->setBpmLocked(true); // a later analysis keeps it
+                    changed = true;
+                }
+            }
+            if (r.newIntroEndSec >= 0.0) {
+                // Counts as the DJ's marker from now on (the analysis no
+                // longer moves it): the DJ chose it.
+                if (const CuePointer pIntro = row.pTrack->findCueByType(mixxx::CueType::Intro)) {
+                    pIntro->setEndPosition(frame(r.newIntroEndSec));
+                    changed = true;
+                }
+            }
+            if (changed) {
+                ++fixed;
+                qInfo().noquote() << "Beat check: fixed" << row.pTrack->getInfo() << "-"
+                                  << QString(row.fix).replace(QChar('\n'), QChar(' '));
+            }
+        }
+        m_pAnalysisLibraryTableModel->select();
+        QMessageBox::information(pDialog,
+                tr("Beat Check"),
+                tr("Fixed %1 song(s), ignored %2.").arg(fixed).arg(ignoredNow));
+        pDialog->accept();
+    });
+    pLayout->addWidget(pButtons);
+    pDialog->resize(1100, 680);
+    pDialog->show();
 }
 
 void DlgAnalysis::slotAnalysisActive(bool bActive) {

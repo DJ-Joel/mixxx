@@ -50,6 +50,9 @@ class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual Libra
     void slotGenreScan();
     /// Auto DJ 2.0 plus Video Mixing: split songs into parts ahead of time.
     void slotStemSplit();
+    /// Auto DJ 2.0 plus Video Mixing beat check: the songs whose beat grid,
+    /// tempo or beat 1 look wrong to the second beat finder, to Fix or Ignore.
+    void slotBeatCheck();
     void slotGenreScanFinished(const QList<GenreScanner::Result>& results, bool cancelled);
 
   signals:

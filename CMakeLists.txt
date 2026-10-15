@@ -1204,6 +1204,8 @@ add_library(
   src/analyzer/analyzerebur128.cpp
   src/analyzer/analyzerenergy.cpp
   src/analyzer/analyzerstemdownbeat.cpp
+  src/analyzer/analyzerbeatcheck.cpp
+  src/analyzer/beatthisengine.cpp
   src/analyzer/analyzergain.cpp
   src/analyzer/energycalculator.cpp
   src/analyzer/analyzerkey.cpp
@@ -1424,6 +1426,7 @@ add_library(
   src/library/autodj/smart/downbeat.cpp
   src/library/autodj/smart/bridgefinder.cpp
   src/library/autodj/smart/mixstep.cpp
+  src/library/autodj/smart/beatcheck.cpp
   src/library/autodj/smart/energystore.cpp
   src/library/autodj/smart/genrescan.cpp
   src/library/autodj/smart/mixscorer.cpp
@@ -2669,6 +2672,12 @@ install(
   DESTINATION "${MIXXX_INSTALL_DATADIR}"
 )
 
+# Auto DJ 2.0 plus Video Mixing beat check: the "Beat This!" models (MIT)
+install(
+  DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/res/beatcheck"
+  DESTINATION "${MIXXX_INSTALL_DATADIR}"
+)
+
 # Licenses
 install(
   FILES
@@ -3007,6 +3016,7 @@ if(BUILD_TESTING)
     src/test/beatgridtest.cpp
     src/test/beatmaptest.cpp
     src/test/beatstest.cpp
+    src/test/beatcheck_test.cpp
     src/test/beatmatch_test.cpp
     src/test/vocalmap_test.cpp
     src/test/downbeat_test.cpp
@@ -3644,6 +3654,8 @@ target_include_directories(mixxx-lib SYSTEM PUBLIC lib/fidlib)
 # Auto DJ 2.0 plus Video Mixing stems: ONNX Runtime's C API header only
 # (onnxruntime.dll is loaded at run time from the stems-engine folder).
 target_include_directories(mixxx-lib SYSTEM PRIVATE lib/onnxruntime/include)
+# The beat check loads ONNX Runtime at run time too (dlopen outside Windows).
+target_link_libraries(mixxx-lib PRIVATE ${CMAKE_DL_LIBS})
 # These include the Windows headers themselves (NOMINMAX).
 set_source_files_properties(
   src/stems/stemengine.cpp
