@@ -259,6 +259,84 @@ std::vector<double> smoothMap(const std::vector<double>& beats, double beatSec) 
     return out;
 }
 
+// An intro misread, the main part right: Mixxx's own beats from where the
+// main part starts, and the intro redone. The beats heard are only used to
+// find the intro's beats, never copied as they are: in Ward Brothers
+// "Madness Of It All" they wobble in places, and a beat map made from them
+// did not stay on the beat.
+// The intro is counted back from the main part at its tempo if the beats
+// heard there fit that; else it gets its own steady tempo through the
+// beats heard there (an intro played a little apart from the main part,
+// Ward Brothers again). Empty when neither fits.
+std::vector<double> repairIntro(const phrasealign::Grid& grid,
+        double mainSec,
+        const std::vector<double>& heard,
+        double* pBeatSec) {
+    std::vector<double> main;
+    for (double t : grid.beats) {
+        if (t >= mainSec - 0.001) {
+            main.push_back(t);
+        }
+    }
+    if (main.size() < 16) {
+        return {};
+    }
+    const Typical mainTempo = typical(main, mainSec, mainSec + 30.0);
+    const double mainBeatSec = mainTempo.beatSec > 0.0 ? mainTempo.beatSec
+                                                        : (main[16] - main[0]) / 16.0;
+    // Where the beat check puts the beat against Mixxx's lines in the main
+    // part (often 10-40 ms later): the intro is measured the same way.
+    std::vector<double> offsets;
+    for (double t : heard) {
+        if (t >= mainSec && t < mainSec + 60.0) {
+            const double d = t - main[nearest(main, t)];
+            if (std::fabs(d) < mainBeatSec / 3.0) {
+                offsets.push_back(d);
+            }
+        }
+    }
+    const double offsetSec = offsets.size() >= 8 ? median(offsets) : 0.0;
+    std::vector<double> intro;
+    for (double t : heard) {
+        if (t < mainSec - 0.5 * mainBeatSec) {
+            intro.push_back(t - offsetSec);
+        }
+    }
+    if (intro.size() < 8) {
+        return {};
+    }
+    *pBeatSec = mainBeatSec;
+    std::vector<double> out;
+    // Counted back from the main part.
+    std::vector<double> miss;
+    for (double t : intro) {
+        const double k = (mainSec - t) / mainBeatSec;
+        miss.push_back(std::fabs(k - std::round(k)) * mainBeatSec);
+    }
+    if (median(miss) <= 0.035) {
+        for (long k = static_cast<long>(std::floor(mainSec / mainBeatSec - 1e-9)); k >= 1; --k) {
+            out.push_back(mainSec - static_cast<double>(k) * mainBeatSec);
+        }
+    } else {
+        // Its own steady tempo, close to the main one.
+        const Fit fit = fitLine(intro, mainBeatSec);
+        if (!(fit.beatSec > 0.0) || std::fabs(fit.beatSec / mainBeatSec - 1.0) > 0.04 ||
+                fit.medianMiss > 0.015 || fit.missP90 > 0.04) {
+            return {};
+        }
+        const double from = std::max(0.0, intro.front() - 4.0 * fit.beatSec);
+        const double k0 = std::ceil((from - fit.first) / fit.beatSec);
+        for (double k = k0;; k += 1.0) {
+            const double t = fit.first + k * fit.beatSec;
+            if (t >= mainSec - 0.5 * fit.beatSec) {
+                break;
+            }
+            out.push_back(t);
+        }
+    }
+    out.insert(out.end(), main.begin(), main.end());
+    return out;
+}
 } // namespace
 
 std::vector<float> resample(const std::vector<float>& input, double inRate, double outRate) {
@@ -532,10 +610,20 @@ Review review(const Found& found, const Song& song) {
         }
     }
 
-    // The new beat grid, from the beats heard (not for a locked BPM).
-    if ((r.tempoWrong || r.linesOff || r.introMisread) && !song.bpmLocked) {
+    // The new beat grid. An intro misread with the rest right: Mixxx's own
+    // beats kept, only the intro redone. Otherwise from the beats heard.
+    // (For a locked BPM too, but only if the DJ picks it.)
+    if ((r.tempoWrong || r.linesOff || r.introMisread) && song.allowNewGrid) {
         r.newGrid = true;
-        const Fit fit = fitLine(counted.beats, beatSec);
+        r.replacesLock = song.bpmLocked;
+        double introBeatSec = 0.0;
+        std::vector<double> repaired;
+        if (r.introMisread && !r.tempoWrong && !r.linesOff && song.allowIntroOnly) {
+            repaired = repairIntro(song.grid, mainSec, counted.beats, &introBeatSec);
+        }
+        r.introOnly = !repaired.empty();
+        const std::vector<double>& source = r.introOnly ? repaired : counted.beats;
+        const Fit fit = fitLine(source, r.introOnly ? introBeatSec : beatSec);
         r.steady = fit.beatSec > 0.0 && fit.medianMiss < 0.012 && fit.missP90 < 0.03;
         if (r.steady) {
             r.newBpm = 60.0 / fit.beatSec;
@@ -549,7 +637,7 @@ Review review(const Found& found, const Song& song) {
             const double barSec = phrasealign::kBeatsPerBar * fit.beatSec;
             r.newFirstBeatSec = bar - std::floor(bar / barSec) * barSec;
         } else {
-            std::vector<double> map = smoothMap(counted.beats, beatSec);
+            std::vector<double> map = r.introOnly ? repaired : smoothMap(counted.beats, beatSec);
             // Starting on a bar line, so Mixxx's beat 1 is beat 1.
             if (!counted.downbeats.empty() && !map.empty()) {
                 const int d = nearest(map, counted.downbeats.front());
@@ -557,7 +645,7 @@ Review review(const Found& found, const Song& song) {
                 map.erase(map.begin(), map.begin() + drop);
             }
             r.newBeats = std::move(map);
-            r.newBpm = r.songBpm;
+            r.newBpm = r.introOnly ? 60.0 / introBeatSec : r.songBpm;
         }
     }
 
@@ -596,6 +684,23 @@ Review review(const Found& found, const Song& song) {
         }
     }
     return r;
+}
+
+std::vector<std::uint8_t> packLevels(const std::vector<float>& db) {
+    std::vector<std::uint8_t> out(db.size());
+    for (std::size_t i = 0; i < db.size(); ++i) {
+        const double q = std::round((static_cast<double>(db[i]) - kLevelFloorDb) * 4.0);
+        out[i] = static_cast<std::uint8_t>(std::clamp(q, 0.0, 255.0));
+    }
+    return out;
+}
+
+std::vector<float> unpackLevels(const std::uint8_t* pBytes, std::size_t count) {
+    std::vector<float> out(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        out[i] = static_cast<float>(kLevelFloorDb + pBytes[i] / 4.0);
+    }
+    return out;
 }
 
 } // namespace beatcheck

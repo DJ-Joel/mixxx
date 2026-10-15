@@ -18,10 +18,13 @@
 #include <cmath>
 
 #include <QComboBox>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QGuiApplication>
 
 #include "analyzer/analyzerbeatcheck.h"
 #include "analyzer/analyzerenergy.h"
+#include "analyzer/energycalculator.h"
 #include "analyzer/analyzerprogress.h"
 #include "library/autodj/smart/beatcheck.h"
 #include "library/autodj/smart/energystore.h"
@@ -148,8 +151,8 @@ DlgAnalysis::DlgAnalysis(WLibrary* parent,
     pushButtonBeatCheck->setToolTip(tr(
             "Songs whose tempo, beat lines or beat 1 look wrong to a second beat finder\n"
             "(\"Beat This!\"), which listens to every song during Analyze.\n"
-            "You choose Fix or Ignore for each one; nothing changes without that.\n"
-            "BPMs you locked and Intro End markers you set are never changed."));
+            "You choose Fix or Ignore for each one; nothing changes without that,\n"
+            "and every Fix can be undone."));
     connect(pushButtonBeatCheck, &QPushButton::clicked, this, &DlgAnalysis::slotBeatCheck);
     connect(m_pGenreScanner,
             &GenreScanner::finished,
@@ -670,6 +673,45 @@ QString beatCheckSignature(const beatcheck::Review& r) {
             .arg(qRound(r.newGrid ? r.newBpm * 10.0 : 0.0))
             .arg(qRound(r.newIntroEndSec * 20.0));
 }
+
+QByteArray beatsHash(const mixxx::BeatsPointer& pBeats) {
+    return pBeats ? QCryptographicHash::hash(pBeats->toByteArray(), QCryptographicHash::Md5)
+                  : QByteArray();
+}
+
+QString songName(const TrackPointer& pTrack) {
+    return pTrack->getArtist().isEmpty()
+            ? pTrack->getTitle()
+            : pTrack->getArtist() + QStringLiteral(" - ") + pTrack->getTitle();
+}
+
+// The song is still as a beat check Fix left it (nothing changed since):
+// it is not shown again.
+bool stillAsFixed(const EnergyStore::BeatCheckUndo& undo, const TrackPointer& pTrack) {
+    if (undo.gridSaved && beatsHash(pTrack->getBeats()) != undo.newBeatsHash) {
+        return false;
+    }
+    if (undo.introSaved) {
+        const CuePointer pIntro = pTrack->findCueByType(mixxx::CueType::Intro);
+        const mixxx::audio::FramePos end =
+                pIntro ? pIntro->getEndPosition() : mixxx::audio::kInvalidFramePos;
+        if (!end.isValid() || std::fabs(end.value() - undo.newIntroEndFrame) > 2.0) {
+            return false;
+        }
+    }
+    return undo.gridSaved || undo.introSaved;
+}
+
+// The proposed grid as the beat grid check sees it.
+phrasealign::Grid proposedGrid(const beatcheck::Review& r) {
+    if (r.steady) {
+        phrasealign::Grid grid;
+        grid.firstBeatSec = r.newFirstBeatSec;
+        grid.beatSec = r.newBpm > 0.0 ? 60.0 / r.newBpm : 0.0;
+        return grid;
+    }
+    return phrasealign::Grid::fromBeats(r.newBeats);
+}
 } // namespace
 
 void DlgAnalysis::slotBeatCheck() {
@@ -679,8 +721,8 @@ void DlgAnalysis::slotBeatCheck() {
     }
     const QSqlDatabase db = pManager->internalCollection()->database();
     const QList<TrackId> ids = EnergyStore::beatCheckedTracks(db);
-    if (ids.isEmpty()) {
-        QString why;
+    const bool anyUndo = !EnergyStore::beatCheckUndoTracks(db).isEmpty();
+    if (ids.isEmpty() && !anyUndo) {
         const bool ready = QFileInfo::exists(AnalyzerBeatCheck::runtimeFile(m_pConfig));
         QMessageBox::information(this,
                 tr("Beat Check"),
@@ -700,18 +742,28 @@ void DlgAnalysis::slotBeatCheck() {
         QString signature;
         QString problem;
         QString fix;
+        double driftBeats = -1.0; ///< the proposed grid in the beat grid check
         int order = 0;
     };
     auto rows = std::make_shared<std::vector<Row>>();
     int checked = 0;
     int ignored = 0;
     int fine = 0;
+    int fixedBefore = 0;
+    int needLevels = 0;
     QGuiApplication::setOverrideCursor(Qt::WaitCursor);
     for (const TrackId& id : ids) {
         const TrackPointer pTrack = pManager->getTrackById(id);
         const auto stored = EnergyStore::loadBeatCheck(db, id);
         if (!pTrack || !stored) {
             continue;
+        }
+        // Fixed by the beat check and not changed since: done.
+        if (const auto undo = EnergyStore::loadBeatCheckUndo(db, id)) {
+            if (stillAsFixed(*undo, pTrack)) {
+                ++fixedBefore;
+                continue;
+            }
         }
         const double sampleRate = pTrack->getSampleRate().value();
         beatcheck::Song song;
@@ -730,7 +782,7 @@ void DlgAnalysis::slotBeatCheck() {
         beatcheck::Found found;
         found.beats = stored->beats;
         found.downbeats = stored->downbeats;
-        const beatcheck::Review r = beatcheck::review(found, song);
+        beatcheck::Review r = beatcheck::review(found, song);
         if (!r.checked) {
             continue;
         }
@@ -739,9 +791,46 @@ void DlgAnalysis::slotBeatCheck() {
             ++fine;
             continue;
         }
+        // A new grid is only offered once it has passed the beat grid check
+        // (the same one Auto DJ uses): it must stay on the music.
+        QString gridNote;
+        double drift = -1.0;
+        if (r.newGrid) {
+            if (!stored->hasLevels()) {
+                ++needLevels;
+                gridNote = tr("A new grid is offered once it has been tried against the "
+                              "music: press Analyze once more (quick for songs already "
+                              "checked).");
+            } else {
+                const auto tryGrid = [&]() {
+                    return EnergyCalculator::gridDriftBeats(stored->levels,
+                            proposedGrid(r),
+                            stored->bodyStartSec,
+                            stored->bodyEndSec);
+                };
+                drift = tryGrid();
+                if (drift > EnergyCalculator::kGridMaxDriftBeats && r.introOnly) {
+                    // Mixxx's own main part drifts too (Cabaret Voltaire):
+                    // the grid from the beats heard instead, if that fits.
+                    song.allowIntroOnly = false;
+                    r = beatcheck::review(found, song);
+                    drift = r.newGrid ? tryGrid() : -1.0;
+                }
+                if (drift > EnergyCalculator::kGridMaxDriftBeats) {
+                    gridNote = tr("The beat check's own grid did not stay on the music "
+                                  "either (%1 beats off), so it is not offered.")
+                                       .arg(drift, 0, 'f', 2);
+                }
+            }
+            if (!gridNote.isEmpty()) {
+                song.allowNewGrid = false;
+                r = beatcheck::review(found, song);
+            }
+        }
         Row row;
         row.pTrack = pTrack;
         row.review = r;
+        row.driftBeats = drift;
         row.signature = beatCheckSignature(r);
         if (stored->ignored == row.signature) {
             ++ignored;
@@ -780,24 +869,42 @@ void DlgAnalysis::slotBeatCheck() {
         row.problem = problems.join(QChar('\n'));
         QStringList fixes;
         if (r.newGrid) {
-            fixes << (r.steady ? tr("New beat grid at %1 BPM from the beat check (BPM locked).")
-                                         .arg(r.newBpm, 0, 'f', 2)
-                               : tr("New beat map from the beat check, about %1 BPM (BPM "
-                                    "locked).")
-                                         .arg(r.newBpm, 0, 'f', 1));
+            const QString what = r.introOnly
+                    ? (r.steady ? tr("New beat grid at %1 BPM: Mixxx's own beats kept, the "
+                                     "intro redone (BPM locked).")
+                                          .arg(r.newBpm, 0, 'f', 2)
+                                : tr("Beat map: Mixxx's own beats kept, the intro redone at "
+                                     "about %1 BPM (BPM locked).")
+                                          .arg(r.newBpm, 0, 'f', 1))
+                    : (r.steady ? tr("New beat grid at %1 BPM from the beat check (BPM locked).")
+                                          .arg(r.newBpm, 0, 'f', 2)
+                                : tr("New beat map from the beat check, about %1 BPM (BPM "
+                                     "locked).")
+                                          .arg(r.newBpm, 0, 'f', 1));
+            fixes << what;
+            if (r.replacesLock) {
+                fixes << tr("You locked this BPM: Fix replaces your grid anyway (\"Fix all\" "
+                            "leaves it; Undo puts it back).");
+            }
         }
         if (r.newIntroEndSec >= 0.0) {
             fixes << tr("Intro End marker %1 -> %2.")
                              .arg(minutesSeconds(song.introEndSec))
                              .arg(minutesSeconds(r.newIntroEndSec));
         }
-        if (fixes.isEmpty()) {
-            fixes << (song.bpmLocked && !r.beatOneOff
-                            ? tr("Nothing: you locked the BPM.")
-                            : tr("Nothing: you set the Intro End marker yourself."));
+        if (!r.anyFix()) {
+            fixes << (!gridNote.isEmpty()
+                            ? tr("Nothing.")
+                            : (song.introEndByDj && r.beatOneOff
+                                            ? tr("Nothing: you set the Intro End marker "
+                                                 "yourself.")
+                                            : tr("Nothing.")));
+        }
+        if (!gridNote.isEmpty()) {
+            fixes << gridNote;
         }
         row.fix = fixes.join(QChar('\n'));
-        row.order = r.anyFix() ? (r.halfBeat ? 1 : 0) : 2;
+        row.order = r.anyFix() ? ((r.halfBeat || r.replacesLock) ? 1 : 0) : 2;
         rows->push_back(row);
     }
     QGuiApplication::restoreOverrideCursor();
@@ -809,20 +916,27 @@ void DlgAnalysis::slotBeatCheck() {
     pDialog->setAttribute(Qt::WA_DeleteOnClose);
     pDialog->setWindowTitle(tr("Beat Check"));
     auto* pLayout = new QVBoxLayout(pDialog);
-    auto* pSummary = new QLabel(
-            tr("%1 songs checked: %2 look right, %3 to look at (%4 ignored before). "
-               "%5 songs in the library have not been checked yet: they are checked "
-               "during Analyze.\n"
-               "Choose Fix or Ignore for each song, then press Do it. Double-click a song to "
-               "load it on a deck and listen first. BPMs you locked and Intro End markers "
-               "you set are never changed.")
-                    .arg(checked)
+    QString summary =
+            tr("%1 songs checked: %2 look right, %3 already fixed by the beat check, %4 to "
+               "look at (%5 ignored before). %6 songs in the library have not been checked "
+               "yet: they are checked during Analyze.")
+                    .arg(checked + fixedBefore)
                     .arg(fine)
+                    .arg(fixedBefore)
                     .arg(rows->size())
                     .arg(ignored)
                     .arg(std::max(0,
-                            m_pAnalysisLibraryTableModel->rowCount() - static_cast<int>(ids.size()))),
-            pDialog);
+                            m_pAnalysisLibraryTableModel->rowCount() - static_cast<int>(ids.size())));
+    if (needLevels > 0) {
+        summary += QChar('\n') +
+                tr("%1 new grids wait to be tried against the music: press Analyze once more "
+                   "(quick: the songs are not listened to again).")
+                        .arg(needLevels);
+    }
+    summary += QChar('\n') +
+            tr("Choose Fix or Ignore for each song, then press Do it. Double-click a song to "
+               "load it on a deck and listen first. Every Fix can be undone (Undo fixes).");
+    auto* pSummary = new QLabel(summary, pDialog);
     pSummary->setWordWrap(true);
     pLayout->addWidget(pSummary);
 
@@ -841,10 +955,7 @@ void DlgAnalysis::slotBeatCheck() {
         }
         pChoice->addItem(tr("Ignore"), 2);
         pTable->setCellWidget(i, 0, pChoice);
-        const QString song = row.pTrack->getArtist().isEmpty()
-                ? row.pTrack->getTitle()
-                : row.pTrack->getArtist() + QStringLiteral(" - ") + row.pTrack->getTitle();
-        pTable->setItem(i, 1, new QTableWidgetItem(song));
+        pTable->setItem(i, 1, new QTableWidgetItem(songName(row.pTrack)));
         pTable->setItem(i, 2, new QTableWidgetItem(row.problem));
         pTable->setItem(i, 3, new QTableWidgetItem(row.fix));
     }
@@ -863,12 +974,17 @@ void DlgAnalysis::slotBeatCheck() {
     auto* pButtons = new QDialogButtonBox(pDialog);
     QPushButton* pDo = pButtons->addButton(tr("Do it"), QDialogButtonBox::AcceptRole);
     QPushButton* pAllFix = pButtons->addButton(tr("Fix all"), QDialogButtonBox::ActionRole);
+    QPushButton* pUndo = pButtons->addButton(tr("Undo fixes..."), QDialogButtonBox::ActionRole);
     pButtons->addButton(QDialogButtonBox::Close);
-    pAllFix->setToolTip(tr("Every song that can be fixed, except the ones marked \"Listen first\"."));
+    pAllFix->setToolTip(tr("Every song that can be fixed, except the ones marked \"Listen "
+                           "first\" and the ones whose BPM you locked."));
+    pUndo->setToolTip(tr("Put songs back the way they were before the beat check fixed them."));
+    pUndo->setEnabled(anyUndo);
     connect(pAllFix, &QPushButton::clicked, pDialog, [pTable, rows]() {
         for (int i = 0; i < pTable->rowCount(); ++i) {
-            if ((*rows)[i].review.halfBeat) {
-                continue; // needs listening
+            const beatcheck::Review& r = (*rows)[i].review;
+            if (r.halfBeat || r.replacesLock) {
+                continue; // needs listening, or the DJ's own lock
             }
             auto* pChoice = qobject_cast<QComboBox*>(pTable->cellWidget(i, 0));
             const int fix = pChoice ? pChoice->findData(1) : -1;
@@ -876,6 +992,10 @@ void DlgAnalysis::slotBeatCheck() {
                 pChoice->setCurrentIndex(fix);
             }
         }
+    });
+    connect(pUndo, &QPushButton::clicked, pDialog, [this, pDialog]() {
+        pDialog->reject();
+        slotBeatCheckUndo();
     });
     connect(pButtons, &QDialogButtonBox::rejected, pDialog, &QDialog::reject);
     connect(pDo, &QPushButton::clicked, pDialog, [this, pDialog, pTable, rows, db]() {
@@ -901,8 +1021,12 @@ void DlgAnalysis::slotBeatCheck() {
             const auto frame = [sampleRate](double sec) {
                 return mixxx::audio::FramePos(sec * sampleRate.value()).toNearestFrameBoundary();
             };
+            // What it was before, kept for Undo (from before the first Fix).
+            EnergyStore::BeatCheckUndo undo =
+                    EnergyStore::loadBeatCheckUndo(db, row.pTrack->getId())
+                            .value_or(EnergyStore::BeatCheckUndo());
             bool changed = false;
-            if (r.newGrid && !row.pTrack->isBpmLocked()) {
+            if (r.newGrid) {
                 mixxx::BeatsPointer pBeats;
                 if (r.steady) {
                     pBeats = mixxx::Beats::fromConstTempo(
@@ -915,33 +1039,183 @@ void DlgAnalysis::slotBeatCheck() {
                     }
                     pBeats = mixxx::Beats::fromBeatPositions(sampleRate, positions);
                 }
-                if (pBeats && row.pTrack->trySetBeats(pBeats)) {
-                    row.pTrack->setBpmLocked(true); // a later analysis keeps it
-                    changed = true;
+                if (pBeats) {
+                    const mixxx::BeatsPointer pOld = row.pTrack->getBeats();
+                    const bool wasLocked = row.pTrack->isBpmLocked();
+                    if (wasLocked) {
+                        row.pTrack->setBpmLocked(false); // the DJ chose Fix for it
+                    }
+                    if (row.pTrack->trySetBeats(pBeats)) {
+                        if (!undo.gridSaved) {
+                            undo.gridSaved = true;
+                            undo.oldBeats = pOld ? pOld->toByteArray() : QByteArray();
+                            undo.oldBeatsVersion = pOld ? pOld->getVersion() : QString();
+                            undo.oldBeatsSubVersion = pOld ? pOld->getSubVersion() : QString();
+                            undo.oldBpmLocked = wasLocked;
+                        }
+                        undo.newBeatsHash = beatsHash(row.pTrack->getBeats());
+                        changed = true;
+                        row.pTrack->setBpmLocked(true); // a later analysis keeps it
+                    } else {
+                        row.pTrack->setBpmLocked(wasLocked);
+                    }
                 }
             }
             if (r.newIntroEndSec >= 0.0) {
                 // Counts as the DJ's marker from now on (the analysis no
                 // longer moves it): the DJ chose it.
                 if (const CuePointer pIntro = row.pTrack->findCueByType(mixxx::CueType::Intro)) {
-                    pIntro->setEndPosition(frame(r.newIntroEndSec));
+                    const mixxx::audio::FramePos oldEnd = pIntro->getEndPosition();
+                    const mixxx::audio::FramePos newEnd = frame(r.newIntroEndSec);
+                    pIntro->setEndPosition(newEnd);
+                    if (!undo.introSaved) {
+                        undo.introSaved = true;
+                        undo.oldIntroEndFrame = oldEnd.isValid() ? oldEnd.value() : -1.0;
+                    }
+                    undo.newIntroEndFrame = newEnd.value();
                     changed = true;
                 }
             }
             if (changed) {
                 ++fixed;
-                qInfo().noquote() << "Beat check: fixed" << row.pTrack->getInfo() << "-"
-                                  << QString(row.fix).replace(QChar('\n'), QChar(' '));
+                const QString what = QString(row.fix).replace(QChar('\n'), QChar(' '));
+                undo.fixedAt = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd hh:mm"));
+                undo.what = undo.what.isEmpty() ? what : undo.what + QStringLiteral(" | ") + what;
+                EnergyStore::saveBeatCheckUndo(db, row.pTrack->getId(), undo);
+                qInfo().noquote() << "Beat check: fixed" << row.pTrack->getInfo() << "-" << what
+                                  << (r.newGrid ? QStringLiteral("(grid check %1 beats)")
+                                                          .arg(row.driftBeats, 0, 'f', 3)
+                                                : QString());
             }
         }
         m_pAnalysisLibraryTableModel->select();
         QMessageBox::information(pDialog,
                 tr("Beat Check"),
-                tr("Fixed %1 song(s), ignored %2.").arg(fixed).arg(ignoredNow));
+                tr("Fixed %1 song(s), ignored %2. Undo fixes... puts any of them back.")
+                        .arg(fixed)
+                        .arg(ignoredNow));
         pDialog->accept();
     });
     pLayout->addWidget(pButtons);
     pDialog->resize(1100, 680);
+    pDialog->show();
+}
+
+void DlgAnalysis::slotBeatCheckUndo() {
+    TrackCollectionManager* pManager = m_pLibrary->trackCollectionManager();
+    if (!pManager || !pManager->internalCollection()) {
+        return;
+    }
+    const QSqlDatabase db = pManager->internalCollection()->database();
+    struct UndoRow {
+        TrackPointer pTrack;
+        EnergyStore::BeatCheckUndo undo;
+    };
+    auto rows = std::make_shared<std::vector<UndoRow>>();
+    for (const TrackId& id : EnergyStore::beatCheckUndoTracks(db)) {
+        const TrackPointer pTrack = pManager->getTrackById(id);
+        const auto undo = EnergyStore::loadBeatCheckUndo(db, id);
+        if (pTrack && undo) {
+            rows->push_back({pTrack, *undo});
+        }
+    }
+    if (rows->empty()) {
+        QMessageBox::information(this, tr("Undo Beat Check"), tr("No beat check fix to undo."));
+        return;
+    }
+    std::sort(rows->begin(), rows->end(), [](const UndoRow& a, const UndoRow& b) {
+        return a.undo.fixedAt > b.undo.fixedAt; // the latest first
+    });
+    auto* pDialog = new QDialog(this);
+    pDialog->setAttribute(Qt::WA_DeleteOnClose);
+    pDialog->setWindowTitle(tr("Undo Beat Check"));
+    auto* pLayout = new QVBoxLayout(pDialog);
+    auto* pSummary = new QLabel(
+            tr("Tick the songs to put back the way they were before the beat check fixed "
+               "them (their beat grid, BPM lock and Intro End marker), then press Undo "
+               "ticked. Double-click a song to load it on a deck."),
+            pDialog);
+    pSummary->setWordWrap(true);
+    pLayout->addWidget(pSummary);
+    auto* pTable = new QTableWidget(static_cast<int>(rows->size()), 4, pDialog);
+    pTable->setHorizontalHeaderLabels({tr("Undo"), tr("Song"), tr("What the fix did"), tr("When")});
+    pTable->verticalHeader()->hide();
+    pTable->setWordWrap(true);
+    pTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    pTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    for (int i = 0; i < static_cast<int>(rows->size()); ++i) {
+        const UndoRow& row = (*rows)[i];
+        auto* pTick = new QTableWidgetItem();
+        pTick->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
+        pTick->setCheckState(Qt::Unchecked);
+        pTable->setItem(i, 0, pTick);
+        pTable->setItem(i, 1, new QTableWidgetItem(songName(row.pTrack)));
+        pTable->setItem(i, 2, new QTableWidgetItem(row.undo.what));
+        pTable->setItem(i, 3, new QTableWidgetItem(row.undo.fixedAt));
+    }
+    pTable->resizeColumnsToContents();
+    pTable->setColumnWidth(1, std::min(pTable->columnWidth(1), 280));
+    pTable->setColumnWidth(2, std::min(std::max(pTable->columnWidth(2), 200), 480));
+    pTable->horizontalHeader()->setStretchLastSection(true);
+    pTable->resizeRowsToContents();
+    connect(pTable, &QTableWidget::cellDoubleClicked, this, [this, rows](int r, int) {
+        if (r >= 0 && r < static_cast<int>(rows->size())) {
+            emit loadTrack((*rows)[r].pTrack);
+        }
+    });
+    pLayout->addWidget(pTable);
+    auto* pButtons = new QDialogButtonBox(pDialog);
+    QPushButton* pDo = pButtons->addButton(tr("Undo ticked"), QDialogButtonBox::AcceptRole);
+    QPushButton* pTickAll = pButtons->addButton(tr("Tick all"), QDialogButtonBox::ActionRole);
+    pButtons->addButton(QDialogButtonBox::Close);
+    connect(pTickAll, &QPushButton::clicked, pDialog, [pTable]() {
+        for (int i = 0; i < pTable->rowCount(); ++i) {
+            pTable->item(i, 0)->setCheckState(Qt::Checked);
+        }
+    });
+    connect(pButtons, &QDialogButtonBox::rejected, pDialog, &QDialog::reject);
+    connect(pDo, &QPushButton::clicked, pDialog, [this, pDialog, pTable, rows, db]() {
+        int undone = 0;
+        for (int i = 0; i < pTable->rowCount(); ++i) {
+            if (pTable->item(i, 0)->checkState() != Qt::Checked) {
+                continue;
+            }
+            const UndoRow& row = (*rows)[i];
+            const EnergyStore::BeatCheckUndo& undo = row.undo;
+            const auto sampleRate = row.pTrack->getSampleRate();
+            bool ok = true;
+            if (undo.gridSaved && sampleRate.isValid()) {
+                const mixxx::BeatsPointer pOld = undo.oldBeats.isEmpty()
+                        ? mixxx::BeatsPointer()
+                        : mixxx::Beats::fromByteArray(sampleRate,
+                                  undo.oldBeatsVersion,
+                                  undo.oldBeatsSubVersion,
+                                  undo.oldBeats);
+                row.pTrack->setBpmLocked(false);
+                ok = row.pTrack->trySetBeats(pOld);
+                row.pTrack->setBpmLocked(undo.oldBpmLocked);
+            }
+            if (undo.introSaved && undo.oldIntroEndFrame >= 0.0) {
+                if (const CuePointer pIntro = row.pTrack->findCueByType(mixxx::CueType::Intro)) {
+                    pIntro->setEndPosition(mixxx::audio::FramePos(undo.oldIntroEndFrame));
+                }
+            }
+            if (!ok) {
+                qWarning().noquote() << "Beat check: could not undo" << row.pTrack->getInfo();
+                continue;
+            }
+            EnergyStore::deleteBeatCheckUndo(db, row.pTrack->getId());
+            ++undone;
+            qInfo().noquote() << "Beat check: undid" << row.pTrack->getInfo() << "-" << undo.what;
+        }
+        m_pAnalysisLibraryTableModel->select();
+        QMessageBox::information(pDialog,
+                tr("Undo Beat Check"),
+                tr("Put %1 song(s) back the way they were.").arg(undone));
+        pDialog->accept();
+    });
+    pLayout->addWidget(pButtons);
+    pDialog->resize(1000, 600);
     pDialog->show();
 }
 

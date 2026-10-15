@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <optional>
 #include <vector>
 
@@ -89,8 +90,14 @@ struct Song {
     phrasealign::Grid grid;    ///< Mixxx's beat grid or beat map (track seconds)
     double introEndSec = -1.0; ///< the Intro End marker (beat 1), -1 = none
     bool introEndByDj = false; ///< set or moved by the DJ: never changed
-    bool bpmLocked = false;    ///< the DJ locked the BPM: never changed
+    bool bpmLocked = false;    ///< locked: a new grid only when the DJ picks Fix for it
     double durationSec = 0.0;
+    /// false: no new grid (the one worked out did not stay on the music in
+    /// the beat grid check, EnergyCalculator::gridDriftBeats).
+    bool allowNewGrid = true;
+    /// false: not the intro-only repair (Mixxx's own main part did not
+    /// pass the beat grid check): a grid from the beats heard instead.
+    bool allowIntroOnly = true;
 };
 
 /// The beat check's answer for one song.
@@ -114,6 +121,10 @@ struct Review {
     bool beatOneOff = false;   ///< more than kBeatOneTolerance (and at most kBeatOneMaxBeats)
     // The fix (only what the DJ has not locked or set).
     bool newGrid = false;      ///< replace the beat grid
+    bool replacesLock = false; ///< ... of a song with a locked BPM (only if the DJ picks it)
+    /// ... keeping Mixxx's own beats in the main part, the intro counted
+    /// back from it at the main tempo (an intro misread, the rest right).
+    bool introOnly = false;
     bool steady = true;        ///< ... with one tempo (else a beat map)
     double newBpm = 0.0;
     double newFirstBeatSec = 0.0;  ///< steady grid: its first line (a bar line)
@@ -157,5 +168,12 @@ constexpr double kMaxBpm = 160.0;
 
 /// Compares the beat check's beats with what Mixxx has.
 Review review(const Found& found, const Song& song);
+
+/// The bass and treble levels the beat grid check needs, kept with the
+/// beat check's result: one byte a level (a quarter dB from kLevelFloorDb;
+/// lower is the same to the check).
+constexpr double kLevelFloorDb = -60.0;
+std::vector<std::uint8_t> packLevels(const std::vector<float>& db);
+std::vector<float> unpackLevels(const std::uint8_t* pBytes, std::size_t count);
 
 } // namespace beatcheck

@@ -124,8 +124,42 @@ void EnergyCalculator::endBlock() {
 double EnergyCalculator::gridDriftBeats(const phrasealign::Grid& grid,
         double bodyStartSec,
         double bodyEndSec) const {
-    const int blockCount = static_cast<int>(m_blockLowDb.size());
-    const double blockSec = m_blockFrames / m_sampleRate;
+    return gridDriftBeats(m_blockFrames / m_sampleRate,
+            m_blockLowDb,
+            m_blockHighDb,
+            grid,
+            bodyStartSec,
+            bodyEndSec);
+}
+
+EnergyCalculator::GridLevels EnergyCalculator::gridLevels() const {
+    GridLevels levels;
+    levels.blockSec = m_blockFrames / m_sampleRate;
+    levels.lowDb = m_blockLowDb;
+    levels.highDb = m_blockHighDb;
+    return levels;
+}
+
+// static
+double EnergyCalculator::gridDriftBeats(const GridLevels& levels,
+        const phrasealign::Grid& grid,
+        double bodyStartSec,
+        double bodyEndSec) {
+    return gridDriftBeats(
+            levels.blockSec, levels.lowDb, levels.highDb, grid, bodyStartSec, bodyEndSec);
+}
+
+// static
+double EnergyCalculator::gridDriftBeats(double blockSec,
+        const std::vector<float>& lowDb,
+        const std::vector<float>& highDb,
+        const phrasealign::Grid& grid,
+        double bodyStartSec,
+        double bodyEndSec) {
+    const int blockCount = static_cast<int>(std::min(lowDb.size(), highDb.size()));
+    if (!(blockSec > 0.0)) {
+        return -1.0;
+    }
     // Everything is counted in beats of the grid, so a beat map that bends
     // with the music is judged beat by beat.
     constexpr double regionBeats = kGridWindowBeats * kGridWindowsPerRegion;
@@ -149,7 +183,7 @@ double EnergyCalculator::gridDriftBeats(const phrasealign::Grid& grid,
             bodyEndBeat - regionBeats,
     };
     double best = -1.0;
-    for (const std::vector<float>* pLevels : {&m_blockLowDb, &m_blockHighDb}) {
+    for (const std::vector<float>* pLevels : {&lowDb, &highDb}) {
         const std::vector<float>& levels = *pLevels;
         // Sum of the hits in [fromSec, toSec) as a vector: its angle is where
         // in the beat they fall, its length (/ weight) how clearly.

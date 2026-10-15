@@ -7,8 +7,11 @@
 #include <QSqlQuery>
 #include <QVariant>
 #include <cmath>
+#include <cstdint>
 #include <cstring>
+#include <utility>
 
+#include "library/autodj/smart/beatcheck.h"
 #include "library/queryutil.h"
 
 namespace {
@@ -139,6 +142,43 @@ bool EnergyStore::ensureTableNow(const QSqlDatabase& db) {
         LOG_FAILED_QUERY(query);
         return false;
     }
+    // The levels for the beat grid check, added later: older tables get the
+    // columns once.
+    QSet<QString> beatCheckColumns;
+    if (query.exec(QStringLiteral("PRAGMA table_info(autodj_beatcheck)"))) {
+        while (query.next()) {
+            beatCheckColumns.insert(query.value(1).toString());
+        }
+    }
+    for (const auto& column : {std::pair<QString, QString>(QStringLiteral("block_sec"), QStringLiteral("REAL")),
+                 std::pair<QString, QString>(QStringLiteral("low_levels"), QStringLiteral("BLOB")),
+                 std::pair<QString, QString>(QStringLiteral("high_levels"), QStringLiteral("BLOB")),
+                 std::pair<QString, QString>(QStringLiteral("body_start_sec"), QStringLiteral("REAL")),
+                 std::pair<QString, QString>(QStringLiteral("body_end_sec"), QStringLiteral("REAL"))}) {
+        if (!beatCheckColumns.contains(column.first) &&
+                !query.exec(QStringLiteral("ALTER TABLE autodj_beatcheck ADD COLUMN %1 %2")
+                                    .arg(column.first, column.second))) {
+            LOG_FAILED_QUERY(query);
+            return false;
+        }
+    }
+    if (!query.exec(QStringLiteral(
+                "CREATE TABLE IF NOT EXISTS autodj_beatcheck_undo ("
+                "track_id INTEGER PRIMARY KEY, "
+                "fixed_at TEXT, "
+                "what TEXT, "
+                "grid_saved INTEGER, "
+                "old_beats BLOB, "
+                "old_beats_version TEXT, "
+                "old_beats_sub_version TEXT, "
+                "old_bpm_locked INTEGER, "
+                "new_beats_hash BLOB, "
+                "intro_saved INTEGER, "
+                "old_intro_end REAL, "
+                "new_intro_end REAL)"))) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
     return true;
 }
 
@@ -156,6 +196,14 @@ QByteArray packTimes(const std::vector<double>& times) {
         }
     }
     return bytes;
+}
+QByteArray packLevels(const std::vector<float>& db) {
+    const std::vector<std::uint8_t> bytes = beatcheck::packLevels(db);
+    return QByteArray(reinterpret_cast<const char*>(bytes.data()), static_cast<int>(bytes.size()));
+}
+std::vector<float> unpackLevels(const QByteArray& bytes) {
+    return beatcheck::unpackLevels(reinterpret_cast<const std::uint8_t*>(bytes.constData()),
+            static_cast<std::size_t>(bytes.size()));
 }
 std::vector<double> unpackTimes(const QByteArray& bytes) {
     std::vector<double> times;
@@ -181,7 +229,8 @@ std::optional<EnergyStore::BeatCheck> EnergyStore::loadBeatCheck(
     }
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
-            "SELECT version, model, duration_sec, beats, downbeats, ignored "
+            "SELECT version, model, duration_sec, beats, downbeats, ignored, "
+            "block_sec, low_levels, high_levels, body_start_sec, body_end_sec "
             "FROM autodj_beatcheck WHERE track_id=:id"));
     query.bindValue(QStringLiteral(":id"), trackId.toVariant());
     if (!query.exec()) {
@@ -198,6 +247,11 @@ std::optional<EnergyStore::BeatCheck> EnergyStore::loadBeatCheck(
     check.beats = unpackTimes(query.value(3).toByteArray());
     check.downbeats = unpackTimes(query.value(4).toByteArray());
     check.ignored = query.value(5).toString();
+    check.levels.blockSec = query.value(6).toDouble();
+    check.levels.lowDb = unpackLevels(query.value(7).toByteArray());
+    check.levels.highDb = unpackLevels(query.value(8).toByteArray());
+    check.bodyStartSec = query.value(9).toDouble();
+    check.bodyEndSec = query.value(10).toDouble();
     return check;
 }
 
@@ -209,8 +263,10 @@ bool EnergyStore::saveBeatCheck(const QSqlDatabase& db, TrackId trackId, const B
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
             "INSERT OR REPLACE INTO autodj_beatcheck "
-            "(track_id, version, model, duration_sec, beats, downbeats, ignored) "
-            "VALUES (:id, :version, :model, :duration, :beats, :downbeats, :ignored)"));
+            "(track_id, version, model, duration_sec, beats, downbeats, ignored, "
+            "block_sec, low_levels, high_levels, body_start_sec, body_end_sec) "
+            "VALUES (:id, :version, :model, :duration, :beats, :downbeats, :ignored, "
+            ":block, :low, :high, :bodyStart, :bodyEnd)"));
     query.bindValue(QStringLiteral(":id"), trackId.toVariant());
     query.bindValue(QStringLiteral(":version"), check.version);
     query.bindValue(QStringLiteral(":model"), check.model);
@@ -218,6 +274,11 @@ bool EnergyStore::saveBeatCheck(const QSqlDatabase& db, TrackId trackId, const B
     query.bindValue(QStringLiteral(":beats"), packTimes(check.beats));
     query.bindValue(QStringLiteral(":downbeats"), packTimes(check.downbeats));
     query.bindValue(QStringLiteral(":ignored"), check.ignored);
+    query.bindValue(QStringLiteral(":block"), check.levels.blockSec);
+    query.bindValue(QStringLiteral(":low"), packLevels(check.levels.lowDb));
+    query.bindValue(QStringLiteral(":high"), packLevels(check.levels.highDb));
+    query.bindValue(QStringLiteral(":bodyStart"), check.bodyStartSec);
+    query.bindValue(QStringLiteral(":bodyEnd"), check.bodyEndSec);
     if (!query.exec()) {
         LOG_FAILED_QUERY(query);
         return false;
@@ -250,6 +311,105 @@ QList<TrackId> EnergyStore::beatCheckedTracks(const QSqlDatabase& db) {
     }
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral("SELECT track_id FROM autodj_beatcheck"))) {
+        LOG_FAILED_QUERY(query);
+        return ids;
+    }
+    while (query.next()) {
+        ids.append(TrackId(query.value(0)));
+    }
+    return ids;
+}
+
+// static
+std::optional<EnergyStore::BeatCheckUndo> EnergyStore::loadBeatCheckUndo(
+        const QSqlDatabase& db, TrackId trackId) {
+    if (!trackId.isValid() || !ensureTable(db)) {
+        return std::nullopt;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "SELECT fixed_at, what, grid_saved, old_beats, old_beats_version, "
+            "old_beats_sub_version, old_bpm_locked, new_beats_hash, intro_saved, "
+            "old_intro_end, new_intro_end FROM autodj_beatcheck_undo WHERE track_id=:id"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return std::nullopt;
+    }
+    if (!query.next()) {
+        return std::nullopt;
+    }
+    BeatCheckUndo undo;
+    undo.fixedAt = query.value(0).toString();
+    undo.what = query.value(1).toString();
+    undo.gridSaved = query.value(2).toInt() != 0;
+    undo.oldBeats = query.value(3).toByteArray();
+    undo.oldBeatsVersion = query.value(4).toString();
+    undo.oldBeatsSubVersion = query.value(5).toString();
+    undo.oldBpmLocked = query.value(6).toInt() != 0;
+    undo.newBeatsHash = query.value(7).toByteArray();
+    undo.introSaved = query.value(8).toInt() != 0;
+    undo.oldIntroEndFrame = query.value(9).toDouble();
+    undo.newIntroEndFrame = query.value(10).toDouble();
+    return undo;
+}
+
+// static
+bool EnergyStore::saveBeatCheckUndo(
+        const QSqlDatabase& db, TrackId trackId, const BeatCheckUndo& undo) {
+    if (!trackId.isValid() || !ensureTable(db)) {
+        return false;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+            "INSERT OR REPLACE INTO autodj_beatcheck_undo "
+            "(track_id, fixed_at, what, grid_saved, old_beats, old_beats_version, "
+            "old_beats_sub_version, old_bpm_locked, new_beats_hash, intro_saved, "
+            "old_intro_end, new_intro_end) VALUES (:id, :at, :what, :gridSaved, :oldBeats, "
+            ":oldVersion, :oldSubVersion, :oldLocked, :newHash, :introSaved, :oldIntro, "
+            ":newIntro)"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    query.bindValue(QStringLiteral(":at"), undo.fixedAt);
+    query.bindValue(QStringLiteral(":what"), undo.what);
+    query.bindValue(QStringLiteral(":gridSaved"), undo.gridSaved ? 1 : 0);
+    query.bindValue(QStringLiteral(":oldBeats"), undo.oldBeats);
+    query.bindValue(QStringLiteral(":oldVersion"), undo.oldBeatsVersion);
+    query.bindValue(QStringLiteral(":oldSubVersion"), undo.oldBeatsSubVersion);
+    query.bindValue(QStringLiteral(":oldLocked"), undo.oldBpmLocked ? 1 : 0);
+    query.bindValue(QStringLiteral(":newHash"), undo.newBeatsHash);
+    query.bindValue(QStringLiteral(":introSaved"), undo.introSaved ? 1 : 0);
+    query.bindValue(QStringLiteral(":oldIntro"), undo.oldIntroEndFrame);
+    query.bindValue(QStringLiteral(":newIntro"), undo.newIntroEndFrame);
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    return true;
+}
+
+// static
+bool EnergyStore::deleteBeatCheckUndo(const QSqlDatabase& db, TrackId trackId) {
+    if (!trackId.isValid() || !ensureTable(db)) {
+        return false;
+    }
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral("DELETE FROM autodj_beatcheck_undo WHERE track_id=:id"));
+    query.bindValue(QStringLiteral(":id"), trackId.toVariant());
+    if (!query.exec()) {
+        LOG_FAILED_QUERY(query);
+        return false;
+    }
+    return true;
+}
+
+// static
+QList<TrackId> EnergyStore::beatCheckUndoTracks(const QSqlDatabase& db) {
+    QList<TrackId> ids;
+    if (!ensureTable(db)) {
+        return ids;
+    }
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("SELECT track_id FROM autodj_beatcheck_undo"))) {
         LOG_FAILED_QUERY(query);
         return ids;
     }

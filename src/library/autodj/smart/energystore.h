@@ -127,10 +127,41 @@ class EnergyStore {
         std::vector<double> beats; ///< seconds
         std::vector<double> downbeats;
         QString ignored;           ///< what the DJ chose to Ignore (see DlgAnalysis)
+        /// For trying a proposed grid against the music (the beat grid
+        /// check): the bass and treble levels, and the song's body. Empty
+        /// for songs checked before they were kept (Analyze adds them).
+        EnergyCalculator::GridLevels levels;
+        double bodyStartSec = 0.0;
+        double bodyEndSec = 0.0;
+        bool hasLevels() const {
+            return levels.blockSec > 0.0 && !levels.lowDb.empty();
+        }
     };
     static std::optional<BeatCheck> loadBeatCheck(const QSqlDatabase& db, TrackId trackId);
     static bool saveBeatCheck(const QSqlDatabase& db, TrackId trackId, const BeatCheck& check);
     static bool setBeatCheckIgnored(const QSqlDatabase& db, TrackId trackId, const QString& ignored);
     /// The songs with a beat check result.
     static QList<TrackId> beatCheckedTracks(const QSqlDatabase& db);
+
+    /// What a beat check Fix changed, to undo it (`autodj_beatcheck_undo`).
+    /// Kept from before the first Fix: fixed again, it still goes back to
+    /// how the song was before the beat check touched it.
+    struct BeatCheckUndo {
+        QString fixedAt;            ///< when (local time, for the list)
+        QString what;               ///< what was done, for the list
+        bool gridSaved = false;     ///< the grid was changed: the old one is here
+        QByteArray oldBeats;        ///< Beats::toByteArray(), empty = no grid
+        QString oldBeatsVersion;
+        QString oldBeatsSubVersion;
+        bool oldBpmLocked = false;
+        QByteArray newBeatsHash;    ///< the grid the Fix left (to know it is still that one)
+        bool introSaved = false;    ///< the Intro End marker was moved
+        double oldIntroEndFrame = -1.0;
+        double newIntroEndFrame = -1.0;
+    };
+    static std::optional<BeatCheckUndo> loadBeatCheckUndo(const QSqlDatabase& db, TrackId trackId);
+    static bool saveBeatCheckUndo(
+            const QSqlDatabase& db, TrackId trackId, const BeatCheckUndo& undo);
+    static bool deleteBeatCheckUndo(const QSqlDatabase& db, TrackId trackId);
+    static QList<TrackId> beatCheckUndoTracks(const QSqlDatabase& db);
 };

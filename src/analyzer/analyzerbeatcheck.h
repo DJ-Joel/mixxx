@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QSqlDatabase>
+#include <memory>
 #include <vector>
 
 #include "analyzer/analyzer.h"
+#include "analyzer/energycalculator.h"
 #include "preferences/usersettings.h"
 #include "track/trackid.h"
 
@@ -13,6 +15,11 @@
 /// (EnergyStore::BeatCheck). Nothing about the song is changed: the review
 /// on the Analyze page (Beat Check button) compares them with the song's
 /// beat grid and markers, and the DJ picks what to Fix or Ignore.
+///
+/// It also keeps the bass and treble levels the beat grid check needs
+/// (EnergyCalculator), so a grid the review proposes can be tried against
+/// the music before it is offered. Songs checked before the levels were
+/// kept only get the levels added (quick, the model is not run again).
 ///
 /// Off when ONNX Runtime is not there (it comes with the stems engine), or
 /// with [Auto DJ] BeatCheck = 0. Songs over 20 minutes (DJ mixes) are left
@@ -38,7 +45,8 @@ class AnalyzerBeatCheck : public Analyzer {
     void cleanup() override;
 
   private:
-    bool isNeeded(const TrackPointer& pTrack, const QString& model) const;
+    /// What this song still needs: the beats (the model), the levels.
+    void needs(const TrackPointer& pTrack, const QString& model, bool* pBeats, bool* pLevels) const;
 
     UserSettingsPointer m_pConfig;
     QSqlDatabase m_db;
@@ -46,5 +54,7 @@ class AnalyzerBeatCheck : public Analyzer {
     double m_sampleRate = 0.0;
     double m_durationSec = 0.0;
     QString m_model;
+    bool m_needBeats = false;
     std::vector<float> m_mono;
+    std::unique_ptr<EnergyCalculator> m_pLevels;
 };

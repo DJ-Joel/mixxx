@@ -2,8 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <random>
 #include <vector>
+
+#include "analyzer/energycalculator.h"
 
 // Auto DJ 2.0 plus Video Mixing beat check (beatcheck.h). The expected
 // values for the model input and output handling come from the Beat This
@@ -159,12 +163,21 @@ TEST(BeatCheckTest, ADottedRhythmReadAsTheBeatGetsTheRightTempo) {
     EXPECT_TRUE(r.steady);
     EXPECT_NEAR(85.0, r.newBpm, 0.001);
     EXPECT_NEAR(0.207, r.newFirstBeatSec, 0.001); // on beat 1
-    // A locked BPM is reported, never changed.
+    EXPECT_FALSE(r.replacesLock);
+    // A locked BPM: the same grid, marked as replacing the lock (only done
+    // if the DJ picks it; "Fix all" leaves it).
     auto locked = song(steadyGrid(113.33, 0.21), 205.0);
     locked.bpmLocked = true;
     const auto l = beatcheck::review(heard(60.0 / 170.0, 0.207, 205.0), locked);
     EXPECT_TRUE(l.tempoWrong);
-    EXPECT_FALSE(l.newGrid);
+    EXPECT_TRUE(l.newGrid);
+    EXPECT_TRUE(l.replacesLock);
+    // A grid that failed the check against the music is not offered.
+    auto failed = song(steadyGrid(113.33, 0.21), 205.0);
+    failed.allowNewGrid = false;
+    const auto f = beatcheck::review(heard(60.0 / 170.0, 0.207, 205.0), failed);
+    EXPECT_TRUE(f.tempoWrong);
+    EXPECT_FALSE(f.newGrid);
 }
 
 TEST(BeatCheckTest, AnIntroMisreadGetsANewGrid) {
@@ -183,7 +196,98 @@ TEST(BeatCheckTest, AnIntroMisreadGetsANewGrid) {
     EXPECT_TRUE(r.introMisread);
     EXPECT_NEAR(150.0, r.introBpm, 0.5);
     EXPECT_TRUE(r.newGrid);
+    EXPECT_TRUE(r.introOnly);
     EXPECT_NEAR(112.0, r.newBpm, 0.01);
+    // Mixxx's lines in the main part are kept exactly.
+    ASSERT_TRUE(r.steady);
+    const double k = (mainStart - r.newFirstBeatSec) / (60.0 / r.newBpm);
+    EXPECT_NEAR(std::round(k), k, 0.002);
+}
+
+TEST(BeatCheckTest, AWobblyBeatCheckDoesNotSpoilARightMainPart) {
+    // Ward Brothers "Madness Of It All": Mixxx reads the intro at double
+    // time, the main part right (101.1); the beat check hears 101 but
+    // wobbles (beats missing, a stretch where it counts 4 beats in 3).
+    const double beat = 60.0 / 101.1;
+    std::vector<double> map;
+    double t = 0.3;
+    for (int i = 0; i < 64; ++i, t += beat / 2.0) {
+        map.push_back(t); // the intro at 202
+    }
+    const double mainStart = t;
+    for (; t < 260.0; t += beat) {
+        map.push_back(t);
+    }
+    beatcheck::Found found;
+    std::mt19937 rng(7);
+    std::normal_distribution<double> jitter(0.0, 0.008);
+    int n = 0;
+    for (double b = mainStart - 31 * beat; b < 260.0; b += beat, ++n) {
+        if (b > 40.0 && b < 70.0) {
+            continue; // a stretch it hears differently...
+        }
+        if (n % 9 == 4) {
+            continue; // ...and beats it misses
+        }
+        found.beats.push_back(b + 0.02 + jitter(rng));
+        if (n % 4 == 0) {
+            found.downbeats.push_back(found.beats.back());
+        }
+    }
+    for (double b = 40.0; b < 70.0; b += beat * 0.75) {
+        found.beats.push_back(b);
+    }
+    std::sort(found.beats.begin(), found.beats.end());
+    const auto r = beatcheck::review(found, song(phrasealign::Grid::fromBeats(map), 270.0));
+    ASSERT_TRUE(r.introMisread);
+    ASSERT_TRUE(r.newGrid);
+    EXPECT_TRUE(r.introOnly);
+    EXPECT_NEAR(101.1, r.newBpm, 0.05);
+    // Every main-part line where Mixxx had it.
+    const phrasealign::Grid g = r.steady
+            ? phrasealign::Grid{r.newFirstBeatSec, 60.0 / r.newBpm}
+            : phrasealign::Grid::fromBeats(r.newBeats);
+    for (double m = mainStart; m < 250.0; m += 37 * beat) {
+        const double b = g.beatAt(m);
+        EXPECT_NEAR(std::round(b), b, 0.01) << m;
+    }
+}
+
+TEST(BeatCheckTest, KeptLevelsGiveTheSameGridCheck) {
+    // A kick every 0.5 s for 200 s, checked straight and from the kept
+    // (packed) levels, with a right and a slightly wrong grid.
+    constexpr double kRate = 22050.0;
+    std::vector<float> mono(static_cast<std::size_t>(200 * kRate));
+    for (std::size_t i = 0; i < mono.size(); ++i) {
+        const double since = std::fmod(i / kRate - 0.3 + 10.0, 0.5);
+        mono[i] = static_cast<float>(0.6 * std::sin(2 * kPi * 55 * since) * std::exp(-since / 0.06));
+    }
+    EnergyCalculator calc(kRate, 1);
+    calc.process(mono.data(), static_cast<std::int64_t>(mono.size()));
+    EnergyCalculator::Result result;
+    ASSERT_TRUE(calc.finish(&result));
+    const auto levels = calc.gridLevels();
+    EnergyCalculator::GridLevels kept;
+    kept.blockSec = levels.blockSec;
+    const auto low = beatcheck::packLevels(levels.lowDb);
+    const auto high = beatcheck::packLevels(levels.highDb);
+    kept.lowDb = beatcheck::unpackLevels(low.data(), low.size());
+    kept.highDb = beatcheck::unpackLevels(high.data(), high.size());
+    for (double beatSec : {0.5, 0.5 * 1.002}) {
+        const phrasealign::Grid grid{0.3, beatSec};
+        const double straight = calc.gridDriftBeats(grid, result.bodyStartSec, result.bodyEndSec);
+        const double fromKept = EnergyCalculator::gridDriftBeats(
+                kept, grid, result.bodyStartSec, result.bodyEndSec);
+        EXPECT_NEAR(straight, fromKept, 0.01) << beatSec;
+    }
+    EXPECT_LT(EnergyCalculator::gridDriftBeats(
+                      kept, phrasealign::Grid{0.3, 0.5}, result.bodyStartSec, result.bodyEndSec),
+            EnergyCalculator::kGridMaxDriftBeats);
+    EXPECT_GT(EnergyCalculator::gridDriftBeats(kept,
+                      phrasealign::Grid{0.3, 0.5 * 1.002},
+                      result.bodyStartSec,
+                      result.bodyEndSec),
+            EnergyCalculator::kGridMaxDriftBeats);
 }
 
 TEST(BeatCheckTest, BeatOneOffMovesAMarkerTheDjDidNotSet) {

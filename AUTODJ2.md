@@ -866,11 +866,31 @@ Check** button on the Analyze page lists what looks wrong:
 
 For each song: **Fix**, **Ignore** (remembered until the grid or marker
 changes) or **Decide later**; double-click a song to load it on a deck and
-listen. Fix gives the song a new beat grid from the beat check (one tempo
-when it is steady, else a beat map; beat 1 on a bar line) and locks its
-BPM, and/or moves the Intro End marker (which then counts as the DJ's).
-BPMs the DJ locked and Intro End markers the DJ set are never changed.
-**Fix all** leaves out the *listen first* songs.
+listen. Fix gives the song a new beat grid and locks its BPM, and/or moves
+the Intro End marker (which then counts as the DJ's):
+
+- an intro misread with the rest right: **Mixxx's own beats are kept** and
+  only the intro is redone, counted back from the main part at its tempo
+  (or with its own steady tempo through the beats heard there). The beats
+  heard are never copied as they are: in Ward Brothers "Madness Of It
+  All" they wobble, and a beat map made from them did not stay on the beat;
+- otherwise a grid from the beats heard (one tempo when it is steady, else
+  a beat map; beat 1 on a bar line).
+
+A new grid is **only offered once it passes the beat grid check** (4.8,
+EnergyCalculator::gridDriftBeats, the one Auto DJ uses): the beat check
+keeps the bass and treble levels of each song for it (songs checked before
+that get them added by the next Analyze, without listening again). On the
+first run 4 of about 40 new grids failed it afterwards (Ward Brothers,
+Dramarama, Ventirati "Sin City" half a beat off, DJ Snake "Turn Down For
+What"); now they would not be offered.
+
+Intro End markers the DJ set are never moved. A song whose BPM the DJ
+locked can still be fixed, but only when the DJ picks Fix for it (**Fix
+all** leaves those out, and the *listen first* songs). **Every Fix can be
+undone** (Undo fixes...: the old grid, BPM lock and marker are kept from
+before the first Fix, table autodj_beatcheck_undo), and a song still as a
+Fix left it is not listed again.
 
 Tested on 24 songs checked by ear: tempo right for 22 with Mixxx, 24 with
 Beat This (Night Drive heard at 170 = 2 x 85); beat 1 within a quarter beat
@@ -890,8 +910,13 @@ the stems engine's (onnxruntime.dll); without it the beat check is off. The
 full model (83 MB) goes in the stems engine folder as model/beat_this.onnx;
 without it the small one in res/beatcheck (10 MB, nearly as good) is used.
 Two processor threads, 5-15 s per song; songs over 20 minutes are left out.
-Results: table autodj_beatcheck (beats and downbeats; the review is worked
-out when the window opens, from the grid and markers as they are then).
+Results: table autodj_beatcheck (beats and downbeats, the levels for the
+grid check; the review is worked out when the window opens, from the grid
+and markers as they are then).
+
+First run on the DJ's library (311 songs, 95 fixes): where the stem
+analysis was sure of beat 1, it agreed with every Intro End move the beat
+check made (11 of 11).
 Off with [Auto DJ] BeatCheck = 0.
 
 ## 5. Where the code is
@@ -954,7 +979,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*:BeatCheckTest.*
 ```
 
-221 tests. EnginePositionTest checks the timing the beat lock relies on:
+225 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -1129,4 +1154,9 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
 46. **Beat check.** A second beat finder (Beat This!, MIT) listens to every
     song during Analyze; the Beat Check button lists wrong tempos, misread
     intros, beat lines off the beat and beat 1 off, to Fix or Ignore. Tested
-    against 24 songs checked by ear. 221 tests.
+    against 24 songs checked by ear. 223 tests.
+47. **Beat check, safer fixes.** An intro misread keeps Mixxx's own beats
+    for the main part; a new grid is only offered once it passes the beat
+    grid check against the music; every Fix can be undone; fixed songs are
+    not listed again; a locked BPM can be fixed when the DJ picks it.
+    225 tests.

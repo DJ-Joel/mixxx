@@ -81,6 +81,21 @@ class EnergyCalculator {
             double bodyStartSec,
             double bodyEndSec) const;
 
+    /// What the beat grid check works from: the bass and treble level of
+    /// each block (20 ms), so it can be kept and run later on another grid
+    /// (the beat check tries its proposed grids with it).
+    struct GridLevels {
+        double blockSec = 0.0;
+        std::vector<float> lowDb;
+        std::vector<float> highDb;
+    };
+    GridLevels gridLevels() const;
+    /// gridDriftBeats() on kept levels.
+    static double gridDriftBeats(const GridLevels& levels,
+            const phrasealign::Grid& grid,
+            double bodyStartSec,
+            double bodyEndSec);
+
     /// More drift than this and Auto DJ does not beatmatch the track (it
     /// fades plainly instead). 0.15 beats = 75 ms at 120 BPM: a flam you
     /// can hear. On 5 real tracks: good grids 0.04..0.13, a grid 0.05% off
@@ -118,6 +133,12 @@ class EnergyCalculator {
     };
 
     void endBlock();
+    static double gridDriftBeats(double blockSec,
+            const std::vector<float>& lowDb,
+            const std::vector<float>& highDb,
+            const phrasealign::Grid& grid,
+            double bodyStartSec,
+            double bodyEndSec);
 
     const double m_sampleRate;
     const int m_channelCount;

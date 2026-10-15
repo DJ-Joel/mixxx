@@ -65,11 +65,13 @@ QString AnalyzerBeatCheck::beatModel(const UserSettingsPointer& pConfig, QString
     return QDir(pConfig->getResourcePath()).filePath(QStringLiteral("beatcheck/beat_this_small.onnx"));
 }
 
-bool AnalyzerBeatCheck::isNeeded(const TrackPointer& pTrack, const QString& model) const {
+void AnalyzerBeatCheck::needs(
+        const TrackPointer& pTrack, const QString& model, bool* pBeats, bool* pLevels) const {
     const auto stored = EnergyStore::loadBeatCheck(m_db, pTrack->getId());
-    return !stored || stored->version != EnergyStore::BeatCheck::kVersion ||
+    *pBeats = !stored || stored->version != EnergyStore::BeatCheck::kVersion ||
             stored->model != model ||
             std::fabs(stored->durationSec - pTrack->getDuration()) > 1.0;
+    *pLevels = *pBeats || !stored->hasLevels();
 }
 
 bool AnalyzerBeatCheck::initialize(const AnalyzerTrack& track,
@@ -89,11 +91,15 @@ bool AnalyzerBeatCheck::initialize(const AnalyzerTrack& track,
     }
     QString model;
     const QString beat = beatModel(m_pConfig, &model);
-    if (!isNeeded(pTrack, model)) {
+    bool needBeats = false;
+    bool needLevels = false;
+    needs(pTrack, model, &needBeats, &needLevels);
+    if (!needLevels) {
         return false;
     }
     QString why;
-    if (!beatcheck::Engine::shared(runtimeFile(m_pConfig), melModel(m_pConfig), beat, &why)) {
+    if (needBeats &&
+            !beatcheck::Engine::shared(runtimeFile(m_pConfig), melModel(m_pConfig), beat, &why)) {
         static bool s_logged = false;
         if (!s_logged) {
             s_logged = true;
@@ -105,19 +111,52 @@ bool AnalyzerBeatCheck::initialize(const AnalyzerTrack& track,
     m_sampleRate = sampleRate.value();
     m_durationSec = pTrack->getDuration();
     m_model = model;
+    m_needBeats = needBeats;
     m_mono.clear();
-    m_mono.reserve(static_cast<std::size_t>(frameLength));
+    if (m_needBeats) {
+        m_mono.reserve(static_cast<std::size_t>(frameLength));
+    }
+    m_pLevels = std::make_unique<EnergyCalculator>(m_sampleRate, 2);
     return true;
 }
 
 bool AnalyzerBeatCheck::processSamples(const CSAMPLE* pIn, SINT count) {
-    for (SINT i = 0; i + 1 < count; i += 2) {
-        m_mono.push_back(0.5f * (pIn[i] + pIn[i + 1]));
+    if (m_pLevels) {
+        m_pLevels->process(pIn, count);
+    }
+    if (m_needBeats) {
+        for (SINT i = 0; i + 1 < count; i += 2) {
+            m_mono.push_back(0.5f * (pIn[i] + pIn[i + 1]));
+        }
     }
     return true;
 }
 
 void AnalyzerBeatCheck::storeResults(TrackPointer pTrack) {
+    // The levels for the beat grid check.
+    EnergyCalculator::GridLevels levels;
+    double bodyStartSec = 0.0;
+    double bodyEndSec = 0.0;
+    if (m_pLevels) {
+        EnergyCalculator::Result result;
+        if (m_pLevels->finish(&result)) {
+            levels = m_pLevels->gridLevels();
+            bodyStartSec = result.bodyStartSec;
+            bodyEndSec = result.bodyEndSec;
+        }
+        m_pLevels.reset();
+    }
+    if (!m_needBeats) {
+        auto stored = EnergyStore::loadBeatCheck(m_db, m_trackId);
+        if (stored && levels.blockSec > 0.0) {
+            stored->levels = std::move(levels);
+            stored->bodyStartSec = bodyStartSec;
+            stored->bodyEndSec = bodyEndSec;
+            EnergyStore::saveBeatCheck(m_db, m_trackId, *stored);
+            qDebug().noquote() << "Beat check: levels added for" << pTrack->getInfo();
+        }
+        return;
+    }
     QString why;
     const auto pEngine = beatcheck::Engine::shared(
             runtimeFile(m_pConfig), melModel(m_pConfig), beatModel(m_pConfig), &why);
@@ -141,6 +180,9 @@ void AnalyzerBeatCheck::storeResults(TrackPointer pTrack) {
     check.durationSec = m_durationSec;
     check.beats = found.beats;
     check.downbeats = found.downbeats;
+    check.levels = std::move(levels);
+    check.bodyStartSec = bodyStartSec;
+    check.bodyEndSec = bodyEndSec;
     // Keep what the DJ ignored before (it still applies while nothing changes).
     if (const auto before = EnergyStore::loadBeatCheck(m_db, m_trackId)) {
         check.ignored = before->ignored;
@@ -154,5 +196,6 @@ void AnalyzerBeatCheck::storeResults(TrackPointer pTrack) {
 void AnalyzerBeatCheck::cleanup() {
     m_mono.clear();
     m_mono.shrink_to_fit();
+    m_pLevels.reset();
     m_trackId = TrackId();
 }

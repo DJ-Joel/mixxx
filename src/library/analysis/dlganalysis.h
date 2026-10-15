@@ -53,6 +53,8 @@ class DlgAnalysis : public QWidget, public Ui::DlgAnalysis, public virtual Libra
     /// Auto DJ 2.0 plus Video Mixing beat check: the songs whose beat grid,
     /// tempo or beat 1 look wrong to the second beat finder, to Fix or Ignore.
     void slotBeatCheck();
+    /// ... and the list of its fixes, to put songs back.
+    void slotBeatCheckUndo();
     void slotGenreScanFinished(const QList<GenreScanner::Result>& results, bool cancelled);
 
   signals:
