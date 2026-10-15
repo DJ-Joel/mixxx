@@ -38,6 +38,7 @@ All changes are on the branch **`autodj-2`**.
    - 4.16 [The Windows installer](#416-the-windows-installer)
    - 4.17 [Stems: splitting songs into parts](#417-stems-splitting-songs-into-parts)
    - 4.18 [Seamless mixing: one judge, tempo ride, mix shape, steady loudness](#418-seamless-mixing-one-judge-tempo-ride-mix-shape-steady-loudness)
+   - 4.19 [Beat check: a second beat finder, Fix or Ignore](#419-beat-check-a-second-beat-finder-fix-or-ignore)
 5. [Where the code is](#5-where-the-code-is)
 6. [Stored data](#6-stored-data)
 7. [Tests](#7-tests)
@@ -843,6 +844,56 @@ down by up to X dB".
 All three show their reasons in the log, so a mix that sounds wrong can be
 checked, and each can be switched off to compare.
 
+### 4.19 Beat check: a second beat finder, Fix or Ignore
+
+Mixxx's beat detection listens to the whole mix and is often fooled: a
+dotted rhythm read as the beat (Night Drive "After Dark": 113 BPM for an 85
+BPM song), an intro without a kick read at a made-up tempo (Cabaret
+Voltaire "Here To Go": 140 for 104), beat 1 taken from an Intro End marker a
+beat or more off. The beat check runs a second, independent beat finder,
+**Beat This!** (Foscarin, Schlüter, Widmer, ISMIR 2024; code and model MIT
+licensed, see res/beatcheck/LICENSE.txt), during Analyze, and the **Beat
+Check** button on the Analyze page lists what looks wrong:
+
+- **Tempo** not the same as Mixxx's (nor double, nor half);
+- **Intro** read at another tempo, where the beat check hears the song's;
+- **Beat lines** off the beat (a steady offset of a few ms does not count;
+  Mixxx puts its lines 10-55 ms before the kick on many songs); "half a beat
+  apart" is shown as *listen first*, because which one is on the off-beat
+  cannot be told without listening (Icicle Works: Mixxx was right);
+- **Beat 1** (the Intro End marker) a quarter beat to 1 3/4 beats off the
+  heard bar line (two beats or a whole bar off is left alone).
+
+For each song: **Fix**, **Ignore** (remembered until the grid or marker
+changes) or **Decide later**; double-click a song to load it on a deck and
+listen. Fix gives the song a new beat grid from the beat check (one tempo
+when it is steady, else a beat map; beat 1 on a bar line) and locks its
+BPM, and/or moves the Intro End marker (which then counts as the DJ's).
+BPMs the DJ locked and Intro End markers the DJ set are never changed.
+**Fix all** leaves out the *listen first* songs.
+
+Tested on 24 songs checked by ear: tempo right for 22 with Mixxx, 24 with
+Beat This (Night Drive heard at 170 = 2 x 85); beat 1 within a quarter beat
+for 2 of 11 Intro End markers and 9 of 11 Beat This bar lines. On those
+songs the list proposed: Night Drive 113 -> 85; new grids for misread
+intros (Beborn Beton, Cabaret Voltaire, Zoë, Vapor, Just Pretend, Ward
+Brothers); Velocity's 93 BPM stretch; beat 1 moved for Beborn Beton, Vapor,
+Velocity (each then within a quarter beat of the ear).
+
+How it runs (`AnalyzerBeatCheck`, `beatcheck::Engine`): the song as mono
+audio, resampled to 22050 Hz (windowed sinc), 128 mel bands at 50 frames a
+second (mel_spectrogram.onnx), the beat model over 30 s pieces (1500
+frames, 6-frame borders, earlier piece wins), peaks above probability 0.5
+within +-70 ms, downbeats moved onto the nearest beat - the same as the
+Python reference (identical beats on the songs compared). ONNX Runtime is
+the stems engine's (onnxruntime.dll); without it the beat check is off. The
+full model (83 MB) goes in the stems engine folder as model/beat_this.onnx;
+without it the small one in res/beatcheck (10 MB, nearly as good) is used.
+Two processor threads, 5-15 s per song; songs over 20 minutes are left out.
+Results: table autodj_beatcheck (beats and downbeats; the review is worked
+out when the window opens, from the grid and markers as they are then).
+Off with [Auto DJ] BeatCheck = 0.
+
 ## 5. Where the code is
 
 | Path | What |
@@ -850,6 +901,8 @@ checked, and each can be switched off to compare.
 | `src/library/autodj/smart/trackfeatures.*` | The track data used for mixing decisions. |
 | `src/library/autodj/smart/mixscorer.*` | The mix score (key, tempo, energy, set shape, key morph). |
 | `src/library/autodj/smart/smartsequencer.*` | Smart Sort (the running order) and its report. |
+| `src/library/autodj/smart/beatcheck.*` | Beat check: model input and output (resampling, pieces, peaks) and the rules (what looks wrong, the fix). |
+| `src/analyzer/beatthisengine.*`, `src/analyzer/analyzerbeatcheck.*` | Beat check: runs Beat This! with ONNX Runtime during Analyze. |
 | `src/library/autodj/smart/mixstep.*` | The one judge of a step (key morph, tempo ride, steady grids, costs) used by Smart Fill, Smart Sort and the Live Assistant. |
 | `src/library/autodj/smart/bridgefinder.*` | Bridge tracks, Smart Fill, Live Assistant suggestions, genre families, same-song detection. |
 | `src/library/autodj/smart/beatmatch.*` | Tempo ratio, glide back, tempo ride, bass swap, EQ blend, steady loudness, beat lock. |
@@ -898,10 +951,10 @@ card, the folder of the last video recording).
 Unit tests are in `src/test/` and run with the other Mixxx tests:
 
 ```
-mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*
+mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*:BeatCheckTest.*
 ```
 
-213 tests. EnginePositionTest checks the timing the beat lock relies on:
+221 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -1073,3 +1126,7 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
 45. **Tempo check.** Night Drive "After Dark" (85 BPM, read 113) is no
     longer beatmatched by its wrong grid: the drum part shows its real beat
     is 4/3 slower. 213 tests.
+46. **Beat check.** A second beat finder (Beat This!, MIT) listens to every
+    song during Analyze; the Beat Check button lists wrong tempos, misread
+    intros, beat lines off the beat and beat 1 off, to Fix or Ignore. Tested
+    against 24 songs checked by ear. 221 tests.
