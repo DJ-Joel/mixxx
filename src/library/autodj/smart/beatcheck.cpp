@@ -405,17 +405,19 @@ std::vector<double> peakFrames(const std::vector<float>& logits) {
 
 Found peaks(const std::vector<float>& beatLogits, const std::vector<float>& downbeatLogits) {
     Found found;
-    for (double f : peakFrames(beatLogits)) {
+    const auto beatFrames = peakFrames(beatLogits);
+    for (double f : beatFrames) {
         found.beats.push_back(f / kFramesPerSecond);
     }
     for (double f : peakFrames(downbeatLogits)) {
-        const double t = f / kFramesPerSecond;
-        double d = t;
-        if (!found.beats.empty()) {
-            // The nearest beat (the first of two equally near).
+        double d = f / kFramesPerSecond;
+        if (!beatFrames.empty()) {
+            // The nearest beat (the first of two equally near), measured in
+            // whole frames as Beat This does: in seconds, a tie came out
+            // differently on Windows and Linux (rounding).
             std::size_t best = 0;
-            for (std::size_t i = 1; i < found.beats.size(); ++i) {
-                if (std::fabs(found.beats[i] - t) < std::fabs(found.beats[best] - t)) {
+            for (std::size_t i = 1; i < beatFrames.size(); ++i) {
+                if (std::fabs(beatFrames[i] - f) < std::fabs(beatFrames[best] - f)) {
                     best = i;
                 }
             }
