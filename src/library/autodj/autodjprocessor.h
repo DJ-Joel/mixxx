@@ -525,11 +525,6 @@ class AutoDJProcessor : public QObject {
     bool outgoingSingsInMix(DeckAttributes* pFromDeck);
     /// Singing detection: plan the vocals of a stem mix (m_smart.vocalPlan).
     void planVocals(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
-    /// Just before the incoming deck starts: it starts as far into its song
-    /// as the outgoing song is already past the mix point (the position
-    /// updates that start it come about 15 a second, often 50-140 ms late),
-    /// so the beats meet at once and the phase sync has nothing to jump.
-    void alignIncomingStart(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
     void afterToDeckStarted();
     void updateSmartTransition(double progress);
     void followBeats();
@@ -594,6 +589,10 @@ class AutoDJProcessor : public QObject {
         qint64 lastMs = -1;
         double lastFromSec = -1.0;
         double lastToSec = -1.0;
+        // The incoming deck's position before the audio engine started it
+        // (its cue point), and whether it has started moving since.
+        double toCueSec = -1.0;
+        bool toStarted = false;
         int distrustUntil = 0;  // updates up to this one are not acted on
         int bigSlipCount = 0;   // updates in a row with the lines clearly off
         bool lockPaused = false; // a beat map went wrong here: tempo only

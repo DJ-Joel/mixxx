@@ -1365,33 +1365,6 @@ void AutoDJProcessor::planVocals(DeckAttributes* pFromDeck, DeckAttributes* pToD
             << swapText;
 }
 
-void AutoDJProcessor::alignIncomingStart(DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
-    if (!m_smart.active || !m_smart.beatmatched || !pFromDeck || !pToDeck ||
-            pToDeck->isPlaying()) {
-        return;
-    }
-    const double fromLen = trackLengthSec(pFromDeck);
-    const double toLen = trackLengthSec(pToDeck);
-    const double fromRatio = pFromDeck->rateRatio();
-    if (!(fromLen > 0.0) || !(toLen > 0.0) || !(fromRatio > 0.0) || !(m_smart.toRatio > 0.0)) {
-        return;
-    }
-    // How long ago (real time) the outgoing song passed the mix point, from
-    // the audio engine's own position (fadeBeginPos is a fraction here).
-    const double lateSec =
-            (pFromDeck->enginePlayPosition() - pFromDeck->fadeBeginPos) * fromLen / fromRatio;
-    if (!(lateSec > 0.002) || lateSec > 0.5) {
-        return; // on time, or not a late start (a seek, Fade Now)
-    }
-    const double toSec = pToDeck->startPos * toLen + lateSec * m_smart.toRatio;
-    pToDeck->setPlayPosition(toSec / toLen);
-    kLogger.info() << "Mix start" << pToDeck->group << ": the outgoing song was"
-                   << std::lround(lateSec * 1000.0)
-                   << "ms past the mix point (position updates come about 15 a second): "
-                      "the incoming song starts that much further in, so the beats meet "
-                      "without a jump";
-}
-
 void AutoDJProcessor::afterToDeckStarted() {
     if (!m_smart.active || !m_smart.beatmatched) {
         return;
@@ -1652,6 +1625,24 @@ void AutoDJProcessor::followBeats() {
     const double fromRatio = m_smart.pFrom->rateRatio();
     if (fromSec < 0.0 || toSec < 0.0 || !(fromRatio > 0.0)) {
         return;
+    }
+    // Not before the audio engine has really started the incoming deck.
+    // Play is pressed here, but the engine starts the deck a moment later,
+    // lining its beats up with the outgoing song first (quantize is on); a
+    // reading in between saw the deck still at its cue point while the
+    // outgoing song had moved on: "lines a quarter beat apart", then a
+    // 50-150 ms "jump" (the engine's own line-up, never heard), and the
+    // lock nudged the speed for a bar after that false reading.
+    if (!m_smart.toStarted) {
+        if (m_smart.toCueSec < 0.0) {
+            m_smart.toCueSec = toSec;
+            return;
+        }
+        if (std::fabs(toSec - m_smart.toCueSec) < 0.001) {
+            return; // not started yet
+        }
+        m_smart.toStarted = true;
+        m_smart.lastMs = -1; // the jump watch starts from here
     }
     // Jump watch: each deck should have moved on by the time passed times
     // its speed. A bigger difference means something moved it.
@@ -3740,7 +3731,6 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
 
                 beginSmartTransition(thisDeck, otherDeck);
                 if (!otherDeckPlaying) {
-                    alignIncomingStart(thisDeck, otherDeck);
                     otherDeck->play();
                 }
                 afterToDeckStarted();

@@ -1192,10 +1192,12 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
 50. **Smart Sort without key morph.** Like Smart Fill, it orders songs by
     keys that fit as they are; the key slide is left for clashes nothing
     better avoids. 227 tests.
-51. **Mix start without a jump.** The incoming song was started from a
-    position update (about 15 a second), often 50-140 ms after the
-    outgoing song passed the mix point; the phase sync then jumped it to
-    catch up (the "jump watch" lines, about a third of the mixes, put
-    right within a bar). Now it starts as far into its song as the
-    outgoing song is already past the mix point, measured from the audio
-    engine, so the beats meet at once. 227 tests.
+51. **Beat lock waits for the incoming deck to start.** The "jump watch"
+    lines (50-150 ms, about a third of the mixes) were not in the sound:
+    the audio engine lines the incoming deck's beats up itself when it
+    starts it (quantize on), but the beat lock's first reading came a
+    moment before that, with the deck still at its cue point, saw "lines a
+    quarter beat apart", logged the engine's line-up as a jump and nudged
+    the speed for a bar. Now the beat lock starts reading once the deck has
+    really started. (A first try that moved the incoming start by hand was
+    taken out again: the engine already does it exactly.) 227 tests.
