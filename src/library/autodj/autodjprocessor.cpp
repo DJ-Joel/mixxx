@@ -751,8 +751,11 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::smartSortPlaylist() {
         bridgeCandidates = loadBridgeCandidates(
                 m_pTrackCollectionManager->internalCollection()->database());
     }
-    // The same rules as the mixes and Smart Fill: key morph, tempo ride.
+    // The same rules as the mixes and Smart Fill: tempo ride, but no key
+    // morph (the DJ's choice, as for Smart Fill): the order is built from
+    // keys that fit as they are, so the key slide is needed less often.
     mixstep::Rules rules = mixRules();
+    rules.keyMorphLimit = 0;
     if (m_pConfig->getValue(
                 ConfigKey(kPreferenceGroup, QStringLiteral("SmartFillAvoidSameArtist")), true)) {
         rules.sameArtistCost = kSortSameArtistCost;

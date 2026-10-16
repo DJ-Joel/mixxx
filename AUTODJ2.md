@@ -294,8 +294,8 @@ it picks at random among the few candidates within 1.0 of the best cost
   whole DJ mix (longer than 15 minutes), not even as the opener;
 - **no key morph:** Smart Fill picks songs whose keys fit as they are (the
   DJ's choice: songs picked because a key shift would make them fit sounded
-  wrong). Smart Sort and the Live Assistant still count on the key slide
-  (4.13) where Auto DJ will beatmatch;
+  wrong). Smart Sort does not count on it either; the Live Assistant still
+  does (4.13) where Auto DJ will beatmatch;
 - songs on a drive or network share that cannot be reached right now are
   left out (checked on a few of its songs, remembered for a minute), so the
   queue does not fill up with songs Auto DJ must skip.
@@ -555,8 +555,9 @@ Beatmatch button). A slide needs 8 seconds before the mix; Skip to Mix lands
 20 seconds before a planned slide. If the next song changes before the mix,
 the slide follows the new plan from where it is (back to the song's own key
 if the keys now fit); moving the key by hand stops it; Auto DJ switched off
-before the mix puts the song back to its own key. Smart Fill does not count
-on it (4.5).
+before the mix puts the song back to its own key. Smart Fill and Smart Sort
+do not count on it (4.5): they put songs together whose keys fit as they
+are, so a slide is only needed when nothing better fits.
 
 ### 4.14 Genre Scan
 
@@ -1188,3 +1189,6 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
     the incoming song always plays in its own key, so shifts no longer add
     up song after song. Smart Fill no longer picks songs for a key shift.
     227 tests.
+50. **Smart Sort without key morph.** Like Smart Fill, it orders songs by
+    keys that fit as they are; the key slide is left for clashes nothing
+    better avoids. 227 tests.
