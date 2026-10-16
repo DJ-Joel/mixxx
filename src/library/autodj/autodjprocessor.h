@@ -525,6 +525,11 @@ class AutoDJProcessor : public QObject {
     bool outgoingSingsInMix(DeckAttributes* pFromDeck);
     /// Singing detection: plan the vocals of a stem mix (m_smart.vocalPlan).
     void planVocals(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
+    /// Just before the incoming deck starts: it starts as far into its song
+    /// as the outgoing song is already past the mix point (the position
+    /// updates that start it come about 15 a second, often 50-140 ms late),
+    /// so the beats meet at once and the phase sync has nothing to jump.
+    void alignIncomingStart(DeckAttributes* pFromDeck, DeckAttributes* pToDeck);
     void afterToDeckStarted();
     void updateSmartTransition(double progress);
     void followBeats();

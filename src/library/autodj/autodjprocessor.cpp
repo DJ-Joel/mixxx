@@ -1365,6 +1365,33 @@ void AutoDJProcessor::planVocals(DeckAttributes* pFromDeck, DeckAttributes* pToD
             << swapText;
 }
 
+void AutoDJProcessor::alignIncomingStart(DeckAttributes* pFromDeck, DeckAttributes* pToDeck) {
+    if (!m_smart.active || !m_smart.beatmatched || !pFromDeck || !pToDeck ||
+            pToDeck->isPlaying()) {
+        return;
+    }
+    const double fromLen = trackLengthSec(pFromDeck);
+    const double toLen = trackLengthSec(pToDeck);
+    const double fromRatio = pFromDeck->rateRatio();
+    if (!(fromLen > 0.0) || !(toLen > 0.0) || !(fromRatio > 0.0) || !(m_smart.toRatio > 0.0)) {
+        return;
+    }
+    // How long ago (real time) the outgoing song passed the mix point, from
+    // the audio engine's own position (fadeBeginPos is a fraction here).
+    const double lateSec =
+            (pFromDeck->enginePlayPosition() - pFromDeck->fadeBeginPos) * fromLen / fromRatio;
+    if (!(lateSec > 0.002) || lateSec > 0.5) {
+        return; // on time, or not a late start (a seek, Fade Now)
+    }
+    const double toSec = pToDeck->startPos * toLen + lateSec * m_smart.toRatio;
+    pToDeck->setPlayPosition(toSec / toLen);
+    kLogger.info() << "Mix start" << pToDeck->group << ": the outgoing song was"
+                   << std::lround(lateSec * 1000.0)
+                   << "ms past the mix point (position updates come about 15 a second): "
+                      "the incoming song starts that much further in, so the beats meet "
+                      "without a jump";
+}
+
 void AutoDJProcessor::afterToDeckStarted() {
     if (!m_smart.active || !m_smart.beatmatched) {
         return;
@@ -3713,6 +3740,7 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
 
                 beginSmartTransition(thisDeck, otherDeck);
                 if (!otherDeckPlaying) {
+                    alignIncomingStart(thisDeck, otherDeck);
                     otherDeck->play();
                 }
                 afterToDeckStarted();
