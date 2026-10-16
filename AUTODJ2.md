@@ -67,7 +67,7 @@ does not know where the beat is. Auto DJ 2.0 plus Video Mixing adds:
 | **Beat grid check** | Songs whose beat grid drifts off the music are found, so Auto DJ does not try to beatmatch them. |
 | **Quick switch** | When two songs cannot be beatmatched, the change is short and lands on a phrase ending, so two different tempos never play together. |
 | **Beat maps and beat lock** | Songs with a live drummer (tempo drifts) can use Mixxx's variable-tempo beat map; during the mix the incoming speed keeps following the outgoing beats. |
-| **Key morph** | If two keys clash, the incoming song is pitched by a semitone (tempo unchanged) so the keys fit. |
+| **Key morph** | If two keys clash, the outgoing song slides by a semitone to a key that fits, in its last seconds before the mix while it plays alone (tempo unchanged). The incoming song always plays in its own key. |
 | **Genre Scan** | Suggests genres for untagged songs from MusicBrainz; the DJ reviews them before anything is saved. |
 | **Video mixing** | Music videos play on a second screen or projector, follow each deck (tempo, loops, jumps) and are mixed like the sound, or cut on the beat. Song titles, the DJ's name or logo, and moving pictures for songs without video. The whole video set can be recorded as an MP4. |
 | **End of the queue** | Auto DJ stays on while the last song plays, so more songs can still be added; it switches off when that song ends. |
@@ -292,12 +292,10 @@ it picks at random among the few candidates within 1.0 of the best cost
   preferred (each % beyond costs extra; Auto DJ beatmatches within 5% at the
   mix point, where a beat map may be a little off its average), and never a
   whole DJ mix (longer than 15 minutes), not even as the opener;
-- **key morph:** a song whose key clashes still counts when pitching it by
-  up to the key morph limit (4.13) makes it fit, but only where Auto DJ will
-  beatmatch (both grids steady, tempos within 5%); each semitone costs a
-  little, so a song that fits as it is wins. The next song is chosen for the
-  key that will really be heard. The list of added songs says "key morph -1
-  semitone: plays in 8A";
+- **no key morph:** Smart Fill picks songs whose keys fit as they are (the
+  DJ's choice: songs picked because a key shift would make them fit sounded
+  wrong). Smart Sort and the Live Assistant still count on the key slide
+  (4.13) where Auto DJ will beatmatch;
 - songs on a drive or network share that cannot be reached right now are
   left out (checked on a few of its songs, remembered for a minute), so the
   queue does not fill up with songs Auto DJ must skip.
@@ -540,13 +538,25 @@ Auto DJ 2.0 plus Video Mixing uses the real beat positions everywhere:
 
 ### 4.13 Key morph
 
-If two beatmatched songs' keys clash, the incoming song is pitched by the
-smallest shift that makes the keys fit (key lock keeps the tempo). One
-semitone is 7 steps round the Camelot wheel. The limit is 1 semitone by
-default (0, 1 or 2 by right-clicking the Beatmatch button). The song keeps
-that key until it has played out: gliding the pitch back would be heard as
-the song going out of tune. The next mix uses the shifted key. Smart Fill
-counts on it too (4.5).
+If two beatmatched songs' keys clash, the **outgoing** song slides to a key
+that fits the incoming one: the smallest shift (key lock keeps the tempo; one
+semitone is 7 steps round the Camelot wheel), over its last 16 seconds before
+the mix, while it plays alone, easing in and out. It keeps that key through
+the mix and goes back to its own key once it has faded out. **The incoming
+song always plays in its own key**, all through.
+
+Before, the incoming song was shifted and kept that key to its end, and the
+next mix matched the shifted key, so the shifts added up: on the DJ's test
+chain four songs in a row played a semitone off ("sounds bad the further we
+go"). Now no song is ever off its key for more than its last seconds.
+
+The limit is 1 semitone by default (0, 1 or 2 by right-clicking the
+Beatmatch button). A slide needs 8 seconds before the mix; Skip to Mix lands
+20 seconds before a planned slide. If the next song changes before the mix,
+the slide follows the new plan from where it is (back to the song's own key
+if the keys now fit); moving the key by hand stops it; Auto DJ switched off
+before the mix puts the song back to its own key. Smart Fill does not count
+on it (4.5).
 
 ### 4.14 Genre Scan
 
@@ -989,7 +999,7 @@ Unit tests are in `src/test/` and run with the other Mixxx tests:
 mixxx-test --gtest_filter=TrackFeaturesTest.*:MixScorerTest.*:SmartSequencerTest.*:EnergyCalculatorTest.*:BridgeFinderTest.*:BeatmatchTest.*:PhraseAlignTest.*:AutoDJProcessorTest.*:GenreScanTest.*:VideoMixTest.*:StemMathTest.*:VocalMapTest.*:DownbeatTest.*:StemCacheTest.*:EnginePositionTest.*:MixStepTest.*:BeatCheckTest.*
 ```
 
-226 tests. EnginePositionTest checks the timing the beat lock relies on:
+227 tests. EnginePositionTest checks the timing the beat lock relies on:
 two decks read one after the other are compared at the same moment. The energy and grid-check tests use synthetic drum loops (steady,
 drifting, off-beat bass, a drummer who speeds up, one odd stretch) so the
 expected answer is known. Mixes, video and analysis were also tested by ear
@@ -1173,3 +1183,8 @@ Oldest first. Each entry is one commit on the `autodj-2` branch.
 48. **Beat check, no made-up intros.** Stray beats are left out before a
     map is made; maps from the first version are found and offered again
     cleaned; a grid the same as the song's is not offered. 226 tests.
+49. **Key slide instead of key morph on the incoming song.** The outgoing
+    song slides to a key that fits in its last 16 s alone before the mix;
+    the incoming song always plays in its own key, so shifts no longer add
+    up song after song. Smart Fill no longer picks songs for a key shift.
+    227 tests.

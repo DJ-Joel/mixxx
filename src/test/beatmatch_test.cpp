@@ -383,3 +383,18 @@ TEST(BeatmatchTest, FourThirdsMarginLeavesARightGridAlone) {
     // Too short a song: no answer.
     EXPECT_FALSE(beatmatch::fourThirdsMargin(level, 441.0, 60.0 / 113.0, 20.0, 40.0).has_value());
 }
+
+TEST(BeatmatchTest, KeySlideEasesToTheIncomingKeyAndHolds) {
+    EXPECT_DOUBLE_EQ(0.0, beatmatch::keySlideSemitones(0.0, 1.0, 0.0));
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::keySlideSemitones(0.0, 1.0, 1.0));
+    EXPECT_DOUBLE_EQ(1.0, beatmatch::keySlideSemitones(0.0, 1.0, 3.0)); // past the end: holds
+    EXPECT_DOUBLE_EQ(-0.5, beatmatch::keySlideSemitones(0.0, -1.0, 0.5));
+    // Slow at both ends (no sudden start of the bend).
+    EXPECT_LT(beatmatch::keySlideSemitones(0.0, 1.0, 0.1), 0.05);
+    EXPECT_GT(beatmatch::keySlideSemitones(0.0, 1.0, 0.9), 0.95);
+    // Planned again half way (another next song): from where it is.
+    EXPECT_DOUBLE_EQ(0.5, beatmatch::keySlideSemitones(0.5, 0.0, 0.0));
+    EXPECT_DOUBLE_EQ(0.0, beatmatch::keySlideSemitones(0.5, 0.0, 1.0));
+    // The slide is shorter than the lead Skip to Mix leaves before a mix.
+    EXPECT_LT(beatmatch::kKeySlideSeconds + 2.0, 20.0);
+}

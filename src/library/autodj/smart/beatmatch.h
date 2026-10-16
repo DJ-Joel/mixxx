@@ -59,6 +59,20 @@ constexpr double kTempoRideSeconds = 60.0;
 /// as `progress` goes 0..1, easing in and out (no sudden change of pace).
 double rideRatio(double startRatio, double targetRatio, double progress);
 
+/// Key slide: when the keys clash in a beatmatched mix, the outgoing song
+/// slides to a key that fits the incoming one (MixScorer::keyMorphSemitones,
+/// key lock on) in its last seconds before the mix, while it plays alone.
+/// The mix is then in tune, and the incoming song plays in its own key all
+/// through (a key shift on the incoming song was kept to its end, and the
+/// next song matched that shifted key: the shifts added up song after song).
+/// The slide takes this long and ends where the fade begins...
+constexpr double kKeySlideSeconds = 16.0;
+/// ...and is not started with less time than this left (quicker is heard).
+constexpr double kKeySlideMinSeconds = 8.0;
+/// The outgoing song's key shift (semitones) during the slide: from `start`
+/// to `target` as `progress` goes 0..1, easing in and out.
+double keySlideSemitones(double start, double target, double progress);
+
 /// Ratio during the glide back: a straight line from `startRatio` to 1.0
 /// over `glideSeconds`.
 double glideRatio(double startRatio, double elapsedSeconds, double glideSeconds = kGlideSeconds);

@@ -1211,29 +1211,28 @@ void AutoDJProcessor::beginSmartTransition(
                            << (m_smart.toGrid.isMap() ? "(incoming)" : "")
                            << ", the incoming speed follows the outgoing beats";
         }
-        // Key morph: if the keys clash, pitch the incoming track a little
-        // (key lock is on, so its tempo is not touched) so the two fit. It
-        // keeps that key to the end of the track: gliding the pitch back
-        // would be heard as the song going out of tune.
-        const int limit = keyMorphLimit();
+        // Key: the incoming song always plays in its own key. If the keys
+        // clash, the outgoing song has slid to a key that fits it, while it
+        // played alone before the mix (updateKeySlide); it keeps that key
+        // through the mix, until it has faded out.
         m_keyShift.remove(pToDeck->group);
+        const int limit = keyMorphLimit();
         if (limit > 0) {
-            // The outgoing track plays in its own key plus its own morph.
-            const TrackFeatures from = MixScorer::shiftKey(
-                    TrackFeatures::fromTrack(pFromDeck->getLoadedTrack()),
-                    currentKeyShift(pFromDeck));
+            const int slid = currentKeyShift(pFromDeck);
+            const TrackFeatures fromOwn = TrackFeatures::fromTrack(pFromDeck->getLoadedTrack());
+            const TrackFeatures from = MixScorer::shiftKey(fromOwn, slid);
             const TrackFeatures to = TrackFeatures::fromTrack(pToTrack);
-            const int shift = MixScorer::keyMorphSemitones(from, to, limit);
-            if (shift != 0) {
-                m_smart.toKeyShift = shift;
-                m_keyShift.insert(pToDeck->group, KeyShift{pToTrack->getId(), shift});
-                kLogger.info() << "Key morph" << pToDeck->group << to.camelotText()
-                               << "->" << MixScorer::shiftKey(to, shift).camelotText()
-                               << "(" << shift << "semitone ) to fit" << from.camelotText();
+            if (slid != 0) {
+                m_smart.fromKeyShift = slid;
+                kLogger.info() << "Key slide" << pFromDeck->group << ": the mix plays in"
+                               << from.camelotText() << "(the outgoing song slid"
+                               << slid << "semitone from" << fromOwn.camelotText()
+                               << "), the incoming song in its own key" << to.camelotText();
             } else if (from.hasKey() && to.hasKey() &&
                     MixScorer::camelotCost(from, to, 0.0, false) >= MixScorer::kClashKeyCost) {
-                kLogger.info() << "Key morph: no shift of up to" << limit << "semitone fits"
-                               << to.camelotText() << "to" << from.camelotText();
+                kLogger.info() << "Key slide: none for" << to.camelotText() << "after"
+                               << from.camelotText() << "(no shift of up to" << limit
+                               << "semitone fits, or no time before the mix)";
             }
         }
     } else if (!gridsOk) {
@@ -1436,13 +1435,14 @@ void AutoDJProcessor::updateSmartTransition(double progress) {
             writeControl(eqKillKey(m_smart.pTo->group), bass.toLowKilled ? 1.0 : 0.0);
         }
     }
-    // Key morph. Written on every update, because switching key lock on
-    // can reset the pitch in the engine a moment after we set it.
-    if (m_smart.toKeyShift != 0) {
-        const ConfigKey pitchKey(m_smart.pTo->group, QStringLiteral("pitch_adjust"));
+    // Key slide: the outgoing song stays in the key it slid to. Written on
+    // every update, because switching key lock on can reset the pitch in
+    // the engine a moment after it was set.
+    if (m_smart.fromKeyShift != 0) {
+        const ConfigKey pitchKey(m_smart.pFrom->group, QStringLiteral("pitch_adjust"));
         const double now = readControl(pitchKey);
-        if (!std::isnan(now) && std::fabs(now - m_smart.toKeyShift) > 0.01) {
-            writeControl(pitchKey, m_smart.toKeyShift);
+        if (!std::isnan(now) && std::fabs(now - m_smart.fromKeyShift) > 0.01) {
+            writeControl(pitchKey, m_smart.fromKeyShift);
         }
     }
     // Full EQ transition: the mids and highs cross over gradually, relative
@@ -1603,8 +1603,12 @@ void AutoDJProcessor::endSmartTransition(bool completed) {
         }
     }
     if (completed) {
-        // The outgoing track has stopped: put its deck back to normal tempo.
+        // The outgoing track has stopped: put its deck back to normal tempo
+        // (and its own key, after a key slide).
         resetDeckTempo(m_smart.pFrom, true);
+        if (m_keySlide.pDeck == m_smart.pFrom) {
+            m_keySlide.active = false;
+        }
     }
     m_smart = SmartTransition();
 }
@@ -1854,6 +1858,98 @@ void AutoDJProcessor::stopRide(bool easeBack) {
         kLogger.info() << "Tempo ride" << pDeck->group
                        << "no longer needed: easing back to its own tempo";
         startGlide(pDeck, pDeck->rateRatio());
+    }
+}
+
+void AutoDJProcessor::updateKeySlide(DeckAttributes* pDeck, double playPosition) {
+    const TrackPointer pTrack = pDeck->getLoadedTrack();
+    if (m_keySlide.active &&
+            (m_keySlide.pDeck != pDeck || !pTrack || pTrack->getId() != m_keySlide.trackId)) {
+        m_keySlide.active = false; // another track: its deck is reset when it ends
+    }
+    const bool planned = m_plannedMix.valid && pTrack && m_plannedMix.fromId == pTrack->getId();
+    const double duration = getEndSecond(pDeck);
+    const ConfigKey pitchKey(pDeck->group, QStringLiteral("pitch_adjust"));
+    if (!m_keySlide.active) {
+        if (!planned || m_plannedMix.keySlide == 0 ||
+                playPosition < m_plannedMix.keySlideStartPos) {
+            return;
+        }
+        const double now = readControl(pitchKey);
+        m_keySlide = KeySlide();
+        m_keySlide.active = true;
+        m_keySlide.pDeck = pDeck;
+        m_keySlide.trackId = pTrack->getId();
+        m_keySlide.startShift = std::isnan(now) ? 0.0 : now;
+        m_keySlide.targetShift = m_plannedMix.keySlide;
+        m_keySlide.startPos = std::max(m_plannedMix.keySlideStartPos, playPosition);
+        m_keySlide.endPos = std::max(m_keySlide.startPos, m_plannedMix.keySlideEndPos);
+        m_keySlide.lastWritten = m_keySlide.startShift;
+        // Key lock on, so only the key moves; put back after the song.
+        const ConfigKey keylockKey(pDeck->group, QStringLiteral("keylock"));
+        if (!m_keylockBefore.contains(pDeck->group)) {
+            m_keylockBefore.insert(pDeck->group, readControl(keylockKey));
+        }
+        writeControl(keylockKey, 1.0);
+        m_keyShift.insert(pDeck->group, KeyShift{pTrack->getId(), m_plannedMix.keySlide});
+        const TrackFeatures own = TrackFeatures::fromTrack(pTrack);
+        kLogger.info() << "Key slide" << pDeck->group << own.camelotText() << "->"
+                       << MixScorer::shiftKey(own, m_plannedMix.keySlide).camelotText() << "("
+                       << m_plannedMix.keySlide << "semitone ) over"
+                       << (m_keySlide.endPos - m_keySlide.startPos) * duration
+                       << "s before the mix, while it plays alone";
+    } else {
+        const double now = readControl(pitchKey);
+        // Moved by hand (0 is the engine resetting it when key lock goes on).
+        if (!std::isnan(now) && std::fabs(now) > 1e-6 &&
+                std::fabs(now - m_keySlide.lastWritten) > 0.01) {
+            kLogger.info() << "Key slide" << pDeck->group << "stopped: key changed by hand";
+            m_keySlide.active = false;
+            m_plannedMix.keySlide = 0;
+            return;
+        }
+        // Planned again before the mix (another next song): from where it
+        // is to the new key (its own, if the keys now fit) over the time left.
+        const bool mixing = m_smart.active && m_smart.pFrom == pDeck;
+        if (planned && !mixing && duration > 0.0 &&
+                (m_plannedMix.keySlide != m_keySlide.targetShift ||
+                        (m_plannedMix.keySlide != 0 &&
+                                std::fabs(m_plannedMix.keySlideEndPos - m_keySlide.endPos) >
+                                        1e-6))) {
+            m_keySlide.startShift = m_keySlide.lastWritten;
+            m_keySlide.startPos = playPosition;
+            m_keySlide.targetShift = m_plannedMix.keySlide;
+            m_keySlide.endPos = m_plannedMix.keySlide != 0
+                    ? std::max(playPosition, m_plannedMix.keySlideEndPos)
+                    : playPosition + beatmatch::kKeySlideMinSeconds / duration;
+            m_keyShift.insert(pDeck->group, KeyShift{pTrack->getId(), m_plannedMix.keySlide});
+            kLogger.info() << "Key slide" << pDeck->group << "planned again: to"
+                           << m_plannedMix.keySlide << "semitone";
+        }
+    }
+    const double span = m_keySlide.endPos - m_keySlide.startPos;
+    const double progress = span > 0.0 ? (playPosition - m_keySlide.startPos) / span : 1.0;
+    const double shift = beatmatch::keySlideSemitones(
+            m_keySlide.startShift, m_keySlide.targetShift, progress);
+    const double now = readControl(pitchKey);
+    if (std::fabs(shift - m_keySlide.lastWritten) > 1e-4 ||
+            (!std::isnan(now) && std::fabs(now - shift) > 0.01)) {
+        m_keySlide.lastWritten = shift; // before writing, as for the ride
+        writeControl(pitchKey, shift);
+    }
+}
+
+void AutoDJProcessor::stopKeySlide() {
+    if (!m_keySlide.active) {
+        return;
+    }
+    m_keySlide.active = false;
+    DeckAttributes* pDeck = m_keySlide.pDeck;
+    if (pDeck) {
+        kLogger.info() << "Key slide" << pDeck->group
+                       << "no longer needed: back to its own key";
+        writeControl(ConfigKey(pDeck->group, QStringLiteral("pitch_adjust")), 0.0);
+        m_keyShift.remove(pDeck->group);
     }
 }
 
@@ -2248,6 +2344,28 @@ void AutoDJProcessor::alignTransitionToPhrases(DeckAttributes* pFromDeck,
                     plan->fromFadeBeginSec - beatmatch::kTempoRideSeconds);
             m_plannedMix.rideStartPos = startSec / fromDuration;
             m_plannedMix.rideEndPos = plan->fromFadeBeginSec / fromDuration;
+        }
+    }
+    // Key slide: keys that clash in a beatmatched mix. The outgoing song
+    // slides to a key that fits the incoming one in its last seconds before
+    // the mix, while it plays alone; the incoming song keeps its own key.
+    m_plannedMix.keySlide = 0;
+    const int slideLimit = matched && isBeatmatchEnabled() ? keyMorphLimit() : 0;
+    if (slideLimit > 0) {
+        const TrackFeatures fromKey = TrackFeatures::fromTrack(pFromTrack);
+        const TrackFeatures toKey = TrackFeatures::fromTrack(pToTrack);
+        // How far the outgoing song must move to fit the incoming key.
+        const int shift = MixScorer::keyMorphSemitones(toKey, fromKey, slideLimit);
+        const double fromDuration = getEndSecond(pFromDeck);
+        const bool sliding = m_keySlide.active && m_keySlide.pDeck == pFromDeck;
+        const double room = plan->fromFadeBeginSec - fromDeckPositionSec;
+        if (shift != 0 && fromDuration > 0.0 &&
+                (sliding || room >= beatmatch::kKeySlideMinSeconds)) {
+            m_plannedMix.keySlide = shift;
+            const double startSec = std::max(fromDeckPositionSec,
+                    plan->fromFadeBeginSec - beatmatch::kKeySlideSeconds);
+            m_plannedMix.keySlideStartPos = startSec / fromDuration;
+            m_plannedMix.keySlideEndPos = plan->fromFadeBeginSec / fromDuration;
         }
     }
     pFromDeck->fadeBeginPos = plan->fromFadeBeginSec;
@@ -2663,12 +2781,15 @@ QStringList AutoDJProcessor::smartFill(int count,
     }
     MixScoreWeights weights;
     weights.direction = energy;
-    // Key morph: a song whose key clashes may still be chosen when Auto DJ
-    // will pitch it to fit (only in beatmatched mixes: see extend).
-    // The same rules as the mixes: key morph and tempo ride (when on).
+    // The same rules as the mixes (tempo ride, when on), but no key morph:
+    // Smart Fill picks songs whose keys fit as they are. (The DJ's choice:
+    // songs chosen because a key shift would make them fit sounded wrong
+    // more often than right.) A clash left over gets the key slide.
+    mixstep::Rules fillRules = mixRules();
+    fillRules.keyMorphLimit = 0;
     QList<int> keyShifts;
     QList<mixstep::Step> steps;
-    const QList<TrackFeatures> found = BridgeFinder(MixScorer(weights), mixRules())
+    const QList<TrackFeatures> found = BridgeFinder(MixScorer(weights), fillRules)
                                                .extend(*pLast,
                                                        library,
                                                        excludeIds,
@@ -2725,6 +2846,8 @@ double AutoDJProcessor::skipToMix() {
     // tempo slowly enough not to be heard.
     constexpr double kLeadSec = 10.0;
     constexpr double kRideLeadSec = 35.0;
+    // A key slide needs its time alone before the mix too.
+    constexpr double kKeySlideLeadSec = beatmatch::kKeySlideSeconds + 4.0;
     if (m_eState != ADJ_IDLE) {
         return 0.0;
     }
@@ -2741,8 +2864,10 @@ double AutoDJProcessor::skipToMix() {
     const TrackPointer pFromTrack = pFromDeck->getLoadedTrack();
     const bool ridePlanned = m_plannedMix.valid && m_plannedMix.ride && pFromTrack &&
             m_plannedMix.fromId == pFromTrack->getId();
-    const double targetSec =
-            pFromDeck->fadeBeginPos * duration - (ridePlanned ? kRideLeadSec : kLeadSec);
+    const bool slidePlanned = m_plannedMix.valid && m_plannedMix.keySlide != 0 && pFromTrack &&
+            m_plannedMix.fromId == pFromTrack->getId();
+    const double targetSec = pFromDeck->fadeBeginPos * duration -
+            (ridePlanned ? kRideLeadSec : (slidePlanned ? kKeySlideLeadSec : kLeadSec));
     if (targetSec <= nowSec) {
         return 0.0;
     }
@@ -3260,6 +3385,9 @@ AutoDJProcessor::AutoDJError AutoDJProcessor::toggleAutoDJ(bool enable) {
         // that finished (key lock is put back when the glide ends; a key
         // morph stays for the rest of that song, as in a normal mix).
         stopRide(true); // a ride towards a mix that will not come
+        if (!m_smart.active) {
+            stopKeySlide(); // likewise a key slide
+        }
         DeckAttributes* pMixTo = m_smart.active && m_smart.beatmatched ? m_smart.pTo : nullptr;
         const double mixToRatio = m_smart.toRatio;
         endSmartTransition(false);
@@ -3537,9 +3665,10 @@ void AutoDJProcessor::playerPositionChanged(DeckAttributes* pAttributes,
             // repeat pauses auto DJ
             return;
         }
-        // Tempo ride towards the next mix (when planned).
+        // Tempo ride and key slide towards the next mix (when planned).
         if (thisDeck->isFromDeck && thisDeckPlaying) {
             updateRide(thisDeck, thisPlayPosition);
+            updateKeySlide(thisDeck, thisPlayPosition);
         }
     }
 

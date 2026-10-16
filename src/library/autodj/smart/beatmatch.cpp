@@ -88,6 +88,12 @@ double rideRatio(double startRatio, double targetRatio, double progress) {
     return startRatio * std::exp(std::log(targetRatio / startRatio) * eased);
 }
 
+double keySlideSemitones(double start, double target, double progress) {
+    const double p = std::isnan(progress) ? 0.0 : std::clamp(progress, 0.0, 1.0);
+    const double eased = p * p * (3.0 - 2.0 * p); // smoothstep
+    return start + (target - start) * eased;
+}
+
 double glideRatio(double startRatio, double elapsedSeconds, double glideSeconds) {
     if (glideSeconds <= 0.0 || elapsedSeconds >= glideSeconds) {
         return 1.0;

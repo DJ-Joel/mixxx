@@ -555,7 +555,7 @@ class AutoDJProcessor : public QObject {
         double toHigh = 1.0;
         double toQuantize = 0.0;
         double toKeylock = 0.0;
-        int toKeyShift = 0; // key morph, semitones (0 = none)
+        int fromKeyShift = 0; // key slide of the outgoing song, semitones (0 = none)
         // Beat lock: when a beat map bends the tempo, the incoming speed
         // follows the outgoing beats all through the mix.
         bool beatLock = false;
@@ -633,8 +633,30 @@ class AutoDJProcessor : public QObject {
         double rideGapPct = 0.0;
         double rideStartPos = 1.0;
         double rideEndPos = 1.0;
+        // Key slide (beatmatch::kKeySlideSeconds): the semitones the outgoing
+        // song slides to fit the incoming key (0 = none), and where
+        // (fractions of the outgoing track).
+        int keySlide = 0;
+        double keySlideStartPos = 1.0;
+        double keySlideEndPos = 1.0;
     };
     PlannedMix m_plannedMix;
+    // The key slide under way on the outgoing deck.
+    struct KeySlide {
+        bool active = false;
+        DeckAttributes* pDeck = nullptr;
+        TrackId trackId;
+        double startShift = 0.0;
+        double targetShift = 0.0;
+        double startPos = 0.0;
+        double endPos = 1.0;
+        double lastWritten = 0.0; // to notice the DJ moving the key
+    };
+    KeySlide m_keySlide;
+    /// The outgoing deck moved on: slide its key towards the planned one.
+    void updateKeySlide(DeckAttributes* pDeck, double playPosition);
+    /// Auto DJ switched off before the mix: the song back to its own key.
+    void stopKeySlide();
     // The tempo ride under way on the outgoing deck.
     struct TempoRide {
         bool active = false;

@@ -176,8 +176,9 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             "Beatmatched transitions: the next track is played at the same\n"
             "tempo with its beats lined up (only if within 5%), the bass is\n"
             "swapped halfway, and the tempo then glides back over 30 seconds.\n"
-            "If the keys clash, the next track is pitched up or down a little\n"
-            "so they fit (key morph).\n"
+            "If the keys clash, the playing track slides to a key that fits in\n"
+            "its last seconds before the mix, while it plays alone; the next\n"
+            "track always plays in its own key (key morph).\n"
             "Off: plain crossfade.\n"
             "Right-click: key morph setting."));
     connect(pushButtonBeatmatch,
@@ -194,7 +195,8 @@ DlgAutoDJ::DlgAutoDJ(WLibrary* parent,
             this,
             [this](const QPoint& pos) {
                 QMenu menu(this);
-                menu.addSection(tr("Key morph, when the keys clash"));
+                menu.addSection(tr("Key morph, when the keys clash (the playing song slides "
+                                   "to fit, before the mix)"));
                 auto* pGroup = new QActionGroup(&menu);
                 const int current = m_pAutoDJProcessor->keyMorphLimit();
                 const QList<QPair<int, QString>> choices = {
